@@ -1,0 +1,43 @@
+{
+    "manifest_version":  2,
+    "id":  "maibot-community.mai-life",
+    "name":  "麦麦生活",
+    "version":  "1.0.0",
+    "description":  "让麦麦拥有共享的生活状态、睡眠梦境、两级日程和面向多个私聊网友的自然主动交流",
+    "author":  {
+                   "name":  "octmicy",
+                   "url":  "https://github.com/octmicy/Mai_life"
+               },
+    "license":  "MIT",
+    "host_application":  {
+                             "min_version":  "1.0.0",
+                             "max_version":  "1.99.99"
+                         },
+    "sdk":  {
+                "min_version":  "2.7.0",
+                "max_version":  "2.99.99"
+            },
+    "dependencies":  [
+
+                     ],
+    "plugin_type":  "tool",
+    "capabilities":  [
+                         "send.text",
+                         "chat.get_stream_by_user_id",
+                         "chat.get_private_streams",
+                         "llm.generate",
+                         "maisaka.proactive.trigger",
+                         "config.get"
+                     ],
+    "i18n":  {
+                 "default_locale":  "zh-CN",
+                 "supported_locales":  [
+                                           "zh-CN"
+                                       ]
+             },
+    "urls":  {
+                 "repository":  "https://github.com/octmicy/Mai_life",
+                 "homepage":  "https://github.com/octmicy/Mai_life",
+                 "documentation":  "https://docs.mai-mai.org"
+             }
+}

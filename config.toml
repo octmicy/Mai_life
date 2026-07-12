@@ -1,0 +1,162 @@
+# =============================================================================
+# Mai_life「麦麦生活」配置文件
+# =============================================================================
+# 推荐优先在 MaiBot WebUI 中修改配置；手动编辑时请遵守以下规范：
+#
+# 1. 不要修改 config_version，它由插件负责升级和迁移。
+# 2. 字符串必须放在英文双引号中，例如 city = "Shanghai"。
+# 3. 布尔值只能写小写 true 或 false，不能写 True、False、开、关。
+# 4. 数字不要加引号，例如 daily_max_per_user = 2。
+# 5. 时间统一使用 24 小时 HH:MM 格式，例如 "00:00"、"08:30"。
+# 6. 列表使用英文方括号和英文逗号，例如 ["sleep", "nap"]。
+# 7. 不要填写 null、None 或留下一半的 TOML 语句，TOML 不支持空值对象。
+# 8. QQ 号建议作为字符串填写，避免平台或编辑器处理大整数时发生精度问题。
+# 9. 多个私聊用户需要重复添加 [[users.profiles]] 配置块。
+# 10. 手动修改后请在 WebUI 重新加载插件，或重启 MaiBot。
+#
+# 首次使用至少需要修改：
+# - [[users.profiles]].user_id：填写你的 QQ 号
+# - [[users.profiles]].enabled：改为 true
+# - environment.city：填写麦麦生活所在地的城市
+# =============================================================================
+
+[plugin]
+# 配置结构版本，请勿手动修改。
+config_version = "1.0.2"
+
+# 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
+enabled = true
+
+# 日程、场景和梦境使用的模型类型：reply / planner / utils。
+# 推荐保持 planner；如果生成速度过慢，可以尝试 utils。
+llm_model = "planner"
+
+# 管理员 QQ 号列表。留空时，第一个有效私聊用户自动成为管理员。
+# 示例：admin_user_ids = ["123456789", "987654321"]
+admin_user_ids = []
+
+
+[users]
+# 下面是一个占位用户。首次使用时请填写 user_id，并把 enabled 改为 true。
+# 如果需要多个用户，请完整复制一份 [[users.profiles]] 配置块。
+
+[[users.profiles]]
+# 必填：QQ 号，必须使用字符串格式。
+user_id = ""
+
+# 是否启用该用户的关系档案和生活上下文。
+enabled = false
+
+# 是否允许麦麦主动向该用户发送私聊消息。
+proactive_enabled = false
+
+# 可选：用户称呼，留空不会影响运行。
+display_name = ""
+
+# 首次创建档案时的关系温度，范围 0～100。推荐保持 30。
+initial_temperature = 30
+
+# 该用户的主动消息免打扰时段，支持跨午夜。
+quiet_start = "00:00"
+quiet_end = "08:00"
+
+# 第二个用户示例：取消下面注释后填写。
+# [[users.profiles]]
+# user_id = "987654321"
+# enabled = true
+# proactive_enabled = true
+# display_name = "朋友"
+# initial_temperature = 30
+# quiet_start = "00:00"
+# quiet_end = "08:00"
+
+
+[environment]
+# IANA 时区。中国大陆一般使用 Asia/Shanghai。
+timezone = "Asia/Shanghai"
+
+# 天气城市。插件会自动把城市名解析成天气坐标，无需填写经纬度。
+# 推荐填写常见城市名，例如 "Shanghai"、"Beijing"、"Hangzhou"。
+# 如果城市无法识别，请尝试英文名或更完整的城市名称。
+city = "Shanghai"
+
+# 天气后台刷新间隔，范围 10～360 分钟。
+weather_refresh_minutes = 30
+
+
+[state]
+# 生活状态推进间隔，范围 1～60 分钟。推荐 10 分钟。
+tick_interval_minutes = 10
+
+# 身体周期模拟默认关闭。只有符合麦麦人设时才建议开启。
+body_cycle_enabled = false
+
+# 周期第 1 天，格式 YYYY-MM-DD；关闭周期时可以留空字符串。
+body_cycle_start_date = ""
+
+# 完整周期长度，范围 20～45 天。
+body_cycle_length_days = 28
+
+# 经期持续天数，范围 1～10 天。
+body_cycle_period_days = 5
+
+
+[rest_gate]
+# 休息回复闸门默认关闭。开启后，睡眠或午休时可能不回复普通消息。
+enabled = false
+
+# 判醒模式：
+# - probability：规则边界 + 概率判断，速度快且不额外调用模型
+# - llm：规则边界 + LLM 判断，语义更准确但会增加延迟和模型消耗
+mode = "probability"
+
+# probability 模式下，普通消息叫醒麦麦的概率。0.18 表示 18%。
+wake_probability = 0.18
+
+# llm 模式下的判醒阈值，范围 0～100。
+llm_threshold = 70
+
+# 被叫醒后多久不重复判醒，范围 0～240 分钟。
+awake_grace_minutes = 30
+
+# 闸门生效的日程类型：sleep / nap / rest。
+# 推荐只保留夜间睡眠和午休。
+gate_segment_types = ["sleep", "nap"]
+
+
+[schedule]
+# 每天强制重新生成生活框架的小时，范围 0～23。
+# 插件首次启动且缺少当日日程时仍会立即生成。
+generate_hour = 3
+
+# 提前多少分钟细化当前和下一生活场景，范围 10～240 分钟。
+detail_lead_minutes = 60
+
+# 日程骨架模板，相对于插件目录。普通用户通常无需修改。
+template_file = "mai_template.json"
+
+
+[proactive]
+# 主动私聊总开关。关闭后仍会维护生活状态和日程。
+enabled = true
+
+# 检查主动契机的间隔，范围 1～60 分钟。
+patrol_interval_minutes = 10
+
+# 每位用户每天实际主动发送上限。Planner 选择沉默时不计数。
+daily_max_per_user = 2
+
+# 同一用户两次主动消息之间的最小间隔，单位分钟。
+min_interval_minutes = 180
+
+# 用户刚发言后多久不再主动开新话题，单位分钟。
+recent_user_silence_minutes = 30
+
+# 主动触发与 Replyer 实际回复的确认窗口，单位秒。通常无需修改。
+pending_expire_seconds = 120
+
+# 麦麦低于该精力值时不会进行普通主动聊天。
+minimum_energy = 25
+
+# 主动候选进入 Planner 终审所需的最低综合分。越高越克制。
+score_threshold = 0.45

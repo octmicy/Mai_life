@@ -34,6 +34,9 @@ class LLMService:
             "diary": models.diary_task or models.creative_task,
             "date_analysis": models.date_analysis_task or models.fast_task,
             "skill": models.skill_task or models.fast_task,
+            "news": models.news_task or models.fast_task,
+            "search": models.search_task or models.reasoning_task,
+            "relevance": models.relevance_task or models.reasoning_task,
         }
         return str(routes.get(kind) or models.reasoning_task or "planner").strip()
 

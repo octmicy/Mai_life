@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.2.0"
+config_version = "1.3.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -197,6 +197,9 @@ vision_summary_task = ""
 diary_task = ""
 date_analysis_task = ""
 skill_task = ""
+news_task = ""
+search_task = ""
+relevance_task = ""
 
 
 [usage]
@@ -241,3 +244,53 @@ minimum_energy = 25
 
 # 主动候选进入 Planner 终审所需的最低综合分。越高越克制。
 score_threshold = 0.45
+
+
+[information]
+# 联网能力默认全部关闭；需要同时开启这里和对应 news/search 子开关。
+enabled = false
+association_enabled = true
+association_threshold = 0.65
+proactive_share_enabled = true
+context_item_limit = 3
+initial_backoff_minutes = 15
+maximum_backoff_minutes = 360
+
+
+[news]
+enabled = false
+refresh_minutes = 180
+timeout_seconds = 8.0
+max_concurrency = 2
+max_items_per_source = 10
+fetch_full_text = true
+max_article_chars = 8000
+retention_days = 7
+
+# 新闻源请优先在 WebUI 添加。手动配置示例：
+# [[news.sources]]
+# source_id = "my-feed"
+# enabled = true
+# source_type = "rss"
+# name = "自建订阅"
+# url = "https://rss.example.com/feed.xml"
+# api_name = ""
+
+
+[search]
+enabled = false
+connector = "searxng"
+endpoint = ""
+api_key = ""
+query_parameter = "q"
+results_path = "results"
+title_field = "title"
+url_field = "url"
+snippet_field = "content"
+timeout_seconds = 8.0
+max_results = 5
+daily_max = 1
+include_chat_topics = false
+interest_keywords = ["科技", "创作", "游戏", "生活方式"]
+allowed_schedule_types = ["leisure", "rest"]
+note_retention_days = 30

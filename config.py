@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.2.0"
+CONFIG_SCHEMA_VERSION = "1.3.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -405,6 +405,107 @@ class MemorySettings(PluginConfigBase):
         return sorted(cleaned or [30,7,1,0],reverse=True)
 
 
+class InformationSettings(PluginConfigBase):
+    """联网任务的公共保护、关联和上下文参数。"""
+
+    __ui_label__: ClassVar[str] = "联网见闻"
+    __ui_order__: ClassVar[int] = 13
+
+    enabled: bool = Field(default=False,description="联网见闻总开关。",json_schema_extra=_ui(
+        "启用联网见闻","默认关闭；新闻和搜索子开关还需分别开启。",0,label_en="Enable Connected Discovery",hint_en="Disabled by default; news and search also have separate switches."))
+    association_enabled: bool = Field(default=True,description="判断外界信息与麦麦自身的关系。",json_schema_extra=_ui(
+        "启用自我关联","先判断与人格、状态、能力、创作或关系是否有关，再考虑分享。",1,label_en="Enable Self-association",hint_en="Relate external information to Mai before considering sharing."))
+    association_threshold: float = Field(default=0.65,ge=0,le=1,description="创建主动契机的最低关联分。",json_schema_extra=_ui(
+        "关联分数阈值","越高越克制；低于阈值只保留为近期见闻。",2,label_en="Association Threshold",hint_en="Items below this score remain notes and do not create opportunities."))
+    proactive_share_enabled: bool = Field(default=True,description="允许高关联见闻创建主动契机。",json_schema_extra=_ui(
+        "允许见闻主动分享","仍受用户额度、休息、免打扰和 Planner 终审限制。",3,label_en="Allow Discovery Sharing",hint_en="Still subject to quota, rest, quiet hours and Planner review."))
+    context_item_limit: int = Field(default=3,ge=0,le=10,description="被动上下文最多包含的近期见闻数。",json_schema_extra=_ui(
+        "近期见闻上下文数量","设为 0 可只积累记录、不注入被动回复。",4,label_en="Discovery Context Items",hint_en="Set to zero to store discoveries without passive context injection."))
+    initial_backoff_minutes: int = Field(default=15,ge=1,le=360,description="联网失败后的首次退避时间。",json_schema_extra=_ui(
+        "首次失败退避（分钟）","连续失败会指数增加等待时间。",5,label_en="Initial Backoff",hint_en="Backoff grows exponentially after consecutive failures."))
+    maximum_backoff_minutes: int = Field(default=360,ge=10,le=1440,description="联网失败最大退避时间。",json_schema_extra=_ui(
+        "最大失败退避（分钟）","默认最多等待 6 小时。",6,label_en="Maximum Backoff",hint_en="Maximum retry delay after failures."))
+
+
+class NewsSourceProfile(PluginConfigBase):
+    """单个 RSS/Atom 或 B 站插件 API 来源。"""
+
+    source_id: str = Field(default="",description="稳定来源标识。",json_schema_extra=_ui(
+        "来源 ID","建议使用简短英文且保持不变；留空时根据名称和地址生成。",0,label_en="Source ID",hint_en="Stable identifier; generated from name and endpoint when empty."))
+    enabled: bool = Field(default=True,description="是否启用该来源。",json_schema_extra=_ui(
+        "启用来源","可以暂时关闭而不删除缓存。",1,label_en="Enable Source",hint_en="Pause this source without deleting cached items."))
+    source_type: Literal["rss","atom","bilibili_api"] = Field(default="rss",description="来源协议。",json_schema_extra=_ui(
+        "来源类型","RSS/Atom 使用 URL；B 站插件来源使用公开插件 API 名称。",2,label_en="Source Type",hint_en="RSS/Atom use a URL; Bilibili plugin sources use a public plugin API.",enum_labels={"rss":"RSS","atom":"Atom","bilibili_api":"B 站插件 API"}))
+    name: str = Field(default="",description="来源展示名称。",json_schema_extra=_ui(
+        "来源名称","用于状态和见闻列表，不影响请求。",3,label_en="Source Name",hint_en="Display name used in status and discovery lists."))
+    url: str = Field(default="",description="RSS/Atom 地址。",json_schema_extra=_ui(
+        "订阅地址","仅允许 http/https；建议填写国内可访问地址或自建 RSSHub。",4,label_en="Feed URL",hint_en="HTTP(S) only; prefer a reachable domestic endpoint or self-hosted RSSHub."))
+    api_name: str = Field(default="",description="可选 B 站消息源插件 API 全名。",json_schema_extra=_ui(
+        "B 站插件 API","例如 other-plugin.list_bilibili_updates；仅在来源类型为 bilibili_api 时使用。",5,label_en="Bilibili Plugin API",hint_en="Fully qualified public plugin API for Bilibili updates."))
+
+
+class NewsSettings(PluginConfigBase):
+    __ui_label__: ClassVar[str] = "新闻阅读"
+    __ui_order__: ClassVar[int] = 14
+
+    enabled: bool = Field(default=False,description="启用新闻与订阅源读取。",json_schema_extra=_ui(
+        "启用新闻阅读","默认关闭；还需要配置至少一个启用来源。",0,label_en="Enable News Reading",hint_en="Disabled by default and requires at least one enabled source."))
+    refresh_minutes: int = Field(default=180,ge=15,le=1440,description="订阅源刷新间隔。",json_schema_extra=_ui(
+        "新闻刷新间隔（分钟）","默认 3 小时；失败时还会额外退避。",1,label_en="News Refresh Interval",hint_en="Base interval before failure backoff."))
+    timeout_seconds: float = Field(default=8.0,ge=2,le=30,description="单次网络请求超时。",json_schema_extra=_ui(
+        "新闻请求超时（秒）","超时后使用已有缓存，不阻塞聊天。",2,label_en="News Request Timeout",hint_en="Use cached items after timeout without blocking chat."))
+    max_concurrency: int = Field(default=2,ge=1,le=6,description="新闻来源最大并发数。",json_schema_extra=_ui(
+        "来源并发数","中国网络环境建议保持 1～2。",3,label_en="Source Concurrency",hint_en="Keep low for constrained networks."))
+    max_items_per_source: int = Field(default=10,ge=1,le=50,description="单次每来源最多读取条数。",json_schema_extra=_ui(
+        "每来源最大条数","限制正文请求和模型整理成本。",4,label_en="Items per Source",hint_en="Limits article fetch and model cost."))
+    fetch_full_text: bool = Field(default=True,description="存在正文链接时尝试读取全文。",json_schema_extra=_ui(
+        "优先读取正文","失败时保留标题和订阅摘要，不编造正文。",5,label_en="Prefer Full Article",hint_en="Fall back to feed title and summary without fabrication."))
+    max_article_chars: int = Field(default=8000,ge=1000,le=30000,description="保存和整理的正文最大字符数。",json_schema_extra=_ui(
+        "正文长度上限","超长正文会在本地清洗后截断。",6,label_en="Article Length Limit",hint_en="Clean and truncate long articles locally."))
+    retention_days: int = Field(default=7,ge=1,le=90,description="新闻正文和摘要保留天数。",json_schema_extra=_ui(
+        "新闻保留天数","过期缓存自动清理。",7,label_en="News Retention",hint_en="Expired cached articles are removed automatically."))
+    sources: list[NewsSourceProfile] = Field(default_factory=list,description="新闻和 B 站消息来源。",json_schema_extra=_ui(
+        "新闻来源","在 WebUI 中添加 RSS、Atom 或可选 B 站插件 API 来源。",8,label_en="News Sources",hint_en="Add RSS, Atom or optional Bilibili plugin API sources."))
+
+
+class SearchSettings(PluginConfigBase):
+    __ui_label__: ClassVar[str] = "主动搜索"
+    __ui_order__: ClassVar[int] = 15
+
+    enabled: bool = Field(default=False,description="启用低频主动搜索。",json_schema_extra=_ui(
+        "启用主动搜索","默认关闭；需要配置自建搜索接口。",0,label_en="Enable Proactive Search",hint_en="Disabled by default and requires a configured endpoint."))
+    connector: Literal["searxng","json"] = Field(default="searxng",description="搜索接口类型。",json_schema_extra=_ui(
+        "搜索连接器","推荐自建 SearXNG；通用 JSON 可适配其他自建接口。",1,label_en="Search Connector",hint_en="Self-hosted SearXNG is recommended.",enum_labels={"searxng":"SearXNG","json":"通用 JSON"}))
+    endpoint: str = Field(default="",description="搜索接口地址。",json_schema_extra=_ui(
+        "搜索接口地址","仅允许 http/https，不内置公共节点。",2,label_en="Search Endpoint",hint_en="HTTP(S) only; no public endpoint is bundled."))
+    api_key: str = Field(default="",description="可选 Bearer API Key。",json_schema_extra=_ui(
+        "搜索 API Key","可留空；不会写入日志、见闻或数据库。",3,label_en="Search API Key",hint_en="Optional Bearer token; never stored in logs or discovery records."))
+    query_parameter: str = Field(default="q",description="查询参数名。",json_schema_extra=_ui(
+        "查询参数名","SearXNG 通常保持 q。",4,label_en="Query Parameter",hint_en="Usually q for SearXNG."))
+    results_path: str = Field(default="results",description="通用 JSON 结果数组路径。",json_schema_extra=_ui(
+        "结果数组路径","使用点号路径，例如 data.items。",5,label_en="Results Path",hint_en="Dotted path to the result array, such as data.items."))
+    title_field: str = Field(default="title",description="结果标题字段。",json_schema_extra=_ui(
+        "标题字段","通用 JSON 结果中的标题键。",6,label_en="Title Field",hint_en="Title key in a generic JSON result."))
+    url_field: str = Field(default="url",description="结果链接字段。",json_schema_extra=_ui(
+        "链接字段","通用 JSON 结果中的 URL 键。",7,label_en="URL Field",hint_en="URL key in a generic JSON result."))
+    snippet_field: str = Field(default="content",description="结果摘要字段。",json_schema_extra=_ui(
+        "摘要字段","SearXNG 默认 content；其他接口按需修改。",8,label_en="Snippet Field",hint_en="Snippet key; SearXNG commonly uses content."))
+    timeout_seconds: float = Field(default=8.0,ge=2,le=30,description="搜索请求超时。",json_schema_extra=_ui(
+        "搜索超时（秒）","失败后记录退避，不阻塞聊天。",9,label_en="Search Timeout",hint_en="Failure enters backoff and never blocks chat."))
+    max_results: int = Field(default=5,ge=1,le=20,description="单次使用的搜索结果数。",json_schema_extra=_ui(
+        "单次结果数","限制探索整理成本。",10,label_en="Maximum Results",hint_en="Limits exploration summarization cost."))
+    daily_max: int = Field(default=1,ge=0,le=10,description="每天最多主动搜索次数。",json_schema_extra=_ui(
+        "每日主动搜索上限","默认 1 次，0 表示不自动搜索。",11,label_en="Daily Search Limit",hint_en="Default one; zero disables automatic searches."))
+    include_chat_topics: bool = Field(default=False,description="允许使用匿名未完话题规划搜索。",json_schema_extra=_ui(
+        "允许参考聊天话题","默认关闭，避免把私聊内容变成外部搜索词。",12,label_en="Use Chat Topics",hint_en="Disabled by default to keep private chat out of external queries."))
+    interest_keywords: list[str] = Field(default_factory=lambda:["科技","创作","游戏","生活方式"],description="规则 fallback 的人格兴趣。",json_schema_extra=_ui(
+        "兴趣关键词","模型不可用时从这些方向选择低频探索主题。",13,label_en="Interest Keywords",hint_en="Fallback interests used when query planning is unavailable."))
+    allowed_schedule_types: list[Literal["leisure","rest","travel"]] = Field(default_factory=lambda:["leisure","rest"],description="允许主动搜索的日程类型。",json_schema_extra=_ui(
+        "允许搜索的日程类型","只在空档、休息或按配置允许的出行段探索。",14,label_en="Allowed Schedule Types",hint_en="Search only during configured free schedule segments.",enum_labels={"leisure":"闲暇","rest":"休息","travel":"出行"}))
+    note_retention_days: int = Field(default=30,ge=1,le=365,description="探索笔记保留天数。",json_schema_extra=_ui(
+        "探索笔记保留天数","过期笔记自动清理。",15,label_en="Exploration Note Retention",hint_en="Expired exploration notes are removed automatically."))
+
+
 class RestGateSettings(PluginConfigBase):
     """睡眠和午休期间的被动回复判醒设置。"""
 
@@ -565,6 +666,9 @@ class ModelRoutingSettings(PluginConfigBase):
     diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务覆盖", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
     date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务覆盖", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
     skill_task: str = Field(default="", description="技能整理任务覆盖。", json_schema_extra=_ui("技能整理任务覆盖", "留空继承快速任务。", 11, label_en="Skill Analysis Override", hint_en="Leave empty to inherit fast task."))
+    news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 12, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
+    search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 13, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
+    relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 14, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
 
 
 class UsageSettings(PluginConfigBase):
@@ -742,4 +846,16 @@ class MaiLifeSettings(PluginConfigBase):
     proactive: ProactiveSettings = Field(
         default_factory=ProactiveSettings,
         json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 12, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
+    )
+    information: InformationSettings = Field(
+        default_factory=InformationSettings,
+        json_schema_extra=_ui("联网见闻", "公共开关、失败退避和自我关联。", 13,label_en="Connected Discovery",hint_en="Shared switches, backoff and self-association."),
+    )
+    news: NewsSettings = Field(
+        default_factory=NewsSettings,
+        json_schema_extra=_ui("新闻阅读", "RSS、Atom 和可选 B 站插件来源。", 14,label_en="News Reading",hint_en="RSS, Atom and optional Bilibili plugin sources."),
+    )
+    search: SearchSettings = Field(
+        default_factory=SearchSettings,
+        json_schema_extra=_ui("主动搜索", "自建 SearXNG 或通用 JSON 搜索接口。", 15,label_en="Proactive Search",hint_en="Self-hosted SearXNG or generic JSON search."),
     )

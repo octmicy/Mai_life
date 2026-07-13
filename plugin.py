@@ -1,4 +1,4 @@
-"""Mai_life v1.2.0 插件入口。"""
+"""Mai_life v1.3.0 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +16,7 @@ from .config import MaiLifeSettings
 from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
 from .core.storage import LifeStore
+from .information.information_service import InformationService
 from .life.continuity import ContinuityService
 from .life.life_state import LifeStateEngine
 from .life.memory_service import MemoryService,skill_stage
@@ -40,6 +41,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._proactive:Optional[ProactiveEngine]=None; self._debouncer:Optional[MessageDebouncer]=None
         self._vision:Optional[VisionService]=None; self._continuity:Optional[ContinuityService]=None
         self._memory:Optional[MemoryService]=None
+        self._information:Optional[InformationService]=None
         self._prompts=PromptBuilder(); self._tasks:list[asyncio.Task[Any]]=[]; self._transient:set[asyncio.Task[Any]]=set()
         self._personality=""; self._maintenance_lock=asyncio.Lock()
         self._session_runtime:dict[str,dict[str,Any]]={}; self._reply_confirmations:dict[str,dict[str,Any]]={}
@@ -47,7 +49,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @property
     def _ready(self)->bool:
         return all((self._store,self._env,self._llm,self._state,self._schedule,self._rest,self._proactive,
-                    self._debouncer,self._vision,self._continuity,self._memory))
+                    self._debouncer,self._vision,self._continuity,self._memory,self._information))
 
     async def on_load(self)->None:
         root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"))
@@ -62,11 +64,12 @@ class MaiLifePlugin(MaiBotPlugin):
         self._vision=VisionService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         self._continuity=ContinuityService(self._store,self.config,self._llm,self.ctx.logger)
         self._memory=MemoryService(self._store,self.config,self._llm,self.ctx.logger)
+        self._information=InformationService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         await self._store.sync_users(self.config.users.profiles)
         await self._refresh_personality(); await self._resolve_all_streams(); await self._llm.refresh_health()
         if self.config.plugin.enabled:
             await self._maintenance_tick(force_weather=True); self._start_tasks()
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.2.0 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.3.0 加载完成")
 
     async def on_unload(self)->None:
         if self._debouncer:await self._debouncer.close()
@@ -78,7 +81,7 @@ class MaiLifePlugin(MaiBotPlugin):
         del config_data,version
         await self._stop_tasks()
         for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
-                        self._debouncer,self._vision,self._continuity,self._memory):
+                        self._debouncer,self._vision,self._continuity,self._memory,self._information):
             if service:service.update_config(self.config)
         if self._store:await self._store.sync_users(self.config.users.profiles)
         if scope=="bot":await self._refresh_personality()
@@ -100,7 +103,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._tasks:return
         self._tasks=[asyncio.create_task(self._maintenance_loop(),name="mai-life-maintenance"),
                      asyncio.create_task(self._proactive_loop(),name="mai-life-proactive"),
-                     asyncio.create_task(self._daily_generation_loop(),name="mai-life-daily-generation")]
+                     asyncio.create_task(self._daily_generation_loop(),name="mai-life-daily-generation"),
+                     asyncio.create_task(self._information_loop(),name="mai-life-information")]
 
     async def _stop_tasks(self)->None:
         tasks=[*self._tasks,*self._transient]; self._tasks=[]; self._transient.clear()
@@ -136,6 +140,23 @@ class MaiLifePlugin(MaiBotPlugin):
                     now=self._env.now(); await self._proactive.patrol(now,await self._store.get_state())
             except asyncio.CancelledError:raise
             except Exception as exc:self.ctx.logger.error(f"[MaiLife] 主动巡检异常: {exc}")
+
+    async def _information_loop(self)->None:
+        while True:
+            try:
+                await asyncio.sleep(60 if self.config.information.enabled else 300)
+                if not self.config.information.enabled:continue
+                assert self._information and self._env and self._store and self._schedule
+                now=self._env.now(); state=await self._store.get_state(); schedule=await self._schedule.context(now)
+                topics=[]
+                if self.config.search.include_chat_topics:
+                    for user in await self._store.list_users():
+                        if str(user.get("role") or "friend")!="owner":continue
+                        continuity=await self._store.get_continuity(str(user["user_id"]))
+                        topics.extend(str(item)[:120] for item in continuity.get("unresolved_topics") or [])
+                await self._information.tick(now,self._personality,state,schedule,topics)
+            except asyncio.CancelledError:raise
+            except Exception as exc:self.ctx.logger.error(f"[MaiLife] 联网见闻巡检异常: {exc}")
 
     async def _maintenance_tick(self,force_weather:bool=False)->None:
         if not self._ready:return
@@ -236,7 +257,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     async def _prompt_payload(self,session_id:str,consume_backlog:bool=False)->dict[str,Any]|None:
         if not self._ready:return None
-        assert self._store and self._env and self._schedule and self._memory
+        assert self._store and self._env and self._schedule and self._memory and self._information
         user=await self._user_by_session(session_id)
         if not user:return None
         now=self._env.now(); runtime=self._session_runtime.get(session_id) or {}
@@ -247,7 +268,8 @@ class MaiLifePlugin(MaiBotPlugin):
                                                  chat_type="private",media=runtime.get("media") or ["text"]),
                 "continuity":await self._store.get_continuity(user["user_id"]),"intent":str(runtime.get("intent") or ""),
                 "images":await self._store.current_image_summaries(session_id,now.timestamp()),
-                "memory":await self._memory.context_for_user(user,now)}
+                "memory":await self._memory.context_for_user(user,now),
+                "information":await self._information.context(now)}
 
     @HookHandler("maisaka.planner.before_request",mode=HookMode.BLOCKING)
     async def on_planner(self,**kwargs:Any)->dict[str,Any]:
@@ -256,7 +278,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not payload:return {"action":"continue"}
         suffix=self._prompts.planner(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
                                      payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
-                                     int(self.config.context.prompt_max_chars),memory=payload["memory"])
+                                     int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"])
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
         return {"action":"continue","modified_kwargs":kwargs}
 
@@ -274,7 +296,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not payload:return {"action":"continue"}
         suffix=self._prompts.replyer(payload["state"],payload["weather"],payload["context"],payload["user"],payload["backlogs"],
                                      payload["environment"],payload["continuity"],payload["intent"],payload["images"],
-                                     int(self.config.context.prompt_max_chars),memory=payload["memory"])
+                                     int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"])
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
         return {"action":"continue","modified_kwargs":kwargs}
 
@@ -418,6 +440,24 @@ class MaiLifePlugin(MaiBotPlugin):
             f"{item['skill_name']}：{skill_stage(float(item['level']))}（{float(item['level']):.1f}/100，证据 {item['evidence_count']}）" for item in skills)
         return await self._send_command(kwargs,text)
 
+    @Command(name="/mai_news",pattern=r"^/mai_news\b",description="主人或管理员查看近期新闻见闻")
+    async def cmd_news(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
+        if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看完整新闻见闻。")
+        items=await self._store.recent_news_items(self._env.now().timestamp(),5) if self._store and self._env else []
+        if not items:return await self._send_command(kwargs,"近期没有读取到新闻见闻，或新闻功能尚未启用。")
+        text="麦麦近期读到的内容\n"+"\n".join(f"{item['title']}\n{item['summary'] or '只有标题，正文暂不可读'}" for item in items)
+        return await self._send_command(kwargs,text)
+
+    @Command(name="/mai_explore",pattern=r"^/mai_explore\b",description="主人或管理员查看主动搜索笔记")
+    async def cmd_explore(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
+        if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看完整探索笔记。")
+        notes=await self._store.recent_exploration_notes(self._env.now().timestamp(),5) if self._store and self._env else []
+        if not notes:return await self._send_command(kwargs,"近期没有主动搜索笔记，或搜索功能尚未启用。")
+        text="麦麦近期探索笔记\n"+"\n".join(f"{item['topic']}\n{item['summary']}" for item in notes)
+        return await self._send_command(kwargs,text)
+
     @Command(name="/mai_tokens",pattern=r"^/mai_tokens\b",description="管理员查看今日插件 Token 统计")
     async def cmd_tokens(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
@@ -429,12 +469,13 @@ class MaiLifePlugin(MaiBotPlugin):
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n配置用户：{len(self.config.users.profiles)}\n"
               f"消息收口：{'开启' if self.config.debounce.enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
+              f"联网见闻：{'开启' if self.config.information.enabled else '关闭'}（新闻 {'开' if self.config.news.enabled else '关'} / 搜索 {'开' if self.config.search.enabled else '关'}）\n"
               f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}/{self.config.models.vision_task}")
         return await self._send_command(kwargs,text)
 
     @Command(name="/mai_help",pattern=r"^/mai_help\b",description="查看麦麦生活命令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
-        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_skills 技能成长\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
+        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_skills 技能成长\n/mai_news 新闻见闻\n/mai_explore 搜索笔记\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
 
     @Command(name="/mai_regenerate_schedule",pattern=r"^/mai_regenerate_schedule\b",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -459,16 +500,17 @@ class MaiLifePlugin(MaiBotPlugin):
 
     async def _status_report(self)->str:
         if not self._ready:return "麦麦生活尚未初始化。"
-        assert self._store and self._env and self._schedule and self._llm and self._debouncer
+        assert self._store and self._env and self._schedule and self._llm and self._debouncer and self._information
         state=await self._store.get_state(); weather=await self._env.refresh_weather(); context=await self._schedule.context(self._env.now())
         tasks=",".join(sorted(self._llm.available_tasks)) or "未知"
-        diaries=await self._store.list_diaries(1); skills=await self._store.list_skills(100)
-        return (f"麦麦生活 v1.2.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        diaries=await self._store.list_diaries(1); skills=await self._store.list_skills(100); info=await self._information.status(self._env.now())
+        return (f"麦麦生活 v1.3.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：{'开启' if self.config.debounce.enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
                 f"视觉摘要：{'可用' if self._llm.task_available('vision_summary') else '降级'}\n可用模型任务：{tasks}\n"
                 f"生活记忆：日记 {len(diaries)}（最近一篇），技能 {len(skills)} 项\n"
+                f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}\n"
                 f"模型健康：{self._llm.health_error or '正常'}\n后台任务：{len(self._tasks)}")
 
     async def _schedule_report(self)->str:

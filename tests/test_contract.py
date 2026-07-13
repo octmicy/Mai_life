@@ -13,7 +13,7 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.2.0")
+        self.assertEqual(config.plugin.config_version,"1.3.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.proactive.daily_max_per_user,2)
         self.assertFalse(config.rest_gate.enabled)
@@ -22,6 +22,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
         self.assertFalse(config.memory.skill_model_analysis_enabled)
+        self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
         # WebUI 的 TOML 写回不支持 None，默认配置必须全部可序列化。
         def assert_no_none(value):
             if isinstance(value, dict):
@@ -44,7 +45,7 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_diary","/mai_dates","/mai_skills","get_life_state","get_current_scene"}:
+        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","get_life_state","get_current_scene"}:
             self.assertIn(expected,names)
         hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
         self.assertIn("chat.receive.before_process",hooks)
@@ -85,7 +86,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.2.0")
+        self.assertEqual(config.plugin.config_version,"1.3.0")
         self.assertTrue(config.debounce.enabled)
 
     def test_friend_memory_prompt_excludes_private_diary(self):

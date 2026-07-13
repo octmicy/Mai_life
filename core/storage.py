@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class LifeStore:
@@ -289,6 +289,41 @@ class LifeStore:
               id INTEGER PRIMARY KEY AUTOINCREMENT, relay_id TEXT NOT NULL,
               status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS bookshelf_documents(
+              id TEXT PRIMARY KEY, doc_type TEXT NOT NULL, work_type TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL, privacy TEXT NOT NULL, status TEXT NOT NULL,
+              current_revision INTEGER NOT NULL DEFAULT 0,
+              source_kind TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
+              updated_at REAL NOT NULL, archived_at REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_bookshelf_visibility
+              ON bookshelf_documents(doc_type,privacy,status,updated_at);
+            CREATE TABLE IF NOT EXISTS bookshelf_revisions(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, document_id TEXT NOT NULL,
+              revision_number INTEGER NOT NULL, stage TEXT NOT NULL,
+              content TEXT NOT NULL, model_task TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
+              UNIQUE(document_id,revision_number)
+            );
+            CREATE TABLE IF NOT EXISTS creation_inspirations(
+              id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
+              prompt_digest TEXT NOT NULL, privacy_ceiling TEXT NOT NULL,
+              score REAL NOT NULL DEFAULT 0, status TEXT NOT NULL,
+              created_at REAL NOT NULL, expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_creation_inspiration_pending
+              ON creation_inspirations(status,score,created_at);
+            CREATE TABLE IF NOT EXISTS creation_runs(
+              id TEXT PRIMARY KEY, inspiration_id TEXT NOT NULL, document_id TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL, started_at REAL NOT NULL, completed_at REAL NOT NULL DEFAULT 0,
+              error_summary TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS reading_notes(
+              id TEXT PRIMARY KEY, source_api TEXT NOT NULL, external_id TEXT NOT NULL,
+              title TEXT NOT NULL, summary TEXT NOT NULL, annotation TEXT NOT NULL,
+              source_digest TEXT NOT NULL, created_at REAL NOT NULL,
+              UNIQUE(source_api,external_id)
+            );
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
@@ -296,6 +331,19 @@ class LifeStore:
         self._ensure_column("users", "daily_proactive_max", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("proactive_opportunities", "target_user_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("relay_candidates", "opportunity_id", "TEXT NOT NULL DEFAULT ''")
+        # v1.5 首次升级时把已有私人日记纳入书柜，不复制聊天记录，也不改变原日记表。
+        self.conn.execute(
+            """INSERT OR IGNORE INTO bookshelf_documents
+            (id,doc_type,work_type,title,privacy,status,current_revision,source_kind,source_ref,summary,
+             created_at,updated_at,archived_at)
+            SELECT 'diary:'||day,'diary','',title,'private','archived',1,'diary',day,mood_summary,
+                   created_at,created_at,created_at FROM diary_entries"""
+        )
+        self.conn.execute(
+            """INSERT OR IGNORE INTO bookshelf_revisions
+            (document_id,revision_number,stage,content,model_task,created_at)
+            SELECT 'diary:'||day,1,'diary',content,'diary',created_at FROM diary_entries"""
+        )
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),
@@ -856,6 +904,166 @@ class LifeStore:
             ).fetchone()
             return {"count":int(row[0] or 0),"last_at":float(row[1] or 0)} if row else {"count":0,"last_at":0}
 
+    async def add_creation_inspiration(self, item: dict[str, Any]) -> bool:
+        async with self._lock:
+            cursor=self.conn.execute(
+                """INSERT OR IGNORE INTO creation_inspirations
+                (id,source_kind,source_ref,prompt_digest,privacy_ceiling,score,status,created_at,expires_at)
+                VALUES(?,?,?,?,?,?, 'pending',?,?)""",
+                (item["id"],item["source_kind"][:40],item["source_ref"][:160],item["prompt_digest"][:2000],
+                 "public" if item.get("privacy_ceiling")=="public" else "private",
+                 max(0,min(1,float(item.get("score") or 0))),float(item["created_at"]),float(item["expires_at"])),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def pending_creation_inspirations(self, now: float, limit: int=10) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM creation_inspirations WHERE status='pending' AND expires_at>?
+                ORDER BY score DESC,created_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def mark_creation_inspiration(self, inspiration_id: str, status: str) -> None:
+        async with self._lock:
+            self.conn.execute("UPDATE creation_inspirations SET status=? WHERE id=?",(status[:24],inspiration_id))
+            self.conn.commit()
+
+    async def archived_work_count(self, start: float, end: float) -> int:
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT COUNT(*) FROM bookshelf_documents WHERE doc_type='work' AND status='archived'
+                AND archived_at>=? AND archived_at<?""",(start,end)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def create_bookshelf_document(self, item: dict[str, Any]) -> bool:
+        async with self._lock:
+            cursor=self.conn.execute(
+                """INSERT OR IGNORE INTO bookshelf_documents
+                (id,doc_type,work_type,title,privacy,status,current_revision,source_kind,source_ref,summary,
+                 created_at,updated_at,archived_at)
+                VALUES(?,?,?,?,?,?,0,?,?,?,?,?,0)""",
+                (item["id"],item.get("doc_type","work")[:24],item.get("work_type","")[:40],item.get("title","未命名")[:160],
+                 "public" if item.get("privacy")=="public" else "private",item.get("status","inspiration")[:24],
+                 item.get("source_kind","")[:40],item.get("source_ref","")[:160],item.get("summary","")[:1000],
+                 float(item["created_at"]),float(item["created_at"])),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def add_bookshelf_revision(self, document_id: str, stage: str, content: str, model_task: str,
+                                     now: float, *, set_current: bool=True, status: str="") -> int:
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute(
+                    "SELECT COALESCE(MAX(revision_number),0)+1 FROM bookshelf_revisions WHERE document_id=?",
+                    (document_id,),
+                ).fetchone(); revision=int(row[0] if row else 1)
+                conn.execute(
+                    """INSERT INTO bookshelf_revisions
+                    (document_id,revision_number,stage,content,model_task,created_at) VALUES(?,?,?,?,?,?)""",
+                    (document_id,revision,stage[:24],content[:20000],model_task[:80],now),
+                )
+                if set_current:
+                    archived=now if status=="archived" else 0
+                    conn.execute(
+                        """UPDATE bookshelf_documents SET current_revision=?,status=COALESCE(NULLIF(?,''),status),
+                        updated_at=?,archived_at=CASE WHEN ?>0 THEN ? ELSE archived_at END WHERE id=?""",
+                        (revision,status[:24],now,archived,archived,document_id),
+                    )
+                return revision
+
+    async def update_bookshelf_document(self, document_id: str, *, title: str="", summary: str="",
+                                        privacy: str="", status: str="", now: float=0) -> None:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM bookshelf_documents WHERE id=?",(document_id,)).fetchone()
+            if not row:return
+            self.conn.execute(
+                """UPDATE bookshelf_documents SET title=?,summary=?,privacy=?,status=?,updated_at=?,
+                archived_at=CASE WHEN ?='archived' THEN ? ELSE archived_at END WHERE id=?""",
+                (title[:160] or row["title"],summary[:1000] or row["summary"],
+                 ("public" if privacy=="public" else "private") if privacy else row["privacy"],
+                 status[:24] or row["status"],now or time.time(),status,now or time.time(),document_id),
+            )
+            self.conn.commit()
+
+    async def start_creation_run(self, run_id: str, inspiration_id: str, document_id: str, now: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                "INSERT INTO creation_runs(id,inspiration_id,document_id,status,started_at) VALUES(?,?,?,'running',?)",
+                (run_id,inspiration_id,document_id,now),
+            ); self.conn.commit()
+
+    async def finish_creation_run(self, run_id: str, status: str, now: float, error: str="") -> None:
+        async with self._lock:
+            self.conn.execute(
+                "UPDATE creation_runs SET status=?,completed_at=?,error_summary=? WHERE id=?",
+                (status[:24],now,error[:500],run_id),
+            ); self.conn.commit()
+
+    async def list_bookshelf_documents(self, *, allow_private: bool, limit: int=20,
+                                       doc_type: str="") -> list[dict[str, Any]]:
+        async with self._lock:
+            clauses=["d.status='archived'"]; params:list[Any]=[]
+            if not allow_private:clauses.append("d.privacy='public'")
+            if doc_type:clauses.append("d.doc_type=?"); params.append(doc_type)
+            params.append(max(1,min(100,int(limit))))
+            rows=self.conn.execute(
+                f"""SELECT d.*,r.stage,r.content FROM bookshelf_documents d
+                LEFT JOIN bookshelf_revisions r ON r.document_id=d.id AND r.revision_number=d.current_revision
+                WHERE {' AND '.join(clauses)} ORDER BY d.updated_at DESC LIMIT ?""",params
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_bookshelf_document(self, document_id: str, *, allow_private: bool) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM bookshelf_documents WHERE id=?",(document_id,)).fetchone()
+            if not row or (row["privacy"]=="private" and not allow_private):return {}
+            data=dict(row)
+            revisions=self.conn.execute(
+                """SELECT revision_number,stage,content,model_task,created_at FROM bookshelf_revisions
+                WHERE document_id=? ORDER BY revision_number""",(document_id,)
+            ).fetchall()
+            data["revisions"]=[dict(item) for item in revisions]
+            current=next((item for item in data["revisions"] if int(item["revision_number"])==int(data["current_revision"])),{})
+            data["content"]=str(current.get("content") or "")
+            return data
+
+    async def save_reading_note(self, item: dict[str, Any]) -> bool:
+        """外部阅读联动只接收有限文字摘要和生成批注，不接受二进制字段。"""
+        async with self._lock:
+            with self._tx() as conn:
+                cursor=conn.execute(
+                    """INSERT OR IGNORE INTO reading_notes
+                    (id,source_api,external_id,title,summary,annotation,source_digest,created_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                    (item["id"],item["source_api"][:160],item["external_id"][:200],item["title"][:160],
+                     item["summary"][:3000],item["annotation"][:4000],item["source_digest"][:128],float(item["created_at"])),
+                )
+                if not cursor.rowcount:return False
+                document_id=f"reading:{item['id']}"; content=item["annotation"] or item["summary"]
+                conn.execute(
+                    """INSERT INTO bookshelf_documents
+                    (id,doc_type,work_type,title,privacy,status,current_revision,source_kind,source_ref,summary,
+                     created_at,updated_at,archived_at)
+                    VALUES(?,'reading_note','',?,'private','archived',1,'external_reading',?,?,?,?,?)""",
+                    (document_id,item["title"][:160],item["external_id"][:200],item["summary"][:1000],
+                     float(item["created_at"]),float(item["created_at"]),float(item["created_at"])),
+                )
+                conn.execute(
+                    """INSERT INTO bookshelf_revisions
+                    (document_id,revision_number,stage,content,model_task,created_at)
+                    VALUES(?,1,'annotation',?,'reading_annotation',?)""",
+                    (document_id,content[:10000],float(item["created_at"])),
+                )
+                return True
+
+    async def cleanup_creation(self, now: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                "UPDATE creation_inspirations SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)
+            ); self.conn.commit()
+
     async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
         async with self._lock:
             with self._tx() as conn:
@@ -865,6 +1073,7 @@ class LifeStore:
                 conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
                 conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
                 conn.execute("UPDATE relay_candidates SET status='expired' WHERE expires_at<=? AND status IN ('pending','sending','queued')",(now,))
+                conn.execute("UPDATE creation_inspirations SET status='expired' WHERE status='pending' AND expires_at<=?",(now,))
 
     async def record_llm_usage(self, *, created_at: float, source: str, task_name: str, model_name: str,
                                request_type: str, prompt_tokens: int, completion_tokens: int,
@@ -924,6 +1133,19 @@ class LifeStore:
                     (day,created_at,title,content,mood_summary,privacy,source_digest)
                     VALUES(?,?,?,?,?,'private',?)""",
                     (day,created_at,title[:120],content[:4000],mood_summary[:300],source_digest[:128]),
+                )
+                document_id=f"diary:{day}"
+                conn.execute(
+                    """INSERT OR IGNORE INTO bookshelf_documents
+                    (id,doc_type,work_type,title,privacy,status,current_revision,source_kind,source_ref,summary,
+                     created_at,updated_at,archived_at)
+                    VALUES(?,'diary','',?,'private','archived',1,'diary',?,?,?,?,?)""",
+                    (document_id,title[:120],day,mood_summary[:500],created_at,created_at,created_at),
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO bookshelf_revisions
+                    (document_id,revision_number,stage,content,model_task,created_at)
+                    VALUES(?,1,'diary',?,'diary',?)""",(document_id,content[:4000],created_at),
                 )
                 conn.execute("UPDATE memory_runtime SET last_diary_day=? WHERE id=1",(day,))
 

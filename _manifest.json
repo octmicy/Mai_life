@@ -2,8 +2,8 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-    "version":  "1.4.0",
-    "description":  "让麦麦拥有持续生活状态、生活记忆、联网见闻和有边界的社交转述",
+    "version":  "1.5.0",
+    "description":  "让麦麦拥有持续生活、生活记忆、社交见闻以及自己的书柜与创作",
     "author":  {
                    "name":  "octmicy",
                    "url":  "https://github.com/octmicy/Mai_life"

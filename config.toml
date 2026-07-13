@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.4.0"
+config_version = "1.5.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -205,6 +205,10 @@ search_task = ""
 relevance_task = ""
 group_judgment_task = ""
 relay_summary_task = ""
+creation_outline_task = ""
+creation_body_task = ""
+creation_review_task = ""
+reading_annotation_task = ""
 
 
 [usage]
@@ -328,3 +332,24 @@ relay_pending_seconds = 120
 # alias = "小明"
 # user_id = "987654321"
 # display_name = "小明"
+
+
+[creation]
+# 创作和外部阅读默认关闭。作品、日记和批注会以 SQLite 明文保存。
+enabled = false
+plaintext_storage_acknowledged = false
+patrol_interval_minutes = 60
+daily_max = 1
+minimum_energy = 35
+allowed_schedule_types = ["leisure", "rest"]
+work_types = ["novel_fragment", "poem", "essay", "screenplay", "storyboard", "character", "worldbuilding"]
+public_works_enabled = true
+create_share_opportunity = true
+inspiration_lookback_days = 7
+max_body_chars = 4000
+
+# 外部阅读只调用可选插件 API，不直接联网，也不保存图片或其他二进制。
+external_reading_enabled = false
+external_reading_api_name = ""
+external_reading_max_items = 3
+reading_annotation_enabled = true

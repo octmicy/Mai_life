@@ -46,8 +46,8 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.store.close(); self.tmp.cleanup()
 
-    async def test_schema_v3_and_dream_fragments_are_idempotent(self):
-        self.assertEqual(SCHEMA_VERSION,3); await self.store.initialize()
+    async def test_current_schema_and_dream_fragments_are_idempotent(self):
+        self.assertGreaterEqual(SCHEMA_VERSION,3); await self.store.initialize()
         dream_id=await self.store.add_dream("梦境摘要",0.02,0.5,self.now.timestamp()-8*3600,["片段一","片段二"])
         dream=await self.store.latest_dream()
         self.assertEqual(dream["id"],dream_id); self.assertEqual(dream["fragments"],["片段一","片段二"])

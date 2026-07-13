@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class LifeStore:
@@ -229,6 +229,29 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS memory_runtime(
               id INTEGER PRIMARY KEY CHECK(id=1), last_diary_day TEXT NOT NULL DEFAULT '',
               last_skill_day TEXT NOT NULL DEFAULT '', last_cleanup_at REAL NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS news_items(
+              id TEXT PRIMARY KEY, source_id TEXT NOT NULL, title TEXT NOT NULL,
+              url TEXT NOT NULL, summary TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
+              published_at REAL NOT NULL DEFAULT 0, fetched_at REAL NOT NULL,
+              content_hash TEXT NOT NULL, relevance_score REAL NOT NULL DEFAULT 0,
+              relevance_reason TEXT NOT NULL DEFAULT '', associated_at REAL NOT NULL DEFAULT 0,
+              opportunity_id TEXT NOT NULL DEFAULT '', expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_news_pending ON news_items(associated_at,fetched_at);
+            CREATE TABLE IF NOT EXISTS exploration_notes(
+              id TEXT PRIMARY KEY, topic TEXT NOT NULL, query TEXT NOT NULL,
+              summary TEXT NOT NULL, source_urls TEXT NOT NULL DEFAULT '[]',
+              created_at REAL NOT NULL, relevance_score REAL NOT NULL DEFAULT 0,
+              relevance_reason TEXT NOT NULL DEFAULT '', opportunity_id TEXT NOT NULL DEFAULT '',
+              expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_exploration_time ON exploration_notes(created_at);
+            CREATE TABLE IF NOT EXISTS information_source_runtime(
+              source_key TEXT PRIMARY KEY, last_attempt_at REAL NOT NULL DEFAULT 0,
+              last_success_at REAL NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0,
+              next_retry_at REAL NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+              etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT ''
             );
             """
         )
@@ -919,6 +942,121 @@ class LifeStore:
             )
             self.conn.execute("UPDATE memory_runtime SET last_cleanup_at=? WHERE id=1",(time.time(),))
             self.conn.commit()
+
+    async def upsert_news_item(self, item: dict[str, Any]) -> bool:
+        async with self._lock:
+            existing=self.conn.execute("SELECT content_hash FROM news_items WHERE id=?",(item["id"],)).fetchone()
+            self.conn.execute(
+                """INSERT INTO news_items
+                (id,source_id,title,url,summary,content,published_at,fetched_at,content_hash,expires_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                source_id=excluded.source_id,title=excluded.title,url=excluded.url,
+                summary=excluded.summary,content=excluded.content,published_at=excluded.published_at,
+                fetched_at=excluded.fetched_at,content_hash=excluded.content_hash,expires_at=excluded.expires_at""",
+                (item["id"],item["source_id"][:120],item["title"][:500],item["url"][:2000],
+                 item.get("summary","")[:3000],item.get("content","")[:16000],float(item.get("published_at") or 0),
+                 float(item["fetched_at"]),item["content_hash"][:80],float(item["expires_at"])),
+            )
+            self.conn.commit(); return existing is None or str(existing[0])!=str(item["content_hash"])
+
+    async def pending_news_items(self, now: float, limit: int=20) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM news_items WHERE associated_at=0 AND expires_at>?
+                ORDER BY published_at DESC,fetched_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def mark_news_associated(self, item_id: str, score: float, reason: str,
+                                   opportunity_id: str, now: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                """UPDATE news_items SET relevance_score=?,relevance_reason=?,associated_at=?,opportunity_id=?
+                WHERE id=?""",(max(0,min(1,float(score))),reason[:1000],now,opportunity_id[:80],item_id)
+            )
+            self.conn.commit()
+
+    async def update_news_summary(self, item_id: str, summary: str) -> None:
+        async with self._lock:
+            self.conn.execute("UPDATE news_items SET summary=? WHERE id=?",(summary[:3000],item_id))
+            self.conn.commit()
+
+    async def recent_news_items(self, now: float, limit: int=10, *, associated_only: bool=False) -> list[dict[str, Any]]:
+        async with self._lock:
+            clause=" AND associated_at>0" if associated_only else ""
+            rows=self.conn.execute(
+                f"""SELECT * FROM news_items WHERE expires_at>?{clause}
+                ORDER BY published_at DESC,fetched_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def save_exploration_note(self, item: dict[str, Any]) -> None:
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO exploration_notes
+                (id,topic,query,summary,source_urls,created_at,relevance_score,relevance_reason,opportunity_id,expires_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (item["id"],item["topic"][:240],item["query"][:240],item["summary"][:5000],
+                 json.dumps(item.get("source_urls") or [],ensure_ascii=False),float(item["created_at"]),
+                 max(0,min(1,float(item.get("relevance_score") or 0))),item.get("relevance_reason","")[:1000],
+                 item.get("opportunity_id","")[:80],float(item["expires_at"])),
+            )
+            self.conn.commit()
+
+    async def exploration_count(self, start: float, end: float) -> int:
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT COUNT(*) FROM exploration_notes WHERE created_at>=? AND created_at<?",(start,end)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def recent_exploration_notes(self, now: float, limit: int=10) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM exploration_notes WHERE expires_at>?
+                ORDER BY created_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
+            ).fetchall()
+            result=[]
+            for row in rows:
+                item=dict(row)
+                try:item["source_urls"]=json.loads(item.get("source_urls") or "[]")
+                except (TypeError,json.JSONDecodeError):item["source_urls"]=[]
+                result.append(item)
+            return result
+
+    async def get_information_source_runtime(self, source_key: str) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM information_source_runtime WHERE source_key=?",(source_key,)
+            ).fetchone()
+            return dict(row) if row else {"source_key":source_key,"last_attempt_at":0,"last_success_at":0,
+                                          "failure_count":0,"next_retry_at":0,"last_error":"","etag":"","last_modified":""}
+
+    async def save_information_source_runtime(self, source_key: str, *, now: float, success: bool,
+                                              next_retry_at: float, error: str="", etag: str="",
+                                              last_modified: str="") -> None:
+        async with self._lock:
+            previous=self.conn.execute(
+                "SELECT * FROM information_source_runtime WHERE source_key=?",(source_key,)
+            ).fetchone()
+            failures=0 if success else int(previous["failure_count"] if previous else 0)+1
+            last_success=now if success else float(previous["last_success_at"] if previous else 0)
+            old_etag=str(previous["etag"] if previous else ""); old_modified=str(previous["last_modified"] if previous else "")
+            self.conn.execute(
+                """INSERT OR REPLACE INTO information_source_runtime
+                (source_key,last_attempt_at,last_success_at,failure_count,next_retry_at,last_error,etag,last_modified)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (source_key[:200],now,last_success,failures,next_retry_at,"" if success else error[:500],
+                 etag or old_etag,last_modified or old_modified),
+            )
+            self.conn.commit()
+
+    async def cleanup_information(self, now: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM news_items WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM exploration_notes WHERE expires_at<=?",(now,))
 
     # 每个自然日只结算一次关系温度，避免巡检重复加分。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:

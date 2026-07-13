@@ -14,6 +14,16 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+try:
+    import chinese_calendar as _china_calendar
+except Exception:  # 可选依赖缺失不影响生活状态主链。
+    _china_calendar = None
+
+try:
+    from lunar_python import Solar as _LunarSolar
+except Exception:  # Windows/Linux 均允许无历法依赖运行。
+    _LunarSolar = None
+
 _WEATHER_CODES = {
     0: "晴朗", 1: "大致晴朗", 2: "局部多云", 3: "阴天", 45: "有雾", 48: "雾凇",
     51: "小毛毛雨", 53: "毛毛雨", 55: "较强毛毛雨", 61: "小雨", 63: "中雨", 65: "大雨",
@@ -26,7 +36,7 @@ def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
     """在线程中执行同步 HTTP 请求，避免阻塞插件事件循环。"""
     request = Request(
         f"{url}?{urlencode(params)}",
-        headers={"User-Agent": "MaiLife/1.0"},
+        headers={"User-Agent": "MaiLife/1.1"},
     )
     with urlopen(request, timeout=8) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -162,3 +172,40 @@ class EnvironmentService:
             f"，{temperature_value}℃" if temperature_value is not None else ""
         )
         return f"{location_name} {description}{temperature_text}".strip()
+
+    @staticmethod
+    def _time_period(hour: int) -> str:
+        if 5<=hour<8:return "清晨"
+        if 8<=hour<12:return "上午"
+        if 12<=hour<14:return "中午"
+        if 14<=hour<18:return "下午"
+        if 18<=hour<23:return "晚上"
+        return "深夜"
+
+    def snapshot(self, now: datetime | None = None, *, platform: str = "qq", adapter: str = "unknown",
+                 chat_type: str = "private", media: list[str] | None = None) -> dict[str, Any]:
+        """构造完全离线的环境快照；历法不可用时明确降级而不编造。"""
+        current=now or self.now(); day=current.date(); weekday=("星期一","星期二","星期三","星期四","星期五","星期六","星期日")[day.weekday()]
+        is_workday=day.weekday()<5; holiday_name=""
+        if _china_calendar is not None:
+            try:
+                is_workday=bool(_china_calendar.is_workday(day))
+                detail=_china_calendar.get_holiday_detail(day)
+                if isinstance(detail,tuple) and detail[0]:holiday_name=str(detail[1] or "法定节假日")
+            except Exception:pass
+        lunar_text="未知"; solar_term=""
+        if _LunarSolar is not None:
+            try:
+                lunar=_LunarSolar.fromYmd(day.year,day.month,day.day).getLunar()
+                lunar_text=str(lunar.toString())
+                jieqi=str(lunar.getJieQi() or "")
+                if jieqi:solar_term=jieqi
+            except Exception:pass
+        return {
+            "iso_time":current.isoformat(timespec="seconds"),"timezone":str(self.config.environment.timezone),
+            "date":day.isoformat(),"weekday":weekday,"time_period":self._time_period(current.hour),
+            "is_workday":is_workday,"day_type":holiday_name or ("工作日" if is_workday else "休息日"),
+            "holiday":holiday_name,"lunar":lunar_text,"solar_term":solar_term or "无",
+            "platform":platform or "unknown","adapter":adapter or "unknown","chat_type":chat_type,"media":list(media or ["text"]),
+            "calendar_support":{"china_calendar":_china_calendar is not None,"lunar":_LunarSolar is not None},
+        }

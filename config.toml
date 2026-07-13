@@ -22,13 +22,12 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.0.2"
+config_version = "1.1.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
 
-# 日程、场景和梦境使用的模型类型：reply / planner / utils。
-# 推荐保持 planner；如果生成速度过慢，可以尝试 utils。
+# 兼容旧配置的生活生成任务；新功能使用下方 [models] 编排。
 llm_model = "planner"
 
 # 管理员 QQ 号列表。留空时，第一个有效私聊用户自动成为管理员。
@@ -49,6 +48,12 @@ enabled = false
 
 # 是否允许麦麦主动向该用户发送私聊消息。
 proactive_enabled = false
+
+# 关系角色：friend / owner。最多只能有一个 owner。
+role = "friend"
+
+# -1 按角色自动取值（主人 2、朋友 1），0 表示禁止主动消息。
+daily_proactive_max = -1
 
 # 可选：用户称呼，留空不会影响运行。
 display_name = ""
@@ -122,6 +127,60 @@ awake_grace_minutes = 30
 # 闸门生效的日程类型：sleep / nap / rest。
 # 推荐只保留夜间睡眠和午休。
 gate_segment_types = ["sleep", "nap"]
+
+# 必须同时位于以下任一时间窗口和休息日程，闸门才生效。
+night_start = "22:30"
+night_end = "08:00"
+nap_start = "12:00"
+nap_end = "14:30"
+
+
+[context]
+enabled = true
+continuity_enabled = true
+continuity_interval_minutes = 10
+owner_only_terms = ["主人", "老公", "老婆", "亲爱的主人"]
+prompt_max_chars = 2400
+
+
+[debounce]
+enabled = true
+text_wait_seconds = 1.2
+image_wait_seconds = 3.0
+forward_wait_seconds = 2.0
+max_wait_seconds = 6.0
+max_messages = 12
+max_media_bytes = 8388608
+outbound_turn_guard = true
+turn_expire_seconds = 120
+
+
+[vision]
+enabled = true
+timeout_seconds = 6.0
+max_images = 6
+gif_max_frames = 4
+summary_ttl_hours = 24
+current_pointer_minutes = 30
+
+
+[models]
+# 这里填写 MaiBot model_task_config 的任务名，而不是模型供应商 ID。
+fast_task = "utils"
+reasoning_task = "planner"
+creative_task = "replyer"
+vision_task = "vlm"
+schedule_task = ""
+rest_wakeup_task = ""
+continuity_task = ""
+dream_task = ""
+vision_summary_task = ""
+
+
+[usage]
+# 只统计，不设置每日 Token 限额。
+enabled = true
+retention_days = 30
 
 
 [schedule]

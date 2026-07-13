@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class LifeStore:
@@ -125,6 +125,7 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS users(
               user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, proactive_enabled INTEGER NOT NULL,
               display_name TEXT NOT NULL, temperature REAL NOT NULL,
+              role TEXT NOT NULL DEFAULT 'friend', daily_proactive_max INTEGER NOT NULL DEFAULT 1,
               quiet_start TEXT NOT NULL, quiet_end TEXT NOT NULL,
               stream_id TEXT NOT NULL DEFAULT '', last_user_message_at REAL NOT NULL DEFAULT 0,
               last_proactive_at REAL NOT NULL DEFAULT 0,
@@ -153,8 +154,38 @@ class LifeStore:
               temperature REAL, weather_code INTEGER, description TEXT NOT NULL,
               raw_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS wake_candidates(
+              session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message_id TEXT NOT NULL,
+              reason TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversation_continuity(
+              user_id TEXT PRIMARY KEY, intent TEXT NOT NULL DEFAULT '',
+              unresolved_topics TEXT NOT NULL DEFAULT '[]', updated_at REAL NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS image_summaries(
+              image_hash TEXT PRIMARY KEY, summary TEXT NOT NULL, source_type TEXT NOT NULL,
+              ownership_hint TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+              created_at REAL NOT NULL, expires_at REAL NOT NULL, current_until REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_image_session_current ON image_summaries(session_id,current_until);
+            CREATE TABLE IF NOT EXISTS llm_usage_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
+              source TEXT NOT NULL, task_name TEXT NOT NULL, model_name TEXT NOT NULL,
+              request_type TEXT NOT NULL, prompt_tokens INTEGER NOT NULL DEFAULT 0,
+              completion_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0,
+              latency_ms REAL NOT NULL DEFAULT 0, success INTEGER NOT NULL, error_summary TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_time ON llm_usage_events(created_at,source,task_name);
+            CREATE TABLE IF NOT EXISTS reply_turns(
+              session_id TEXT NOT NULL, anchor_message_id TEXT NOT NULL, status TEXT NOT NULL,
+              created_at REAL NOT NULL, expires_at REAL NOT NULL,
+              PRIMARY KEY(session_id,anchor_message_id)
+            );
             """
         )
+        # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
+        self._ensure_column("users", "role", "TEXT NOT NULL DEFAULT 'friend'")
+        self._ensure_column("users", "daily_proactive_max", "INTEGER NOT NULL DEFAULT 1")
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),
@@ -170,6 +201,12 @@ class LifeStore:
             (now,),
         )
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, declaration: str) -> None:
+        """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
+        columns = {str(row[1]) for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     async def close(self) -> None:
         async with self._lock:
@@ -328,12 +365,16 @@ class LifeStore:
                     uid=str(p.user_id).strip()
                     if not uid: continue
                     seen.append(uid)
+                    role=str(getattr(p,"role","friend") or "friend")
+                    configured_limit=int(getattr(p,"daily_proactive_max",-1))
+                    daily_limit=(2 if role=="owner" else 1) if configured_limit<0 else configured_limit
                     conn.execute(
-                        """INSERT INTO users(user_id,enabled,proactive_enabled,display_name,temperature,quiet_start,quiet_end)
-                        VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+                        """INSERT INTO users(user_id,enabled,proactive_enabled,display_name,temperature,role,daily_proactive_max,quiet_start,quiet_end)
+                        VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
                         enabled=excluded.enabled,proactive_enabled=excluded.proactive_enabled,
-                        display_name=excluded.display_name,quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end""",
-                        (uid,int(p.enabled),int(p.proactive_enabled),p.display_name,float(p.initial_temperature),p.quiet_start,p.quiet_end),
+                        display_name=excluded.display_name,role=excluded.role,daily_proactive_max=excluded.daily_proactive_max,
+                        quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end""",
+                        (uid,int(p.enabled),int(p.proactive_enabled),p.display_name,float(p.initial_temperature),role,daily_limit,p.quiet_start,p.quiet_end),
                     )
                 if seen:
                     marks=",".join("?" for _ in seen)
@@ -388,6 +429,15 @@ class LifeStore:
             ).fetchall()
             return {int(r[0]):int(r[1]) for r in rows}
 
+    async def recent_interactions(self, user_id: str, limit: int=8) -> list[str]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT content_summary FROM interaction_events
+                WHERE user_id=? AND kind='message' ORDER BY created_at DESC LIMIT ?""",
+                (user_id,limit),
+            ).fetchall()
+            return [str(row[0]) for row in reversed(rows) if str(row[0]).strip()]
+
     async def add_rest_backlog(self, user_id: str, summary: str, now: float) -> None:
         async with self._lock:
             self.conn.execute("INSERT INTO rest_backlogs(user_id,created_at,summary) VALUES(?,?,?)",(user_id,now,summary[:240])); self.conn.commit()
@@ -412,7 +462,7 @@ class LifeStore:
                 (event_id,user_id,opportunity_id,stream_id,"pending",now,expires_at),
             ); self.conn.commit()
 
-    # 只有 Replyer 确认生成回复后，才增加“实际主动发送”计数。
+    # 只有 send_service.after_send 确认平台发送成功后，才增加实际主动额度。
     async def mark_pending_sent(self, stream_id: str, now: float, day: str = "") -> bool:
         async with self._lock:
             # 普通被动回复没有 pending 记录，只读查询不会创建 SQLite journal。
@@ -435,6 +485,137 @@ class LifeStore:
     async def expire_pending(self, now: float) -> None:
         async with self._lock:
             self.conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)); self.conn.commit()
+
+    async def set_wake_candidate(self, session_id: str, user_id: str, message_id: str, reason: str, now: float, expires_at: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO wake_candidates
+                (session_id,user_id,message_id,reason,created_at,expires_at) VALUES(?,?,?,?,?,?)""",
+                (session_id,user_id,message_id,reason[:240],now,expires_at),
+            )
+            self.conn.commit()
+
+    async def pop_wake_candidate(self, session_id: str, now: float) -> dict[str, Any]:
+        """只有真实发送时消费待醒候选；普通发送只执行一次只读查询。"""
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM wake_candidates WHERE session_id=? AND expires_at>?",
+                (session_id,now),
+            ).fetchone()
+            if not row:
+                self.conn.execute("DELETE FROM wake_candidates WHERE session_id=? AND expires_at<=?",(session_id,now))
+                self.conn.commit()
+                return {}
+            with self._tx() as conn:
+                conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
+            return dict(row)
+
+    async def clear_wake_candidate(self, session_id: str) -> None:
+        async with self._lock:
+            self.conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
+            self.conn.commit()
+
+    async def get_continuity(self, user_id: str) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM conversation_continuity WHERE user_id=?",(user_id,)).fetchone()
+            if not row:return {"intent":"","unresolved_topics":[],"updated_at":0}
+            data=dict(row)
+            try:data["unresolved_topics"]=json.loads(data.get("unresolved_topics") or "[]")
+            except (TypeError,json.JSONDecodeError):data["unresolved_topics"]=[]
+            return data
+
+    async def save_continuity(self, user_id: str, intent: str, topics: list[str], now: float) -> None:
+        clean_topics=[str(item).strip()[:180] for item in topics if str(item).strip()][:5]
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO conversation_continuity
+                (user_id,intent,unresolved_topics,updated_at) VALUES(?,?,?,?)""",
+                (user_id,intent[:80],json.dumps(clean_topics,ensure_ascii=False),now),
+            )
+            self.conn.commit()
+
+    async def save_image_summary(self, image_hash: str, summary: str, source_type: str, ownership_hint: str,
+                                 session_id: str, now: float, expires_at: float, current_until: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO image_summaries
+                (image_hash,summary,source_type,ownership_hint,session_id,created_at,expires_at,current_until)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (image_hash,summary[:1000],source_type[:40],ownership_hint[:240],session_id,now,expires_at,current_until),
+            )
+            self.conn.commit()
+
+    async def get_image_summary(self, image_hash: str, now: float) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM image_summaries WHERE image_hash=? AND expires_at>?",(image_hash,now)
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def current_image_summaries(self, session_id: str, now: float, limit: int=3) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM image_summaries WHERE session_id=? AND expires_at>? AND current_until>?
+                ORDER BY created_at DESC LIMIT ?""",(session_id,now,now,limit)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM image_summaries WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
+
+    async def record_llm_usage(self, *, created_at: float, source: str, task_name: str, model_name: str,
+                               request_type: str, prompt_tokens: int, completion_tokens: int,
+                               total_tokens: int, latency_ms: float, success: bool, error_summary: str="") -> None:
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO llm_usage_events
+                (created_at,source,task_name,model_name,request_type,prompt_tokens,completion_tokens,total_tokens,latency_ms,success,error_summary)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (created_at,source[:32],task_name[:80],model_name[:160],request_type[:80],max(0,int(prompt_tokens)),
+                 max(0,int(completion_tokens)),max(0,int(total_tokens)),max(0,float(latency_ms)),int(success),error_summary[:300]),
+            )
+            self.conn.commit()
+
+    async def usage_summary(self, since: float) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT source,task_name,COUNT(*) calls,SUM(success) successes,
+                SUM(prompt_tokens) prompt_tokens,SUM(completion_tokens) completion_tokens,
+                SUM(total_tokens) total_tokens,AVG(latency_ms) avg_latency_ms
+                FROM llm_usage_events WHERE created_at>=? GROUP BY source,task_name ORDER BY total_tokens DESC""",
+                (since,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def reserve_reply_turn(self, session_id: str, anchor_message_id: str, now: float, expires_at: float) -> bool:
+        if not session_id or not anchor_message_id:return True
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
+                row=conn.execute(
+                    "SELECT status FROM reply_turns WHERE session_id=? AND anchor_message_id=?",
+                    (session_id,anchor_message_id),
+                ).fetchone()
+                if row:return False
+                conn.execute(
+                    "INSERT INTO reply_turns(session_id,anchor_message_id,status,created_at,expires_at) VALUES(?,?,?,?,?)",
+                    (session_id,anchor_message_id,"generated",now,expires_at),
+                )
+                return True
+
+    async def release_reply_turn(self, session_id: str, anchor_message_id: str) -> None:
+        if not session_id or not anchor_message_id:return
+        async with self._lock:
+            self.conn.execute(
+                "DELETE FROM reply_turns WHERE session_id=? AND anchor_message_id=?",
+                (session_id,anchor_message_id),
+            )
+            self.conn.commit()
 
     # 每个自然日只结算一次关系温度，避免巡检重复加分。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:

@@ -5,18 +5,20 @@ import unittest
 from pathlib import Path
 
 from Mai_life.config import MaiLifeSettings
+from Mai_life.messaging.prompt_builder import PromptBuilder, relationship_stage
 from Mai_life.plugin import MaiLifePlugin
-from Mai_life.prompt_builder import PromptBuilder, relationship_stage
 
 
 class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.0.2")
+        self.assertEqual(config.plugin.config_version,"1.1.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.proactive.daily_max_per_user,2)
         self.assertFalse(config.rest_gate.enabled)
+        self.assertTrue(config.debounce.enabled)
+        self.assertEqual(config.models.vision_task,"vlm")
         # WebUI 的 TOML 写回不支持 None，默认配置必须全部可序列化。
         def assert_no_none(value):
             if isinstance(value, dict):
@@ -41,9 +43,11 @@ class ContractTests(unittest.TestCase):
         names={str(item.get("name") or "") for item in components}
         for expected in {"/mai_status","/mai_schedule","/mai_relation","get_life_state","get_current_scene"}:
             self.assertIn(expected,names)
-        hooks={str(item.get("hook") or "") for item in components if item.get("type")=="hook_handler"}
-        # SDK descriptors vary by release; at minimum all 16 declarations must register.
-        self.assertGreaterEqual(len(components),16)
+        hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
+        self.assertIn("chat.receive.before_process",hooks)
+        self.assertIn("maisaka.replyer.after_response",hooks)
+        self.assertIn("send_service.after_send",hooks)
+        self.assertGreaterEqual(len(components),20)
 
     def test_all_webui_fields_have_translated_labels(self):
         schema=MaiLifePlugin.build_config_schema(plugin_id="maibot-community.mai-life",plugin_name="麦麦生活")
@@ -68,6 +72,27 @@ class ContractTests(unittest.TestCase):
         self.assertIn("【独立环境背景】",text)
         self.assertIn("只有“当前真实场景”",text)
         self.assertEqual(relationship_stage(45),"熟悉")
+
+    def test_only_one_owner_is_allowed(self):
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            MaiLifeSettings.model_validate({"users":{"profiles":[
+                {"user_id":"1","role":"owner"},{"user_id":"2","role":"owner"},
+            ]}})
+
+    def test_old_config_version_is_normalized_without_nulls(self):
+        config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
+        self.assertEqual(config.plugin.config_version,"1.1.0")
+        self.assertTrue(config.debounce.enabled)
+
+    def test_friend_prompt_contains_explicit_boundary(self):
+        text=PromptBuilder().replyer(
+            {"energy":60,"mood_valence":0,"current_location":"家里","current_activity":"看书"},{"description":"晴"},
+            {"current":{"summary":"休息","location":"家里"}},{"temperature":50,"role":"friend"},[],
+            {"time_period":"晚上","day_type":"工作日","media":["text"]},{"unresolved_topics":["插件测试"]},"提出问题",[],
+        )
+        self.assertIn("普通朋友",text)
+        self.assertIn("不得对这位用户使用主人/恋人称呼",text)
 
 
 if __name__=="__main__":unittest.main()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -7,10 +9,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from Mai_life.config import MaiLifeSettings, UserProfile
-from Mai_life.life_state import LifeStateEngine
-from Mai_life.rest_gate import RestGate
-from Mai_life.schedule_service import ScheduleService
-from Mai_life.storage import LifeStore
+from Mai_life.core.storage import LifeStore
+from Mai_life.life.life_state import LifeStateEngine
+from Mai_life.life.rest_gate import RestGate
+from Mai_life.life.schedule_service import ScheduleService
+from Mai_life.messaging.message_pipeline import MessageDebouncer, classify_intent
 
 
 class DummyLogger:
@@ -35,6 +38,13 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         now=time.time(); await self.store.record_interaction("1","hello",now,12)
         self.assertGreater((await self.store.get_user("1"))["last_user_message_at"],0)
         self.assertEqual((await self.store.get_user("2"))["last_user_message_at"],0)
+
+    async def test_role_defaults_resolve_to_per_user_quota(self):
+        await self.store.sync_users([
+            UserProfile(user_id="1",role="owner"),UserProfile(user_id="2",role="friend"),
+        ])
+        self.assertEqual((await self.store.get_user("1"))["daily_proactive_max"],2)
+        self.assertEqual((await self.store.get_user("2"))["daily_proactive_max"],1)
     async def test_relationship_daily_delta_is_bounded(self):
         await self.store.sync_users([UserProfile(user_id="1",initial_temperature=30)])
         start=time.time()-86400; end=start+86400
@@ -53,6 +63,39 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],0)
         self.assertTrue(await self.store.mark_pending_sent("s1",now+1))
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+
+    async def test_reply_turn_is_reserved_once_and_can_be_released(self):
+        now=time.time()
+        self.assertTrue(await self.store.reserve_reply_turn("s1","m1",now,now+60))
+        self.assertFalse(await self.store.reserve_reply_turn("s1","m1",now+1,now+60))
+        await self.store.release_reply_turn("s1","m1")
+        self.assertTrue(await self.store.reserve_reply_turn("s1","m1",now+2,now+60))
+
+    async def test_usage_statistics_separate_sources(self):
+        now=time.time()
+        await self.store.record_llm_usage(created_at=now,source="plugin",task_name="utils",model_name="m",
+            request_type="continuity",prompt_tokens=10,completion_tokens=5,total_tokens=15,latency_ms=20,success=True)
+        await self.store.record_llm_usage(created_at=now,source="host_replyer",task_name="replyer",model_name="m",
+            request_type="reply",prompt_tokens=20,completion_tokens=10,total_tokens=30,latency_ms=0,success=True)
+        rows=await self.store.usage_summary(now-1)
+        self.assertEqual({row["source"] for row in rows},{"plugin","host_replyer"})
+
+    async def test_v1_user_table_is_upgraded_without_losing_user(self):
+        other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+        conn=sqlite3.connect(path)
+        conn.executescript("""
+        CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO meta VALUES('schema_version','1');
+        CREATE TABLE users(user_id TEXT PRIMARY KEY,enabled INTEGER NOT NULL,proactive_enabled INTEGER NOT NULL,
+          display_name TEXT NOT NULL,temperature REAL NOT NULL,quiet_start TEXT NOT NULL,quiet_end TEXT NOT NULL,
+          stream_id TEXT NOT NULL DEFAULT '',last_user_message_at REAL NOT NULL DEFAULT 0,last_proactive_at REAL NOT NULL DEFAULT 0,
+          proactive_day TEXT NOT NULL DEFAULT '',proactive_count INTEGER NOT NULL DEFAULT 0,last_relation_day TEXT NOT NULL DEFAULT '');
+        INSERT INTO users VALUES('old',1,1,'旧用户',42,'00:00','08:00','',0,0,'',0,'');
+        """); conn.commit(); conn.close()
+        upgraded=LifeStore(other.name); await upgraded.initialize()
+        user=await upgraded.get_user("old")
+        self.assertEqual(user["temperature"],42); self.assertEqual(user["role"],"friend")
+        await upgraded.close(); other.cleanup()
 
 
 class ScheduleTests(unittest.IsolatedAsyncioTestCase):
@@ -86,7 +129,9 @@ class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_quiet_blocks_and_wakeup_allows(self):
         segment={"kind":"sleep"}
         allowed,_=await self.gate.decide("1","不用回我，继续睡",self.now,segment); self.assertFalse(allowed)
-        allowed,_=await self.gate.decide("1","醒醒，有急事",self.now,segment); self.assertTrue(allowed)
+        allowed,_=await self.gate.decide("1","醒醒，有急事",self.now,segment,session_id="s1",message_id="m1"); self.assertTrue(allowed)
+        self.assertEqual((await self.store.get_sleep_runtime())["awake_grace_until"],0)
+        await self.gate.commit_for_send("s1",self.now)
         self.assertGreater((await self.store.get_sleep_runtime())["awake_grace_until"],self.now.timestamp())
     async def test_awake_grace_skips_rejudge(self):
         await self.state_engine.mark_woken(self.now,"test"); self.config.rest_gate.wake_probability=0
@@ -96,6 +141,44 @@ class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
         state=await self.store.get_state(); state["last_updated_at"]=self.now.timestamp()-7200; await self.store.save_state(state)
         result=await self.state_engine.advance(self.now,{"kind":"work","summary":"工作","location":"书桌"},None)
         self.assertLess(result["state"]["energy"],70); self.assertGreater(result["state"]["hunger"],20)
+
+    async def test_gate_requires_time_window_and_rest_segment(self):
+        daytime=self.now.replace(hour=10)
+        self.config.rest_gate.wake_probability=0
+        allowed,reason=await self.gate.decide("1","普通消息",daytime,{"kind":"sleep"})
+        self.assertTrue(allowed); self.assertEqual(reason,"outside_gate_window")
+
+
+class DebounceTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def message(mid,text):
+        return {"message_id":mid,"session_id":"s1","platform":"qq","processed_plain_text":text,
+            "message_info":{"user_info":{"user_id":"1","user_nickname":"u"},"group_info":None,"additional_config":{}},
+            "raw_message":[{"type":"text","data":text}],"is_command":False,"is_notify":False}
+
+    async def test_concurrent_followups_only_keep_latest_hook(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04; config.debounce.max_wait_seconds=0.5
+        service=MessageDebouncer(config,DummyLogger())
+        first=asyncio.create_task(service.collect(self.message("m1","我想说")))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(self.message("m2","还有一件事")))
+        old,new=await asyncio.gather(first,second)
+        self.assertFalse(old[0]); self.assertTrue(new[0])
+        self.assertEqual(new[1]["message_id"],"m2")
+        self.assertIn("我想说",new[1]["processed_plain_text"])
+        self.assertIn("还有一件事",new[1]["processed_plain_text"])
+
+    async def test_close_releases_waiting_burst(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=2; config.debounce.max_wait_seconds=3
+        service=MessageDebouncer(config,DummyLogger())
+        task=asyncio.create_task(service.collect(self.message("m1","准备卸载")))
+        await asyncio.sleep(0.01); await service.close()
+        result=await asyncio.wait_for(task,0.5)
+        self.assertTrue(result[0])
+
+    def test_local_intent_classifier(self):
+        self.assertEqual(classify_intent("这张图里是什么",["image"]),"询问当前图片")
+        self.assertEqual(classify_intent("醒醒，有急事",["text"]),"安全或紧急需要")
 
 
 if __name__=="__main__": unittest.main()

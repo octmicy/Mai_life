@@ -93,7 +93,7 @@ class ScheduleService:
                 f"人格：{personality or '自然、独立、有自己的生活'}\n模板骨架：{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。时间不重叠，包含夜间睡眠和至少两顿饭。")
-        raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=2200)
+        raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=2200,task_kind="schedule",request_type="daily_schedule")
         nodes=self._validate(day,raw) or fallback
         await self.store.replace_framework(day,nodes); return await self.store.get_framework(day)
 
@@ -119,7 +119,7 @@ class ScheduleService:
                     f"当前精力{state.get('energy')}、饥饿{state.get('hunger')}、天气{weather_text}。\n"
                     "返回JSON对象：scene字符串，state_deltas对象，opportunities数组。机会字段topic,motive,weight,privacy。"
                     "不要凭空制造重大事件，不要强行想用户。")
-            raw=await self.llm.generate_json(prompt,"你是日常场景细化器，只返回JSON对象。",fallback,max_tokens=900)
+            raw=await self.llm.generate_json(prompt,"你是日常场景细化器，只返回JSON对象。",fallback,max_tokens=900,task_kind="reasoning",request_type="scene_detail")
             if not isinstance(raw,dict): raw=fallback
             scene=str(raw.get("scene") or fallback["scene"])[:500]
             deltas=raw.get("state_deltas") if isinstance(raw.get("state_deltas"),dict) else fallback["state_deltas"]

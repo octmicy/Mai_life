@@ -9,9 +9,9 @@ import re
 from typing import Any, ClassVar, Literal
 
 from maibot_sdk import Field, PluginConfigBase
-from pydantic import field_validator, model_validator
+from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.5.0"
+CONFIG_SCHEMA_VERSION = "1.5.1"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -237,6 +237,9 @@ class UsersSettings(PluginConfigBase):
     )
     @model_validator(mode="after")
     def only_one_owner(self) -> "UsersSettings":
+        user_ids=[profile.user_id for profile in self.profiles if profile.user_id]
+        if len(user_ids)!=len(set(user_ids)):
+            raise ValueError("私聊用户 QQ 号不能重复")
         owners = [profile.user_id for profile in self.profiles if profile.enabled and profile.role == "owner"]
         if len(owners) > 1:
             raise ValueError("私聊用户中最多只能配置一个主人")
@@ -759,8 +762,9 @@ class RestGateSettings(PluginConfigBase):
 
     @field_validator("night_start", "night_end", "nap_start", "nap_end", mode="before")
     @classmethod
-    def validate_gate_time(cls, value: Any) -> str:
-        return _time(value, "00:00")
+    def validate_gate_time(cls, value: Any, info: ValidationInfo) -> str:
+        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30"}
+        return _time(value,defaults.get(info.field_name,"00:00"))
 
 
 class ContextSettings(PluginConfigBase):
@@ -787,7 +791,7 @@ class ContextSettings(PluginConfigBase):
         json_schema_extra=_ui("主人专属称呼", "朋友回复命中后会重生成一次，仍命中则静默。请只填写明确专属词。", 3, label_en="Owner-only Terms", hint_en="Terms forbidden in friend replies."),
     )
     prompt_max_chars: int = Field(
-        default=2400, ge=600, le=8000, description="插件追加上下文的最大字符数。",
+        default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
         json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
     )
 
@@ -850,6 +854,9 @@ class ModelRoutingSettings(PluginConfigBase):
     creation_body_task: str = Field(default="", description="创作正文任务覆盖。", json_schema_extra=_ui("创作正文任务覆盖", "留空继承创作任务。", 18, label_en="Creation Body Override", hint_en="Leave empty to inherit creative task."))
     creation_review_task: str = Field(default="", description="创作审校任务覆盖。", json_schema_extra=_ui("创作审校任务覆盖", "留空继承推理任务。", 19, label_en="Creation Review Override", hint_en="Leave empty to inherit reasoning task."))
     reading_annotation_task: str = Field(default="", description="阅读批注任务覆盖。", json_schema_extra=_ui("阅读批注任务覆盖", "留空继承创作任务。", 20, label_en="Reading Annotation Override", hint_en="Leave empty to inherit creative task."))
+    scene_detail_task: str = Field(default="", description="临近场景细化任务覆盖。", json_schema_extra=_ui(
+        "场景细化任务覆盖", "留空继承推理任务。", 21,
+        label_en="Scene Detail Override", hint_en="Leave empty to inherit reasoning task."))
 
 
 class UsageSettings(PluginConfigBase):

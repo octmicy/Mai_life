@@ -36,7 +36,7 @@ def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
     """在线程中执行同步 HTTP 请求，避免阻塞插件事件循环。"""
     request = Request(
         f"{url}?{urlencode(params)}",
-        headers={"User-Agent": "MaiLife/1.1"},
+        headers={"User-Agent": "MaiLife/1.5.1"},
     )
     with urlopen(request, timeout=8) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -53,6 +53,8 @@ class EnvironmentService:
         self._resolved_location_name = ""
         self._resolved_latitude: float | None = None
         self._resolved_longitude: float | None = None
+        self._weather_city_changed = False
+        self._weather_lock = asyncio.Lock()
 
     def update_config(self, config: Any) -> None:
         """更新配置；城市变化时清除内存中的地理编码结果。"""
@@ -61,6 +63,7 @@ class EnvironmentService:
         self.config = config
         if old_city != new_city:
             self._clear_resolved_location()
+            self._weather_city_changed = True
 
     def _clear_resolved_location(self) -> None:
         self._resolved_city_key = ""
@@ -109,9 +112,25 @@ class EnvironmentService:
         return location_name, latitude, longitude
 
     # 天气只在后台维护；被动回复读取缓存，避免网络请求阻塞聊天。
-    async def refresh_weather(self, force: bool = False) -> dict[str, Any]:
+    async def refresh_weather(self, force: bool = False, *, allow_network: bool = True) -> dict[str, Any]:
+        async with self._weather_lock:
+            return await self._refresh_weather_locked(force=force,allow_network=allow_network)
+
+    async def _refresh_weather_locked(self, force: bool = False, *, allow_network: bool = True) -> dict[str, Any]:
+        """串行刷新并在落库前复核城市，防止旧请求晚到后覆盖新配置。"""
         cached = await self.store.get_weather()
+        city = str(self.config.environment.city or "").strip()
+        raw_cache=cached.get("raw_json") if isinstance(cached.get("raw_json"),dict) else {}
+        cached_city=str(raw_cache.get("_mai_life_query_city") or "").strip().casefold()
+        if cached and (not cached_city or cached_city!=city.casefold()):
+            # 旧版未标记城市的缓存无法可靠归属；宁可显示未知，也不把旧城市天气冒充为当前环境。
+            await self.store.clear_weather(); cached={}
+        if self._weather_city_changed:
+            # 城市已改变时旧城市缓存不可继续冒充当前环境；联网失败应明确显示未知。
+            await self.store.clear_weather(); cached={}; self._weather_city_changed=False
         refresh_seconds = self.config.environment.weather_refresh_minutes * 60
+        if not allow_network:
+            return cached or {"description":"天气未知","location_name":str(self.config.environment.city or ""),"fetched_at":0}
         if (
             not force
             and cached
@@ -119,7 +138,6 @@ class EnvironmentService:
         ):
             return cached
 
-        city = str(self.config.environment.city or "").strip()
         if not city:
             self.logger.warning("[MaiLife] 未配置天气城市，使用已有天气缓存")
             return cached or {
@@ -150,8 +168,12 @@ class EnvironmentService:
                 "temperature": current.get("temperature_2m"),
                 "weather_code": code,
                 "description": _WEATHER_CODES.get(code, "天气状况未知"),
-                "raw_json": raw,
+                "raw_json": {**raw,"_mai_life_query_city":city},
             }
+            current_city=str(self.config.environment.city or "").strip()
+            if current_city.casefold()!=city.casefold():
+                self.logger.info(f"[MaiLife] 天气请求完成时城市已变化，丢弃旧结果: {city}")
+                return {"description":"天气未知","location_name":current_city,"fetched_at":0}
             await self.store.save_weather(data)
             return data
         except Exception as exc:

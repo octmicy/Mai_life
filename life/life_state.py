@@ -81,21 +81,46 @@ class LifeStateEngine:
         state["last_updated_at"]=now_ts
         runtime["last_event"]=runtime.get("last_event","")
         await self.store.save_state(state); await self.store.save_sleep_runtime(runtime)
-        if woke and sleep_duration>=3 and "nap" not in old_sleep_event:
-            await self.generate_dream(state, old_sleep_started, sleep_duration)
+        if self.config.memory.enabled and woke and sleep_duration>=3 and "nap" not in old_sleep_event:
+            await self.generate_dream(state, old_sleep_started, sleep_duration,now)
         return {"state":state,"woke":woke,"sleep_duration":sleep_duration}
 
+    async def advance_timeline(self,now:datetime,timeline:list[dict[str,Any]],
+                               final_segment:dict[str,Any]|None,final_scene:dict[str,Any]|None)->dict[str,Any]:
+        """按顺序推进离线日程，在节点边界完成睡眠转换和一次性状态增量。"""
+        if timeline:
+            first_start=timeline[0]["start"]
+            state=await self.store.get_state()
+            if float(state.get("last_updated_at") or 0)<first_start.timestamp():
+                # 超过离线补算上限的旧时间直接截断，防止一次启动循环数百天。
+                state["last_updated_at"]=first_start.timestamp(); await self.store.save_state(state)
+                runtime=await self.store.get_sleep_runtime()
+                if float(runtime.get("started_at") or 0)<first_start.timestamp():
+                    runtime["started_at"]=first_start.timestamp(); await self.store.save_sleep_runtime(runtime)
+        for span in timeline:
+            segment=span.get("segment") if isinstance(span.get("segment"),dict) else None
+            await self.advance(span["start"],segment,None)
+            await self.advance(span["end"],segment,None)
+            completion=span.get("completion") if isinstance(span.get("completion"),dict) else {}
+            deltas=completion.get("deltas") if isinstance(completion.get("deltas"),dict) else {}
+            if deltas:
+                await self.apply_deltas(deltas,updated_at=span["end"].timestamp())
+                framework_id=str(completion.get("framework_id") or "")
+                if framework_id:await self.store.mark_scene_applied(framework_id)
+        return await self.advance(now,final_segment,final_scene)
+
     # 场景结束时一次性应用增量，并统一限制在合法范围内。
-    async def apply_deltas(self, deltas: dict[str, Any]) -> dict[str, Any]:
+    async def apply_deltas(self, deltas: dict[str, Any], updated_at: float=0) -> dict[str, Any]:
         state=await self.store.get_state()
         for key,low,high in (("energy",0,100),("hunger",0,100),("mood_valence",-1,1),("mood_arousal",0,1)):
             try: delta=float(deltas.get(key,0))
             except (TypeError,ValueError): delta=0
             state[key]=self._clamp(float(state.get(key,0))+delta,low,high)
-        state["last_updated_at"]=time.time(); await self.store.save_state(state); return state
+        state["last_updated_at"]=updated_at or time.time(); await self.store.save_state(state); return state
 
     # 梦境只负责叙事和轻微余韵，不制造预言或重大健康事件。
-    async def generate_dream(self, state: dict[str, Any], sleep_started_at: float, hours: float) -> None:
+    async def generate_dream(self, state: dict[str, Any], sleep_started_at: float, hours: float,
+                             woke_at: datetime|None=None) -> None:
         count=int(self.config.memory.dream_fragment_count) if self.config.memory.dream_fragments_enabled else 0
         fallback={"summary":"只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。",
                   "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声"][:count],"mood":"calm"}
@@ -114,14 +139,14 @@ class LifeStateEngine:
         raw_fragments=result.get("fragments") if isinstance(result.get("fragments"),list) else []
         fragments=[str(item).strip()[:300] for item in raw_fragments if str(item).strip()][:count]
         mood=str(result.get("mood") or "calm"); mood_delta=0.03 if mood=="warm" else -0.02 if mood=="uneasy" else 0.0
-        dream_id=await self.store.add_dream(text,mood_delta,0.5,sleep_started_at,fragments)
-        now=time.time()
+        now=woke_at.timestamp() if woke_at else time.time()
+        dream_id=await self.store.add_dream(text,mood_delta,0.5,sleep_started_at,fragments,created_at=now)
         await self.store.add_opportunity({
             "id":f"dream-{dream_id}","framework_id":f"dream:{dream_id}","topic":"昨晚醒来后还记得一点梦",
             "motive":"梦境留下了短暂余韵，可能想向熟悉的网友自然提起",
             "weight":0.46,"privacy":"normal","expires_at":now+12*3600,
         })
-        await self.apply_deltas({"mood_valence":mood_delta,"energy":0.5})
+        await self.apply_deltas({"mood_valence":mood_delta,"energy":0.5},updated_at=now)
 
     # 被用户叫醒后设置清醒宽限，避免每条消息反复判醒。
     async def mark_woken(self, now: datetime, reason: str) -> None:

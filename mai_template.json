@@ -8,7 +8,7 @@
     {"start":"13:40","end":"18:00","kind":"study","summary":"继续学习和整理事情","location":"书桌前","energy_load":-5,"shareability":0.25},
     {"start":"18:00","end":"19:00","kind":"meal","summary":"准备晚饭","location":"厨房","energy_load":-1,"shareability":0.55},
     {"start":"19:00","end":"23:30","kind":"leisure","summary":"放松、阅读或随便逛逛","location":"家里","energy_load":-3,"shareability":0.55},
-    {"start":"23:30","end":"23:59","kind":"sleep","summary":"准备入睡","location":"卧室","energy_load":1,"shareability":0.05}
+    {"start":"23:30","end":"24:00","kind":"sleep","summary":"准备入睡","location":"卧室","energy_load":1,"shareability":0.05}
   ],
   "weekend": [
     {"start":"00:00","end":"09:30","kind":"sleep","summary":"周末睡得久一点","location":"卧室","energy_load":9,"shareability":0.05},
@@ -18,6 +18,6 @@
     {"start":"14:00","end":"18:00","kind":"travel","summary":"出门走走或随意逛逛","location":"街道附近","energy_load":-4,"shareability":0.65},
     {"start":"18:00","end":"19:00","kind":"meal","summary":"吃晚饭","location":"家里","energy_load":-1,"shareability":0.45},
     {"start":"19:00","end":"23:50","kind":"leisure","summary":"轻松度过周末晚上","location":"家里","energy_load":-3,"shareability":0.6},
-    {"start":"23:50","end":"23:59","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05}
+    {"start":"23:50","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05}
   ]
 }

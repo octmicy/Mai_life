@@ -26,6 +26,12 @@ class DummyLLM:
     async def generate_json(self, prompt, system, fallback, max_tokens=0, **kwargs): return fallback
 
 
+class GateLLM(DummyLLM):
+    def __init__(self,result):self.result=result
+    def task_available(self,kind):return kind=="rest_wakeup"
+    async def generate_json(self,*args,**kwargs):return dict(self.result)
+
+
 class StoreTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
@@ -53,6 +59,19 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.update_relationships("2026-07-10",start,end,time.time())
         self.assertEqual((await self.store.get_user("1"))["temperature"],31.0)
 
+    async def test_relationship_decay_is_settled_by_each_missed_day(self):
+        tz=timezone(timedelta(hours=8)); interacted=datetime(2026,7,1,12,0,tzinfo=tz)
+        await self.store.sync_users([UserProfile(user_id="1",initial_temperature=30),
+                                     UserProfile(user_id="2",initial_temperature=10)])
+        await self.store.record_interaction("1","最后一次互动",interacted.timestamp(),12)
+        await self.store.record_interaction("2","低温度用户互动",interacted.timestamp(),12)
+        for offset in range(1,10):
+            day=interacted.date()+timedelta(days=offset)
+            start=datetime.combine(day,datetime.min.time(),tzinfo=tz); end=start+timedelta(days=1)
+            await self.store.update_relationships(day.isoformat(),start.timestamp(),end.timestamp(),end.timestamp())
+        self.assertEqual((await self.store.get_user("1"))["temperature"],29.25)
+        self.assertEqual((await self.store.get_user("2"))["temperature"],10.0)
+
     async def test_passive_reply_confirmation_does_not_open_write_transaction(self):
         journal=self.store.path.with_name(self.store.path.name+"-journal")
         self.assertFalse(await self.store.mark_pending_sent("no-pending-stream",time.time()))
@@ -64,6 +83,32 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],0)
         self.assertTrue(await self.store.mark_pending_sent("s1",now+1))
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+
+    async def test_proactive_confirmation_matches_exact_host_task(self):
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time()
+        await self.store.add_proactive_pending("e1","1","o1","s1",now,now+120)
+        await self.store.add_proactive_pending("e2","1","o2","s1",now+0.1,now+120)
+        await self.store.set_proactive_task_id("e1","proactive:test:1")
+        await self.store.set_proactive_task_id("e2","proactive:test:2")
+        event=await self.store.pending_proactive_for_task("s1","proactive:test:1",now+1)
+        self.assertEqual(event["id"],"e1")
+        self.assertTrue(await self.store.mark_pending_sent("s1",now+1,event_id="e1"))
+        self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+        remaining=self.store.conn.execute("SELECT status FROM proactive_events WHERE id='e2'").fetchone()
+        self.assertEqual(remaining[0],"pending")
+
+    async def test_exact_after_send_can_settle_when_platform_io_crosses_expiry(self):
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time(); await self.store.add_proactive_pending("e1","1","o1","s1",now,now+0.01)
+        await self.store.set_proactive_task_id("e1","proactive:test:1")
+        self.assertTrue(await self.store.mark_pending_sent("s1",now+1,event_id="e1"))
+        self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+
+    async def test_wake_candidate_requires_matching_message(self):
+        now=time.time(); await self.store.set_wake_candidate("s1","1","m1","wake",now,now+120)
+        self.assertEqual(await self.store.pop_wake_candidate("s1",now+1,"m2"),{})
+        self.assertEqual((await self.store.pop_wake_candidate("s1",now+1,"m1"))["message_id"],"m1")
 
     async def test_reply_turn_is_reserved_once_and_can_be_released(self):
         now=time.time()
@@ -115,6 +160,26 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("target_user_id",columns); self.assertEqual(tuple(row),("旧契机",""))
         await upgraded.close(); other.cleanup()
 
+    async def test_invalid_schema_version_is_preserved_and_rebuilt(self):
+        other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+        conn=sqlite3.connect(path); conn.executescript("""
+        CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO meta VALUES('schema_version','invalid');
+        """); conn.commit(); conn.close()
+        upgraded=LifeStore(other.name); await upgraded.initialize()
+        backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
+        self.assertEqual(len(backups),1)
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"7")
+        await upgraded.close(); other.cleanup()
+
+    async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
+        other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+        path.write_bytes(b"not-a-sqlite-database")
+        upgraded=LifeStore(other.name); await upgraded.initialize()
+        self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"7")
+        await upgraded.close(); other.cleanup()
+
 
 class ScheduleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -127,12 +192,45 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         nodes=self.service._validate("2026-07-11",raw)
         self.assertEqual(nodes[1]["start_minute"],nodes[0]["end_minute"])
         self.assertTrue(all(a["end_minute"]<=b["start_minute"] for a,b in zip(nodes,nodes[1:])))
+    def test_template_path_cannot_escape_plugin_directory(self):
+        self.config.schedule.template_file="../outside.json"
+        self.assertEqual(self.service._template(),{})
+        self.assertTrue(self.service._fallback("2026-07-13",False))
+    def test_invalid_template_array_uses_builtin_framework(self):
+        path=Path(self.tmp.name)/"invalid-template.json"
+        path.write_text('[{"start":"09:00","end":"10:00","kind":"leisure"}]',encoding="utf-8")
+        self.config.schedule.template_file=path.name
+        service=ScheduleService(self.store,self.config,DummyLLM(),self.tmp.name,DummyLogger())
+        nodes=service._fallback("2026-07-13",False)
+        self.assertTrue(nodes)
+        self.assertGreaterEqual(sum(item["kind"]=="meal" for item in nodes),2)
+        self.assertTrue(any(item["kind"]=="sleep" for item in nodes))
+    def test_validation_requires_real_night_sleep_and_supports_day_end(self):
+        short=[{"start":"23:00","end":"24:00","kind":"sleep","summary":"睡觉","location":"卧室"},
+               {"start":"08:00","end":"09:00","kind":"meal","summary":"早餐","location":"家"},
+               {"start":"12:00","end":"13:00","kind":"meal","summary":"午饭","location":"家"}]
+        self.assertEqual(self.service._validate("2026-07-11",short),[])
+        fallback=self.service._fallback("2026-07-11",False)
+        self.assertEqual(fallback[-1]["end_minute"],1440)
     async def test_scene_delta_applied_once(self):
         day="2026-07-11"; nodes=self.service._fallback(day,False); await self.store.replace_framework(day,nodes)
         first=nodes[0]; await self.store.save_scene(first["id"],"睡觉",{"energy":5},[])
         self.assertEqual(len(await self.store.completed_unapplied_scenes(day,first["end_minute"])),1)
         await self.store.mark_scene_applied(first["id"])
         self.assertEqual(await self.store.completed_unapplied_scenes(day,first["end_minute"]),[])
+
+    async def test_offline_timeline_crosses_sleep_and_meal_boundaries(self):
+        start=datetime(2026,7,9,22,0,tzinfo=timezone(timedelta(hours=8)))
+        now=datetime(2026,7,10,10,0,tzinfo=start.tzinfo)
+        state=await self.store.get_state(); state["last_updated_at"]=start.timestamp(); await self.store.save_state(state)
+        timeline=await self.service.state_timeline(start,now)
+        engine=LifeStateEngine(self.store,self.config,DummyLLM(),DummyLogger())
+        nodes=self.service._fallback(now.date().isoformat(),False)
+        current,_=self.service.current_and_next(nodes,now.hour*60+now.minute-1)
+        result=await engine.advance_timeline(now,timeline,current,None)
+        self.assertEqual(result["state"]["sleep_phase"],"awake")
+        self.assertLess(result["state"]["hunger"],20)
+        self.assertTrue(await self.store.latest_dream())
 
 
 class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
@@ -165,6 +263,19 @@ class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
         self.config.rest_gate.wake_probability=0
         allowed,reason=await self.gate.decide("1","普通消息",daytime,{"kind":"sleep"})
         self.assertTrue(allowed); self.assertEqual(reason,"outside_gate_window")
+        self.assertFalse(self.gate._in_window("22:30","08:00","08:00"))
+        self.assertFalse(self.gate._in_window("00:00","00:00","00:00"))
+
+    async def test_model_gate_honors_quiet_and_safety_dimensions(self):
+        self.config.rest_gate.mode="llm"
+        quiet=RestGate(self.store,self.config,GateLLM({"score":100,"should_reply":True,"do_not_disturb":90}),
+                       self.state_engine,DummyLogger())
+        allowed,_=await quiet.decide("1","我先自己静一静",self.now,{"kind":"sleep"})
+        self.assertFalse(allowed)
+        safety=RestGate(self.store,self.config,GateLLM({"score":10,"should_reply":False,"safety_risk":95}),
+                        self.state_engine,DummyLogger())
+        allowed,_=await safety.decide("1","我现在有些不对劲",self.now,{"kind":"sleep"})
+        self.assertTrue(allowed)
 
 
 class DebounceTests(unittest.IsolatedAsyncioTestCase):

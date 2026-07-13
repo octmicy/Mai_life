@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.5.0"
+config_version = "1.5.1"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -162,7 +162,7 @@ enabled = true
 continuity_enabled = true
 continuity_interval_minutes = 10
 owner_only_terms = ["主人", "老公", "老婆", "亲爱的主人"]
-prompt_max_chars = 2400
+prompt_max_chars = 4000
 
 
 [debounce]
@@ -193,6 +193,7 @@ reasoning_task = "planner"
 creative_task = "replyer"
 vision_task = "vlm"
 schedule_task = ""
+scene_detail_task = ""
 rest_wakeup_task = ""
 continuity_task = ""
 dream_task = ""

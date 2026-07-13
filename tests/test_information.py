@@ -7,7 +7,9 @@ import unittest
 from datetime import datetime,timedelta,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 
-from Mai_life.config import MaiLifeSettings,NewsSourceProfile
+from Mai_life.config import (
+    MaiLifeSettings,NewsSourceProfile,SocialGroupProfile,SocialRelationProfile,UserProfile,
+)
 from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
 from Mai_life.information.feed_parser import parse_feed,readable_text
 from Mai_life.information.http_client import HttpClient
@@ -118,7 +120,16 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         value=InformationService._safe_query("搜索 @张三 123456789 https://private.example.com 和 test@example.com 的消息")
         self.assertNotIn("张三",value); self.assertNotIn("123456789",value); self.assertNotIn("private.example",value); self.assertNotIn("test@example",value)
 
-    def test_schema_v6(self):self.assertEqual(SCHEMA_VERSION,6)
+    async def test_search_filter_removes_configured_private_names(self):
+        config=MaiLifeSettings(); config.users.profiles=[UserProfile(user_id="10001",display_name="小麦")]
+        config.social.groups=[SocialGroupProfile(group_id="20001",alias="秘密群",display_name="内部讨论组")]
+        config.social.relations=[SocialRelationProfile(group_alias="秘密群",alias="老李",user_id="30001")]
+        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+        value=service._safe_query("小麦和老李在秘密群内部讨论组聊了什么",service._private_query_terms())
+        for private in ("小麦","老李","秘密群","内部讨论组"):
+            self.assertNotIn(private,value)
+
+    def test_schema_v7(self):self.assertEqual(SCHEMA_VERSION,7)
 
 
 if __name__=="__main__":unittest.main()

@@ -1,6 +1,7 @@
 """灵感到归档的分阶段创作流水线。"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -20,11 +21,19 @@ class CreationService:
     def __init__(self,ctx:Any,store:Any,config:Any,llm:Any,logger:Any)->None:
         self.ctx=ctx; self.store=store; self.config=config; self.llm=llm; self.logger=logger
         self.inspirations=InspirationService(ctx,store,config,llm,logger)
+        self._lock=asyncio.Lock(); self._recovered=False
 
     def update_config(self,config:Any)->None:
         self.config=config; self.inspirations.update_config(config)
 
     async def tick(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],*,force:bool=False)->dict[str,Any]:
+        # 后台巡检和管理员命令共享一把锁，避免并发突破每日额度。
+        async with self._lock:
+            if not self._recovered:
+                await self.store.recover_creation_claims(now.timestamp()); self._recovered=True
+            return await self._tick_locked(now,personality,state,schedule,force=force)
+
+    async def _tick_locked(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],*,force:bool=False)->dict[str,Any]:
         cfg=self.config.creation
         if not cfg.enabled:return {"status":"disabled"}
         if not cfg.plaintext_storage_acknowledged:return {"status":"plaintext_not_acknowledged"}
@@ -40,7 +49,17 @@ class CreationService:
         pending=await self.store.pending_creation_inspirations(now.timestamp(),10)
         if not pending:return {"status":"no_inspiration"}
         inspiration=pending[0]
-        try:return await self._create(now,personality,state,schedule,inspiration)
+        if not await self.store.claim_creation_inspiration(str(inspiration["id"])):
+            return {"status":"inspiration_already_claimed"}
+        try:
+            return await self._create(now,personality,state,schedule,inspiration)
+        except asyncio.CancelledError:
+            await self.store.mark_creation_inspiration(str(inspiration["id"]),"pending")
+            raise
+        except Exception as exc:
+            await self.store.mark_creation_inspiration(str(inspiration["id"]),"failed")
+            self.logger.error(f"[MaiLife] 创作任务启动失败: {exc}")
+            return {"status":"failed","error":str(exc)[:200]}
         finally:await self.store.cleanup_creation(now.timestamp())
 
     def _work_type(self,inspiration_id:str)->str:
@@ -64,7 +83,9 @@ class CreationService:
             "source_kind":inspiration["source_kind"],"source_ref":inspiration["source_ref"],
             "summary":str(outline.get("premise") or fallback_outline["premise"]),"created_at":now.timestamp(),
         })
-        if not created:return {"status":"document_conflict"}
+        if not created:
+            await self.store.mark_creation_inspiration(str(inspiration["id"]),"failed")
+            return {"status":"document_conflict"}
         await self.store.start_creation_run(run_id,str(inspiration["id"]),document_id,now.timestamp())
         try:
             await self.store.add_bookshelf_revision(document_id,"outline",json.dumps(outline,ensure_ascii=False),
@@ -87,6 +108,11 @@ class CreationService:
             await self.store.finish_creation_run(run_id,"archived",now.timestamp())
             await self._share_opportunity(document_id,str(outline.get("title") or "未命名作品"),privacy,now)
             return {"status":"archived","document_id":document_id,"title":outline.get("title"),"privacy":privacy}
+        except asyncio.CancelledError:
+            await self.store.update_bookshelf_document(document_id,status="failed",now=now.timestamp())
+            await self.store.mark_creation_inspiration(str(inspiration["id"]),"pending")
+            await self.store.finish_creation_run(run_id,"interrupted",now.timestamp(),"Runner task cancelled")
+            raise
         except Exception as exc:
             await self.store.update_bookshelf_document(document_id,status="failed",now=now.timestamp())
             await self.store.mark_creation_inspiration(str(inspiration["id"]),"failed")

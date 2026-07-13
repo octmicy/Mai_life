@@ -10,14 +10,17 @@ import time
 from typing import Any
 
 from .adapter_compat import component_kind, reply_target_ids
-from .message_pipeline import _walk_components, media_types, plain_text
+from .message_pipeline import _walk_components, media_bytes, media_types, plain_text
 
 
-def _image_bytes(item:dict[str,Any]) -> bytes:
+def _image_bytes(item:dict[str,Any],max_bytes:int=0) -> bytes:
     raw=item.get("binary_data_base64") or item.get("base64") or item.get("image_base64") or ""
     if not isinstance(raw,str) or not raw:return b""
     if raw.startswith("data:") and "," in raw:raw=raw.split(",",1)[1]
-    try:return base64.b64decode(raw+"="*(-len(raw)%4))
+    if max_bytes and len(raw)*3//4>max_bytes:return b""
+    try:
+        data=base64.b64decode(raw+"="*(-len(raw)%4))
+        return data if not max_bytes or len(data)<=max_bytes else b""
     except Exception:return b""
 
 
@@ -36,7 +39,7 @@ class VisionService:
 
     async def _quoted_images(self,message:dict[str,Any])->list[dict[str,Any]]:
         ids=reply_target_ids(message)
-        images=[]
+        images=[]; max_bytes=int(self.config.debounce.max_media_bytes)
         for mid in ids[:2]:
             try:
                 result=await self.ctx.message.get_by_id(mid,stream_id=str(message.get("session_id") or ""),include_binary_data=True)
@@ -46,7 +49,7 @@ class VisionService:
                     candidates.extend(value for value in result.values() if isinstance(value,dict))
                 for candidate in candidates:
                     for item in _walk_components(candidate.get("raw_message") or candidate.get("message") or []):
-                        if component_kind(item)=="image" and _image_bytes(item):images.append(item)
+                        if component_kind(item)=="image" and _image_bytes(item,max_bytes):images.append(item)
             except Exception as exc:self.logger.debug(f"[MaiLife] 引用图片读取失败 message={mid}: {exc}")
         return images
 
@@ -87,11 +90,17 @@ class VisionService:
     async def summarize_if_needed(self,message:dict[str,Any])->str:
         cfg=self.config.vision
         if not cfg.enabled or not self.llm.task_available("vision_summary"):return ""
+        max_bytes=int(self.config.debounce.max_media_bytes)
+        if media_bytes(message)>max_bytes:return ""
         types=media_types(message); text=plain_text(message)
         direct=[item for item in _walk_components(message.get("raw_message") or [])
-                if component_kind(item)=="image" and _image_bytes(item)]
+                if component_kind(item)=="image" and _image_bytes(item,max_bytes)]
         source_type="direct"
-        difficult=(len(direct)==1 and not text) or "gif" in types or "forward" in types or "reply" in types
+        info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
+        additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}
+        merged_ids=additional.get("mai_life_merged_message_ids")
+        merged_image=bool(direct and isinstance(merged_ids,list) and len(merged_ids)>1)
+        difficult=(len(direct)==1 and not text) or merged_image or "gif" in types or "forward" in types or "reply" in types
         if not difficult:return ""
         if "reply" in types:
             quoted=await self._quoted_images(message)
@@ -100,10 +109,11 @@ class VisionService:
         elif "gif" in types:source_type="gif"
         direct=direct[:int(cfg.max_images)]
         if not direct:return ""
-        payload=[]; hashes=[]
+        payload=[]; hashes=[]; remaining_bytes=max_bytes
         for item in direct:
-            data=_image_bytes(item)
-            if not data:continue
+            data=_image_bytes(item,max_bytes)
+            if not data or len(data)>remaining_bytes:continue
+            remaining_bytes-=len(data)
             digest=str(item.get("hash") or hashlib.sha256(data).hexdigest())
             hashes.append(digest)
             if _format(data)=="gif":payload.extend(self._gif_frames(data))
@@ -142,11 +152,3 @@ class VisionService:
             now+int(cfg.summary_ttl_hours)*3600,now+int(cfg.current_pointer_minutes)*60,
         )
         return summary
-
-    @staticmethod
-    def inject_summary(message:dict[str,Any],summary:str)->dict[str,Any]:
-        if not summary:return message
-        message.setdefault("raw_message",[]).append({
-            "type":"text","data":f"\n[Mai_life 内部视觉背景：{summary}。这是模型辅助摘要，不是用户说出的文字。]"
-        })
-        return message

@@ -74,12 +74,20 @@ class MemoryService:
         explicit=False
         for match in _EXPLICIT_DATE_RE.finditer(clean):
             explicit=True; year_text=match.group("year"); month=int(match.group("month")); day=int(match.group("day"))
+            name=self._event_name(clean,match.group(0)); annual=any(word in name for word in ("生日","纪念日"))
             try:
                 year=int(year_text) if year_text else now.year
                 parsed=date(year,month,day)
-            except ValueError:continue
-            name=self._event_name(clean,match.group(0)); annual=any(word in name for word in ("生日","纪念日"))
-            if not year_text and parsed<now.date():parsed=parsed.replace(year=parsed.year+1)
+            except ValueError:
+                if year_text or (month,day)!=(2,29):continue
+                parsed=date(2000,2,29) if annual else next(
+                    (date(year,2,29) for year in range(now.year,now.year+9)
+                     if (year%4==0 and (year%100!=0 or year%400==0))),date(2000,2,29)
+                )
+            if not year_text and parsed<now.date() and not annual:
+                for year in range(max(now.year,parsed.year+1),max(now.year,parsed.year+1)+9):
+                    try:parsed=parsed.replace(year=year); break
+                    except ValueError:continue
             await self.store.add_important_date(
                 user_id,name,parsed.isoformat(),"annual" if annual else "none","local_rule",now.timestamp()
             )

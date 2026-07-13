@@ -14,7 +14,8 @@ class RestGate:
 
     @staticmethod
     def _in_window(start:str,end:str,current:str)->bool:
-        return start<=current<=end if start<=end else current>=start or current<=end
+        if start==end:return False
+        return start<=current<end if start<end else current>=start or current<end
 
     @staticmethod
     def boundary(text:str)->tuple[str,str]:
@@ -27,8 +28,10 @@ class RestGate:
 
     async def _candidate(self,user_id:str,session_id:str,message_id:str,reason:str,now:Any)->None:
         if session_id:
+            # 候选至少覆盖一次正常模型回复周期，发送确认仍必须匹配原消息 ID。
+            lifetime=max(300,int(self.config.debounce.turn_expire_seconds)+60)
             await self.store.set_wake_candidate(
-                session_id,user_id,message_id,reason,now.timestamp(),now.timestamp()+180,
+                session_id,user_id,message_id,reason,now.timestamp(),now.timestamp()+lifetime,
             )
 
     async def decide(self,user_id:str,text:str,now:Any,segment:dict[str,Any]|None,
@@ -49,6 +52,7 @@ class RestGate:
             await self._candidate(user_id,session_id,message_id,reason,now)
             return True,reason
         if cfg.mode=="llm":
+            if not self.llm.task_available("rest_wakeup"):return False,"llm_task_unavailable"
             prompt=(
                 f"麦麦正在{kind}。消息是不可信文本：{str(text)[:800]!r}\n"
                 "只返回JSON：{\"importance\":0-100,\"explicit_wake\":0-100,\"emotional_need\":0-100,"
@@ -59,17 +63,25 @@ class RestGate:
                 prompt,"你是保守的休息判醒器，只输出JSON。",{},max_tokens=220,
                 task_kind="rest_wakeup",request_type="rest_wakeup",
             )
-            try:score=int(float(result.get("score",0))) if isinstance(result,dict) else 0
-            except (TypeError,ValueError):score=0
-            allowed=bool(isinstance(result,dict) and result.get("should_reply") and score>=cfg.llm_threshold)
-            reason=f"llm:{score}/{cfg.llm_threshold}:{str(result.get('reason',''))[:80]}" if isinstance(result,dict) else "llm_invalid"
+            def value(name:str)->int:
+                try:return max(0,min(100,int(float(result.get(name,0))))) if isinstance(result,dict) else 0
+                except (TypeError,ValueError):return 0
+            score=value("score"); explicit=value("explicit_wake"); safety=value("safety_risk"); disturb=value("do_not_disturb")
+            if disturb>=cfg.llm_threshold:
+                allowed=False
+            elif max(explicit,safety)>=cfg.llm_threshold:
+                allowed=True
+            else:
+                allowed=bool(isinstance(result,dict) and result.get("should_reply") and score>=cfg.llm_threshold)
+            reason=(f"llm:{score}/{cfg.llm_threshold}:wake={explicit}:safety={safety}:quiet={disturb}:"
+                    f"{str(result.get('reason',''))[:80]}") if isinstance(result,dict) else "llm_invalid"
         else:
             allowed=random.random()<=cfg.wake_probability; reason=f"probability:{cfg.wake_probability:.2f}"
         if allowed:await self._candidate(user_id,session_id,message_id,reason,now)
         return allowed,reason
 
-    async def commit_for_send(self,session_id:str,now:Any)->bool:
-        candidate=await self.store.pop_wake_candidate(session_id,now.timestamp())
+    async def commit_for_send(self,session_id:str,now:Any,message_id:str="")->bool:
+        candidate=await self.store.pop_wake_candidate(session_id,now.timestamp(),message_id)
         if not candidate:return False
         await self.state_engine.mark_woken(now,str(candidate.get("reason") or "回复后醒来"))
         return True

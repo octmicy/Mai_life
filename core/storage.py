@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class LifeStore:
@@ -27,10 +27,28 @@ class LifeStore:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             if self._conn is None:
                 self._open_checked()
-            self._create_schema()
+            try:
+                self._create_schema()
+            except sqlite3.DatabaseError:
+                # 结构无法兼容时保留原库，再用当前 Schema 建立新库。
+                self._replace_incompatible_database()
+                self._create_schema()
+
+    def _replace_incompatible_database(self) -> None:
+        if self._conn is not None:
+            self._conn.close(); self._conn=None
+        if self.path.exists():
+            stamp=int(time.time()); backup=self.path.with_suffix(f".incompatible.{stamp}.db")
+            counter=1
+            while backup.exists():
+                backup=self.path.with_suffix(f".incompatible.{stamp}.{counter}.db"); counter+=1
+            shutil.move(str(self.path),str(backup))
+        self._conn=sqlite3.connect(self.path,check_same_thread=False)
+        self._conn.row_factory=sqlite3.Row
 
     # quick_check 失败时先保留损坏文件，再创建全新数据库。
     def _open_checked(self) -> None:
+        conn: Optional[sqlite3.Connection] = None
         try:
             conn = sqlite3.connect(self.path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -40,12 +58,18 @@ class LifeStore:
             self._conn = conn
         except sqlite3.DatabaseError:
             try:
-                if self._conn:
+                if conn is not None:
+                    conn.close()
+                if self._conn is not None and self._conn is not conn:
                     self._conn.close()
             except Exception:
                 pass
+            self._conn = None
             if self.path.exists():
-                backup = self.path.with_suffix(f".corrupt.{int(time.time())}.db")
+                stamp=int(time.time()); backup = self.path.with_suffix(f".corrupt.{stamp}.db")
+                counter=1
+                while backup.exists():
+                    backup=self.path.with_suffix(f".corrupt.{stamp}.{counter}.db"); counter+=1
                 shutil.move(str(self.path), str(backup))
             self._conn = sqlite3.connect(self.path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -75,10 +99,16 @@ class LifeStore:
         ).fetchone()
         if existing:
             row = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            version = int(row[0]) if row else 0
+            try:
+                version = int(row[0]) if row else 0
+            except (TypeError, ValueError) as exc:
+                raise sqlite3.DatabaseError("schema_version 非法") from exc
             if version > SCHEMA_VERSION:
                 self.conn.close()
-                backup = self.path.with_suffix(f".future-v{version}.{int(time.time())}.db")
+                stamp=int(time.time()); backup = self.path.with_suffix(f".future-v{version}.{stamp}.db")
+                counter=1
+                while backup.exists():
+                    backup=self.path.with_suffix(f".future-v{version}.{stamp}.{counter}.db"); counter+=1
                 shutil.move(str(self.path), str(backup))
                 self._conn = sqlite3.connect(self.path, check_same_thread=False)
                 self._conn.row_factory = sqlite3.Row
@@ -147,7 +177,8 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS proactive_events(
               id TEXT PRIMARY KEY, user_id TEXT NOT NULL, opportunity_id TEXT NOT NULL,
               stream_id TEXT NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL,
-              expires_at REAL NOT NULL, sent_at REAL NOT NULL DEFAULT 0
+              expires_at REAL NOT NULL, sent_at REAL NOT NULL DEFAULT 0,
+              host_task_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_proactive_pending ON proactive_events(stream_id,status,expires_at);
             CREATE TABLE IF NOT EXISTS rest_backlogs(
@@ -279,7 +310,7 @@ class LifeStore:
               target_stream_id TEXT NOT NULL, summary TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
               mention_user_id TEXT NOT NULL DEFAULT '', mention_name TEXT NOT NULL DEFAULT '',
               status TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
-              sent_at REAL NOT NULL DEFAULT 0
+              sent_at REAL NOT NULL DEFAULT 0, host_task_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_relay_pending
               ON relay_candidates(target_stream_id,status,expires_at);
@@ -331,6 +362,14 @@ class LifeStore:
         self._ensure_column("users", "daily_proactive_max", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("proactive_opportunities", "target_user_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("relay_candidates", "opportunity_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("proactive_events", "host_task_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("relay_candidates", "host_task_id", "TEXT NOT NULL DEFAULT ''")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proactive_host_task ON proactive_events(host_task_id,status)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_relay_host_task ON relay_candidates(host_task_id,status)"
+        )
         # v1.5 首次升级时把已有私人日记纳入书柜，不复制聊天记录，也不改变原日记表。
         self.conn.execute(
             """INSERT OR IGNORE INTO bookshelf_documents
@@ -409,12 +448,13 @@ class LifeStore:
                 )
 
     async def add_dream(self, content: str, mood_delta: float, energy_delta: float,
-                        sleep_started_at: float, fragments: list[str] | None = None) -> int:
+                        sleep_started_at: float, fragments: list[str] | None = None,
+                        created_at: float = 0) -> int:
         async with self._lock:
             with self._tx() as conn:
                 cursor=conn.execute(
                     "INSERT INTO dreams(created_at,content,mood_delta,energy_delta,sleep_started_at) VALUES(?,?,?,?,?)",
-                    (time.time(), content[:1000], mood_delta, energy_delta, sleep_started_at),
+                    (created_at or time.time(), content[:1000], mood_delta, energy_delta, sleep_started_at),
                 )
                 dream_id=int(cursor.lastrowid)
                 clean=[str(item).strip()[:300] for item in (fragments or []) if str(item).strip()][:5]
@@ -651,14 +691,71 @@ class LifeStore:
                 (event_id,user_id,opportunity_id,stream_id,"pending",now,expires_at),
             ); self.conn.commit()
 
+    async def set_proactive_task_id(self, event_id: str, host_task_id: str) -> bool:
+        """关联 Host 主动任务，后续只确认该任务实际产生的发送。"""
+        if not event_id or not host_task_id:return False
+        async with self._lock:
+            cursor=self.conn.execute(
+                "UPDATE proactive_events SET host_task_id=? WHERE id=? AND status='pending'",
+                (host_task_id[:240],event_id),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def set_proactive_event_status(self, event_id: str, status: str) -> None:
+        async with self._lock:
+            self.conn.execute(
+                "UPDATE proactive_events SET status=? WHERE id=? AND status='pending'",
+                (status[:24],event_id),
+            )
+            self.conn.commit()
+
+    async def pending_proactive_for_task(self, stream_id: str, host_task_id: str, now: float) -> dict[str, Any]:
+        if not stream_id or not host_task_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT id,user_id,opportunity_id,stream_id,status,created_at,expires_at,sent_at,host_task_id
+                FROM proactive_events WHERE stream_id=? AND host_task_id=? AND status='pending' AND expires_at>?""",
+                (stream_id,host_task_id,now),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def proactive_for_task(self, stream_id: str, host_task_id: str) -> dict[str, Any]:
+        if not stream_id or not host_task_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT id,user_id,opportunity_id,stream_id,status,created_at,expires_at,sent_at,host_task_id
+                FROM proactive_events WHERE stream_id=? AND host_task_id=?""",
+                (stream_id,host_task_id),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def proactive_event(self, event_id: str) -> dict[str, Any]:
+        """按插件事件号读取记录，用于消除 Host 唤醒与 task_id 回写之间的竞态。"""
+        if not event_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT id,user_id,opportunity_id,stream_id,status,created_at,expires_at,sent_at,host_task_id
+                FROM proactive_events WHERE id=?""",
+                (event_id,),
+            ).fetchone()
+            return dict(row) if row else {}
+
     # 只有 send_service.after_send 确认平台发送成功后，才增加实际主动额度。
-    async def mark_pending_sent(self, stream_id: str, now: float, day: str = "") -> bool:
+    async def mark_pending_sent(self, stream_id: str, now: float, day: str = "", *, event_id: str = "") -> bool:
         async with self._lock:
             # 普通被动回复没有 pending 记录，只读查询不会创建 SQLite journal。
-            row=self.conn.execute(
-                "SELECT id,user_id,opportunity_id FROM proactive_events WHERE stream_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
-                (stream_id,now),
-            ).fetchone()
+            if event_id:
+                row=self.conn.execute(
+                    """SELECT id,user_id,opportunity_id FROM proactive_events
+                    WHERE id=? AND stream_id=? AND status='pending'""",
+                    (event_id,stream_id),
+                ).fetchone()
+            else:
+                # 保留 v1 API 的会话兜底；插件主链使用 event_id 做精确确认。
+                row=self.conn.execute(
+                    "SELECT id,user_id,opportunity_id FROM proactive_events WHERE stream_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
+                    (stream_id,now),
+                ).fetchone()
             if not row:
                 return False
             with self._tx() as conn:
@@ -683,6 +780,15 @@ class LifeStore:
         async with self._lock:
             self.conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)); self.conn.commit()
 
+    async def pending_proactive_users(self, now: float) -> set[str]:
+        """返回仍在等待 Planner/平台确认的用户，防止额度在发送前被并发穿透。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT DISTINCT user_id FROM proactive_events WHERE status='pending' AND expires_at>?",
+                (now,),
+            ).fetchall()
+            return {str(row[0]) for row in rows if str(row[0] or "")}
+
     async def set_wake_candidate(self, session_id: str, user_id: str, message_id: str, reason: str, now: float, expires_at: float) -> None:
         async with self._lock:
             self.conn.execute(
@@ -692,24 +798,33 @@ class LifeStore:
             )
             self.conn.commit()
 
-    async def pop_wake_candidate(self, session_id: str, now: float) -> dict[str, Any]:
+    async def pop_wake_candidate(self, session_id: str, now: float, message_id: str = "") -> dict[str, Any]:
         """只有真实发送时消费待醒候选；普通发送只执行一次只读查询。"""
         async with self._lock:
-            row=self.conn.execute(
-                "SELECT * FROM wake_candidates WHERE session_id=? AND expires_at>?",
-                (session_id,now),
-            ).fetchone()
+            if message_id:
+                row=self.conn.execute(
+                    "SELECT * FROM wake_candidates WHERE session_id=? AND message_id=? AND expires_at>?",
+                    (session_id,message_id,now),
+                ).fetchone()
+            else:
+                row=self.conn.execute(
+                    "SELECT * FROM wake_candidates WHERE session_id=? AND expires_at>?",
+                    (session_id,now),
+                ).fetchone()
             if not row:
                 self.conn.execute("DELETE FROM wake_candidates WHERE session_id=? AND expires_at<=?",(session_id,now))
                 self.conn.commit()
                 return {}
             with self._tx() as conn:
-                conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
+                conn.execute("DELETE FROM wake_candidates WHERE session_id=? AND message_id=?",(session_id,row["message_id"]))
             return dict(row)
 
-    async def clear_wake_candidate(self, session_id: str) -> None:
+    async def clear_wake_candidate(self, session_id: str, message_id: str = "") -> None:
         async with self._lock:
-            self.conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
+            if message_id:
+                self.conn.execute("DELETE FROM wake_candidates WHERE session_id=? AND message_id=?",(session_id,message_id))
+            else:
+                self.conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
             self.conn.commit()
 
     async def get_continuity(self, user_id: str) -> dict[str, Any]:
@@ -839,13 +954,13 @@ class LifeStore:
                 cursor=conn.execute(
                     """INSERT OR IGNORE INTO relay_candidates
                     (id,kind,opportunity_id,source_observation_id,source_group_id,target_group_id,target_user_id,target_stream_id,
-                     summary,reason,mention_user_id,mention_name,status,created_at,expires_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     summary,reason,mention_user_id,mention_name,status,created_at,expires_at,host_task_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (item["id"],item["kind"],item.get("opportunity_id","")[:80],item.get("source_observation_id","")[:80],item.get("source_group_id","")[:80],
                      item.get("target_group_id","")[:80],item.get("target_user_id","")[:80],item.get("target_stream_id","")[:160],
                      item.get("summary","")[:1200],item.get("reason","")[:1200],item.get("mention_user_id","")[:80],
                      item.get("mention_name","")[:120],item.get("status","pending")[:24],float(item["created_at"]),
-                     float(item["expires_at"])),
+                     float(item["expires_at"]),item.get("host_task_id","")[:240]),
                 )
                 if cursor.rowcount:
                     conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
@@ -861,14 +976,51 @@ class LifeStore:
             ).fetchone()
             return dict(row) if row else {}
 
-    async def reserve_relay_for_send(self, stream_id: str, now: float) -> dict[str, Any]:
+    async def set_relay_task_id(self, relay_id: str, host_task_id: str) -> bool:
+        if not relay_id or not host_task_id:return False
+        async with self._lock:
+            cursor=self.conn.execute(
+                "UPDATE relay_candidates SET host_task_id=? WHERE id=? AND status='pending'",
+                (host_task_id[:240],relay_id),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def relay_for_task(self, stream_id: str, host_task_id: str) -> dict[str, Any]:
+        if not stream_id or not host_task_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM relay_candidates WHERE target_stream_id=? AND host_task_id=? AND kind='explicit'",
+                (stream_id,host_task_id),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def relay_candidate(self, relay_id: str) -> dict[str, Any]:
+        """按候选号读取显式转述，支持 Planner 先于 Host task_id 回写到达。"""
+        if not relay_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM relay_candidates WHERE id=? AND kind='explicit'",
+                (relay_id,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def reserve_relay_for_send(self, stream_id: str, now: float, host_task_id: str = "") -> dict[str, Any]:
         """发送前原子占用一次 @；Host 正常分段时只有第一段会命中。"""
         async with self._lock:
             with self._tx() as conn:
-                row=conn.execute(
-                    """SELECT * FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
-                    AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1""",(stream_id,now)
-                ).fetchone()
+                if host_task_id:
+                    row=conn.execute(
+                        """SELECT * FROM relay_candidates WHERE target_stream_id=? AND host_task_id=?
+                        AND kind='explicit' AND status='pending' AND expires_at>?""",
+                        (stream_id,host_task_id,now),
+                    ).fetchone()
+                else:
+                    # 兼容不返回 task_id 的旧 Host；不抢占已经精确关联的新任务。
+                    row=conn.execute(
+                        """SELECT * FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
+                        AND host_task_id='' AND status='pending' AND expires_at>?
+                        ORDER BY created_at DESC LIMIT 1""",(stream_id,now)
+                    ).fetchone()
                 if not row:return {}
                 changed=conn.execute("UPDATE relay_candidates SET status='sending' WHERE id=? AND status='pending'",
                                      (row["id"],)).rowcount
@@ -880,9 +1032,13 @@ class LifeStore:
     async def finish_relay_send(self, relay_id: str, sent: bool, now: float) -> None:
         async with self._lock:
             with self._tx() as conn:
-                row=conn.execute("SELECT expires_at FROM relay_candidates WHERE id=?",(relay_id,)).fetchone()
+                row=conn.execute("SELECT status,expires_at FROM relay_candidates WHERE id=?",(relay_id,)).fetchone()
                 if not row:return
-                status="sent" if sent else ("pending" if float(row[0])>now else "expired")
+                current=str(row[0] or "")
+                if current=="sent":return
+                # 已被禁用、过期或新任务取代的在途发送若失败，保留原终态；若平台实际成功则记录事实。
+                if not sent and current!="sending":return
+                status="sent" if sent else ("pending" if float(row[1])>now else "expired")
                 conn.execute("UPDATE relay_candidates SET status=?,sent_at=? WHERE id=?",
                              (status,now if sent else 0,relay_id))
                 conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
@@ -923,6 +1079,32 @@ class LifeStore:
                 ORDER BY score DESC,created_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
             ).fetchall()
             return [dict(row) for row in rows]
+
+    async def claim_creation_inspiration(self, inspiration_id: str) -> bool:
+        """条件更新防止后台巡检和管理员命令同时消费同一份灵感。"""
+        async with self._lock:
+            cursor=self.conn.execute(
+                "UPDATE creation_inspirations SET status='creating' WHERE id=? AND status='pending'",
+                (inspiration_id,),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def recover_creation_claims(self, now: float) -> None:
+        """Runner 异常退出后恢复未完成灵感，并封存残留的 running 记录。"""
+        async with self._lock:
+            with self._tx() as conn:
+                running=conn.execute("SELECT document_id FROM creation_runs WHERE status='running'").fetchall()
+                document_ids=[str(row[0]) for row in running if str(row[0] or "")]
+                if document_ids:
+                    marks=",".join("?" for _ in document_ids)
+                    conn.execute(f"UPDATE bookshelf_documents SET status='failed',updated_at=? WHERE id IN ({marks})",
+                                 (now,*document_ids))
+                conn.execute(
+                    "UPDATE creation_runs SET status='interrupted',completed_at=?,error_summary='Runner interrupted' WHERE status='running'",
+                    (now,),
+                )
+                conn.execute("UPDATE creation_inspirations SET status='pending' WHERE status='creating' AND expires_at>?",(now,))
+                conn.execute("UPDATE creation_inspirations SET status='expired' WHERE status='creating' AND expires_at<=?",(now,))
 
     async def mark_creation_inspiration(self, inspiration_id: str, status: str) -> None:
         async with self._lock:
@@ -1064,16 +1246,79 @@ class LifeStore:
                 "UPDATE creation_inspirations SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)
             ); self.conn.commit()
 
+    async def management_relationship_entries(self, limit: int=100) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT group_alias,alias,user_id,display_name,updated_at FROM relationship_entries
+                ORDER BY group_alias,alias LIMIT ?""",(max(1,min(500,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def management_date_candidates(self, limit: int=100) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT id,user_id,event_name,date_text,suggested_date,confidence,created_at,status
+                FROM date_candidates WHERE status='pending' ORDER BY created_at DESC LIMIT ?""",
+                (max(1,min(500,int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def management_bookshelf(self, limit: int=100) -> list[dict[str, Any]]:
+        """管理摘要不返回正文和修订内容，降低误暴露私密文本的风险。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT id,doc_type,work_type,title,privacy,status,current_revision,source_kind,
+                summary,created_at,updated_at,archived_at FROM bookshelf_documents
+                ORDER BY updated_at DESC LIMIT ?""",(max(1,min(500,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def management_proactive_candidates(self, limit: int=100) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT e.id,e.user_id,e.opportunity_id,e.status,e.created_at,e.expires_at,e.sent_at,
+                o.topic,o.privacy,u.role FROM proactive_events e
+                LEFT JOIN proactive_opportunities o ON o.id=e.opportunity_id
+                LEFT JOIN users u ON u.user_id=e.user_id
+                ORDER BY e.created_at DESC LIMIT ?""",(max(1,min(500,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def management_creation_runs(self, limit: int=50) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT r.id,r.inspiration_id,r.document_id,r.status,r.started_at,r.completed_at,
+                d.title,d.privacy,d.work_type FROM creation_runs r
+                LEFT JOIN bookshelf_documents d ON d.id=r.document_id
+                ORDER BY r.started_at DESC LIMIT ?""",(max(1,min(200,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def management_overview_counts(self) -> dict[str, int]:
+        """使用 COUNT 聚合，避免概览数字受明细分页上限影响。"""
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT
+                (SELECT COUNT(*) FROM users WHERE enabled=1) AS users,
+                (SELECT COUNT(*) FROM users WHERE enabled=1 AND role='owner') AS owners,
+                (SELECT COUNT(*) FROM date_candidates WHERE status='pending') AS pending_dates,
+                (SELECT COUNT(*) FROM bookshelf_documents) AS bookshelf_documents,
+                (SELECT COUNT(*) FROM bookshelf_documents WHERE privacy='private') AS private_documents,
+                (SELECT COUNT(*) FROM proactive_events WHERE status='pending') AS pending_proactive"""
+            ).fetchone()
+            return {key:int(row[key] or 0) for key in row.keys()} if row else {}
+
     async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("DELETE FROM image_summaries WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
+                conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,))
                 conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
                 conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
                 conn.execute("UPDATE relay_candidates SET status='expired' WHERE expires_at<=? AND status IN ('pending','sending','queued')",(now,))
-                conn.execute("UPDATE creation_inspirations SET status='expired' WHERE status='pending' AND expires_at<=?",(now,))
+                conn.execute("UPDATE creation_inspirations SET status='expired' WHERE status IN ('pending','creating') AND expires_at<=?",(now,))
 
     async def record_llm_usage(self, *, created_at: float, source: str, task_name: str, model_name: str,
                                request_type: str, prompt_tokens: int, completion_tokens: int,
@@ -1474,13 +1719,14 @@ class LifeStore:
                 conn.execute("DELETE FROM news_items WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM exploration_notes WHERE expires_at<=?",(now,))
 
-    # 每个自然日只结算一次关系温度，避免巡检重复加分。
+    # 每个自然日只结算一次关系温度，离线补算时按结算日结束时刻判断冷却。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:
+        del now
         async with self._lock:
             with self._tx() as conn:
                 users=conn.execute("SELECT * FROM users WHERE enabled=1").fetchall()
                 for user in users:
-                    if user["last_relation_day"]==day: continue
+                    if str(user["last_relation_day"] or "")>=day: continue
                     msg_count=conn.execute(
                         "SELECT COUNT(*) FROM interaction_events WHERE user_id=? AND kind='message' AND created_at>=? AND created_at<?",
                         (user["user_id"],day_start,day_end),
@@ -1490,16 +1736,26 @@ class LifeStore:
                         (user["user_id"],day_start,day_end),
                     ).fetchone()
                     delta=(0.5 if msg_count>0 else 0)+(0.5 if msg_count>=5 else 0)+(0.5 if responded else 0)
-                    if msg_count==0 and user["last_user_message_at"] and now-user["last_user_message_at"]>7*86400:
+                    latest_before=conn.execute(
+                        """SELECT MAX(created_at) FROM interaction_events
+                        WHERE user_id=? AND kind='message' AND created_at<?""",
+                        (user["user_id"],day_end),
+                    ).fetchone()[0]
+                    if msg_count==0 and latest_before and day_end-float(latest_before)>7*86400:
                         delta=-0.25
-                    temperature=max(20.0,min(100.0,float(user["temperature"])+delta))
+                    current_temperature=float(user["temperature"])
+                    floor=min(20.0,current_temperature) if delta<0 else 0.0
+                    temperature=max(floor,min(100.0,current_temperature+delta))
                     conn.execute("UPDATE users SET temperature=?,last_relation_day=? WHERE user_id=?",(temperature,day,user["user_id"]))
 
     async def get_weather(self) -> dict[str, Any]:
         async with self._lock:
             row=self.conn.execute("SELECT * FROM weather_cache WHERE id=1").fetchone()
             if not row: return {}
-            data=dict(row); data["raw_json"]=json.loads(data.get("raw_json") or "{}"); return data
+            data=dict(row)
+            try:data["raw_json"]=json.loads(data.get("raw_json") or "{}")
+            except (TypeError,json.JSONDecodeError):data["raw_json"]={}
+            return data
 
     async def save_weather(self, data: dict[str, Any]) -> None:
         async with self._lock:
@@ -1510,4 +1766,9 @@ class LifeStore:
                 (data["fetched_at"],data["location_name"],data["latitude"],data["longitude"],
                  data.get("temperature"),data.get("weather_code"),data["description"],json.dumps(data.get("raw_json",{}),ensure_ascii=False)),
             ); self.conn.commit()
+
+    async def clear_weather(self) -> None:
+        async with self._lock:
+            self.conn.execute("DELETE FROM weather_cache WHERE id=1")
+            self.conn.commit()
 

@@ -30,7 +30,9 @@ class MemoryLLM:
 
 class TriggerRecorder:
     def __init__(self):self.calls=[]; self.proactive=self
-    async def trigger(self,**kwargs):self.calls.append(kwargs)
+    async def trigger(self,**kwargs):
+        self.calls.append(kwargs)
+        return {"success":True,"task_id":f"proactive:test:{len(self.calls)}"}
 
 
 class ProactiveContext:
@@ -69,12 +71,15 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_and_fuzzy_dates_are_isolated(self):
         await self.service.observe_message("u1","我的生日是8月15日",self.now)
         await self.service.observe_message("u2","下周三有考试",self.now)
+        await self.service.observe_message("u3","我的生日是2月29日",self.now)
         dates=await self.store.list_important_dates("u1"); candidates=await self.store.list_date_candidates("u2")
         self.assertEqual(len(dates),1); self.assertEqual(dates[0]["recurrence"],"annual")
         self.assertEqual(len(candidates),1); self.assertEqual(candidates[0]["event_name"],"考试")
         self.assertEqual(await self.store.list_important_dates("u2"),[])
         saved=await self.store.confirm_date_candidate(candidates[0]["id"],"u2","2026-07-22",self.now.timestamp())
         self.assertGreater(saved,0); self.assertEqual((await self.store.list_important_dates("u2"))[0]["event_date"],"2026-07-22")
+        leap=await self.store.list_important_dates("u3")
+        self.assertEqual(leap[0]["event_date"],"2000-02-29"); self.assertEqual(leap[0]["recurrence"],"annual")
 
     async def test_skill_growth_uses_evidence_dedup_and_daily_cap(self):
         day="2026-07-12"; now=self.now.timestamp()
@@ -105,6 +110,21 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
         ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
         triggered=await engine.patrol(now,await self.store.get_state())
         self.assertTrue(triggered); self.assertEqual(ctx.maisaka.calls[0]["stream_id"],"stream-2")
+
+    async def test_pending_proactive_prevents_quota_race_until_expiry(self):
+        profile=UserProfile(user_id="u1",role="owner",proactive_enabled=True)
+        await self.store.sync_users([profile]); await self.store.set_user_stream("u1","stream-1")
+        now=self.now.replace(hour=10)
+        for index in range(2):
+            await self.store.add_opportunity({"id":f"op-{index}","framework_id":"f","topic":f"话题{index}",
+                "motive":"分享","weight":0.9-index*0.1,"privacy":"normal","expires_at":now.timestamp()+3600})
+        ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
+        self.assertTrue(await engine.patrol(now,await self.store.get_state()))
+        self.assertFalse(await engine.patrol(now+timedelta(minutes=1),await self.store.get_state()))
+        self.assertEqual(len(ctx.maisaka.calls),1)
+        self.store.conn.execute("UPDATE proactive_events SET expires_at=0 WHERE status='pending'"); self.store.conn.commit()
+        self.assertTrue(await engine.patrol(now+timedelta(minutes=20),await self.store.get_state()))
+        self.assertEqual(len(ctx.maisaka.calls),2)
 
 
 if __name__=="__main__":unittest.main()

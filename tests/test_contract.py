@@ -13,11 +13,13 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.5.0")
+        self.assertEqual(config.plugin.config_version,"1.5.1")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.proactive.daily_max_per_user,2)
         self.assertFalse(config.rest_gate.enabled)
         self.assertTrue(config.debounce.enabled)
+        self.assertEqual(config.context.prompt_max_chars,4000)
+        self.assertEqual(config.models.scene_detail_task,"")
         self.assertEqual(config.models.vision_task,"vlm")
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
@@ -48,7 +50,7 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","get_life_state","get_current_scene"}:
+        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
             self.assertIn(expected,names)
         hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
         self.assertIn("chat.receive.before_process",hooks)
@@ -56,6 +58,11 @@ class ContractTests(unittest.TestCase):
         self.assertIn("send_service.after_send",hooks)
         self.assertIn("send_service.before_send",hooks)
         self.assertGreaterEqual(len(components),20)
+        private_api=next(item for item in components if item.get("name")=="admin_snapshot")
+        self.assertFalse((private_api.get("metadata") or {}).get("public"))
+        home_card=next(item for item in components if item.get("name")=="mai_life_management")
+        self.assertEqual(home_card.get("type"),"HOME_CARD")
+        self.assertTrue(str((home_card.get("metadata") or {}).get("link_url")).startswith("/plugin-config"))
 
     def test_all_webui_fields_have_translated_labels(self):
         schema=MaiLifePlugin.build_config_schema(plugin_id="maibot-community.mai-life",plugin_name="麦麦生活")
@@ -81,17 +88,34 @@ class ContractTests(unittest.TestCase):
         self.assertIn("只有“当前真实场景”",text)
         self.assertEqual(relationship_stage(45),"熟悉")
 
+    def test_planner_context_is_injected_into_messages_contract(self):
+        messages=[{"role":"system","content":"原系统提示"},{"role":"user","content":"当前消息"}]
+        result=MaiLifePlugin._planner_messages_with_context(messages,"\n【麦麦生活】背景")
+        self.assertIn("【麦麦生活】",result[0]["content"])
+        self.assertEqual(result[1],messages[1]); self.assertNotIn("【麦麦生活】",messages[0]["content"])
+
     def test_only_one_owner_is_allowed(self):
         from pydantic import ValidationError
         with self.assertRaises(ValidationError):
             MaiLifeSettings.model_validate({"users":{"profiles":[
                 {"user_id":"1","role":"owner"},{"user_id":"2","role":"owner"},
             ]}})
+        with self.assertRaises(ValidationError):
+            MaiLifeSettings.model_validate({"users":{"profiles":[
+                {"user_id":"1","role":"owner"},{"user_id":"1","role":"friend"},
+            ]}})
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.5.0")
+        self.assertEqual(config.plugin.config_version,"1.5.1")
         self.assertTrue(config.debounce.enabled)
+
+    def test_invalid_rest_windows_restore_each_field_default(self):
+        config=MaiLifeSettings.model_validate({"rest_gate":{
+            "night_start":"bad","night_end":"8:00","nap_start":"25:00","nap_end":"",
+        }})
+        self.assertEqual((config.rest_gate.night_start,config.rest_gate.night_end),("22:30","08:00"))
+        self.assertEqual((config.rest_gate.nap_start,config.rest_gate.nap_end),("12:00","14:30"))
 
     def test_friend_memory_prompt_excludes_private_diary(self):
         text=PromptBuilder().replyer(

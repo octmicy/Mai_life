@@ -38,7 +38,9 @@ class DummyChat:
 
 class DummyProactive:
     def __init__(self):self.calls=[]
-    async def trigger(self,**kwargs):self.calls.append(kwargs); return True
+    async def trigger(self,**kwargs):
+        self.calls.append(kwargs)
+        return {"success":True,"task_id":f"proactive:test:{len(self.calls)}"}
 
 
 class DummyMaisaka:
@@ -47,6 +49,22 @@ class DummyMaisaka:
 
 class DummyContext:
     def __init__(self):self.chat=DummyChat(); self.maisaka=DummyMaisaka()
+
+
+class TaskProactive(DummyProactive):
+    async def trigger(self,**kwargs):
+        self.calls.append(kwargs)
+        return {"success":True,"task_id":f"proactive:test:{len(self.calls)}"}
+
+
+class FailedProactive(DummyProactive):
+    async def trigger(self,**kwargs):
+        self.calls.append(kwargs); return {"success":False,"error":"stream unavailable"}
+
+
+class MissingTaskProactive(DummyProactive):
+    async def trigger(self,**kwargs):
+        self.calls.append(kwargs); return {"success":True}
 
 
 def group_message(mid:str,text:str,adapter:str,user_id:str="other",group_id:str="100"):
@@ -138,16 +156,17 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         for adapter in SUPPORTED_ADAPTERS:
             result=await relay.trigger_explicit("朋友群",f"请转述 {adapter}","小明")
             self.assertTrue(result["success"])
+            task_id=f"proactive:test:{len(self.ctx.maisaka.proactive.calls)}"
             message=group_message(f"out-{adapter}","准备发送",adapter)
             message["raw_message"]=[{"type":"text","data":"测试转述"}]
-            mutated,reserved=await relay.mutate_before_send(message)
+            mutated,reserved=await relay.mutate_before_send(message,task_id)
             self.assertTrue(reserved); self.assertEqual(adapter_name(mutated),adapter)
             at=mutated["raw_message"][0]
             self.assertEqual(at["type"],"at"); self.assertEqual(at["data"]["target_user_id"],"200")
             encoded.append(at)
             # 原子 sending 状态确保同一回复的后续 Host 分段不会重复 @。
             later=dict(message); later["raw_message"]=[{"type":"text","data":"第二段"}]
-            _later,reserved_again=await relay.mutate_before_send(later)
+            _later,reserved_again=await relay.mutate_before_send(later,task_id)
             self.assertFalse(reserved_again)
             self.assertTrue(await relay.confirm_after_send(mutated,True))
         self.assertEqual(encoded[0],encoded[1])
@@ -182,6 +201,57 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
                          {first["relay_id"]:"superseded",second["relay_id"]:"pending"})
         context=await relay.prompt_context(second["stream_id"])
         self.assertIn("新转述",context); self.assertNotIn("旧转述",context)
+
+    async def test_host_task_id_prevents_superseded_relay_mismatch(self):
+        self.ctx.maisaka.proactive=TaskProactive(); relay=RelayService(self.ctx,self.store,self.config,DummyLogger())
+        first=await relay.trigger_explicit("朋友群","旧转述","小明")
+        second=await relay.trigger_explicit("朋友群","新转述","小明")
+        old_message=group_message("old","旧回复","napcat")
+        self.assertTrue(await relay.should_abort_send(old_message,"proactive:test:1"))
+        new_message=group_message("new","新回复","snowluma")
+        self.assertFalse(await relay.should_abort_send(new_message,"proactive:test:2"))
+        mutated,reserved=await relay.mutate_before_send(new_message,"proactive:test:2")
+        self.assertTrue(reserved); self.assertEqual(mutated["raw_message"][0]["type"],"at")
+        self.assertTrue(await relay.confirm_after_send(mutated,True))
+        statuses={row[0]:row[1] for row in self.store.conn.execute(
+            "SELECT id,status FROM relay_candidates WHERE id IN (?,?)",(first["relay_id"],second["relay_id"]))}
+        self.assertEqual(statuses[first["relay_id"]],"superseded")
+        self.assertEqual(statuses[second["relay_id"]],"sent")
+
+    async def test_failed_host_trigger_marks_relay_failed(self):
+        self.ctx.maisaka.proactive=FailedProactive(); relay=RelayService(self.ctx,self.store,self.config,DummyLogger())
+        result=await relay.trigger_explicit("朋友群","无法触发的转述")
+        self.assertFalse(result["success"])
+        status=self.store.conn.execute("SELECT status FROM relay_candidates ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+        self.assertEqual(status,"failed")
+
+    async def test_host_trigger_without_task_id_is_rejected(self):
+        self.ctx.maisaka.proactive=MissingTaskProactive(); relay=RelayService(self.ctx,self.store,self.config,DummyLogger())
+        result=await relay.trigger_explicit("朋友群","缺少任务号")
+        self.assertFalse(result["success"])
+        status=self.store.conn.execute("SELECT status FROM relay_candidates ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+        self.assertEqual(status,"failed")
+
+    async def test_expired_relay_task_is_aborted_before_adapter_send(self):
+        relay=RelayService(self.ctx,self.store,self.config,DummyLogger())
+        result=await relay.trigger_explicit("朋友群","过期转述")
+        self.store.conn.execute("UPDATE relay_candidates SET expires_at=0 WHERE id=?",(result["relay_id"],))
+        self.store.conn.commit()
+        message=group_message("late","迟到回复","napcat")
+        self.assertTrue(await relay.should_abort_send(message,"proactive:test:1"))
+        status=self.store.conn.execute("SELECT status FROM relay_candidates WHERE id=?",(result["relay_id"],)).fetchone()[0]
+        self.assertEqual(status,"expired")
+
+    async def test_failed_inflight_relay_keeps_newer_terminal_status(self):
+        relay=RelayService(self.ctx,self.store,self.config,DummyLogger())
+        result=await relay.trigger_explicit("朋友群","在途转述","小明")
+        message=group_message("out","准备发送","snowluma")
+        mutated,reserved=await relay.mutate_before_send(message,"proactive:test:1")
+        self.assertTrue(reserved)
+        await self.store.set_relay_status(result["relay_id"],"cancelled",0,"hot_disable")
+        self.assertTrue(await relay.confirm_after_send(mutated,False))
+        status=self.store.conn.execute("SELECT status FROM relay_candidates WHERE id=?",(result["relay_id"],)).fetchone()[0]
+        self.assertEqual(status,"cancelled")
 
 
 if __name__=="__main__":unittest.main()

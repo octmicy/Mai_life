@@ -2,8 +2,8 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-    "version":  "1.3.0",
-    "description":  "让麦麦拥有持续生活状态、生活记忆、联网见闻和更自然的主动交流",
+    "version":  "1.4.0",
+    "description":  "让麦麦拥有持续生活状态、生活记忆、联网见闻和有边界的社交转述",
     "author":  {
                    "name":  "octmicy",
                    "url":  "https://github.com/octmicy/Mai_life"
@@ -25,6 +25,9 @@
                          "send.text",
                          "chat.get_stream_by_user_id",
                          "chat.get_private_streams",
+                         "chat.get_stream_by_group_id",
+                         "chat.get_group_streams",
+                         "chat.open_session",
                          "llm.generate",
                          "llm.get_available_models",
                          "message.get_by_id",

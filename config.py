@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.3.0"
+CONFIG_SCHEMA_VERSION = "1.4.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -192,6 +192,15 @@ class UserProfile(PluginConfigBase):
             label_en="Quiet Hours End", hint_en="Proactive messaging resumes after this time. HH:MM format.", placeholder="08:00",
         ),
     )
+    group_to_private_enabled: bool = Field(
+        default=False,
+        description="是否允许把白名单群聊中的公开话题低频转述给该用户。",
+        json_schema_extra=_ui(
+            "允许群聊转私聊", "朋友默认关闭；主人还需启用“社交转述”中的主人群转私开关。", 9,
+            label_en="Allow Group-to-private Sharing",
+            hint_en="Disabled for friends by default. Owner sharing also requires the social relay owner switch.",
+        ),
+    )
 
     @field_validator("user_id", mode="before")
     @classmethod
@@ -226,13 +235,124 @@ class UsersSettings(PluginConfigBase):
             label_en="Private User Profiles", hint_en="Life state is global while relationship, quota and quiet hours are per user.",
         ),
     )
-
     @model_validator(mode="after")
     def only_one_owner(self) -> "UsersSettings":
         owners = [profile.user_id for profile in self.profiles if profile.enabled and profile.role == "owner"]
         if len(owners) > 1:
             raise ValueError("私聊用户中最多只能配置一个主人")
         return self
+
+
+class SocialGroupProfile(PluginConfigBase):
+    """社交观察和转述使用的 QQ 群白名单。"""
+
+    __ui_label__: ClassVar[str] = "群聊白名单"
+
+    group_id: str = Field(
+        default="", description="QQ 群号。",
+        json_schema_extra=_ui("QQ群号", "SnowLuma 与 NapCat 均填写真实 QQ 群号字符串。", 0,
+                              label_en="QQ Group ID", hint_en="Real QQ group ID used by both SnowLuma and NapCat.",
+                              placeholder="123456789"),
+    )
+    alias: str = Field(
+        default="", description="命令中使用的唯一群别名。",
+        json_schema_extra=_ui("群别名", "用于 /mai_relay，建议使用简短且唯一的名称。", 1,
+                              label_en="Group Alias", hint_en="Unique short name used by /mai_relay.", placeholder="朋友群"),
+    )
+    display_name: str = Field(
+        default="", description="群聊显示名称。",
+        json_schema_extra=_ui("群显示名", "可留空；仅用于状态和转述背景。", 2,
+                              label_en="Group Display Name", hint_en="Optional label used in status and relay context."),
+    )
+    enabled: bool = Field(
+        default=True, description="是否启用该群配置。",
+        json_schema_extra=_ui("启用群配置", "关闭后该群既不观察也不作为转述目标。", 3,
+                              label_en="Enable Group", hint_en="Disable all observation and relay behavior for this group."),
+    )
+    observe_enabled: bool = Field(
+        default=False, description="是否观察该群的公开话题。",
+        json_schema_extra=_ui("允许观察公开话题", "只保存短摘要，不保存群聊原文。", 4,
+                              label_en="Observe Public Topics", hint_en="Store short summaries only, never raw group messages."),
+    )
+    relay_target_enabled: bool = Field(
+        default=False, description="是否允许管理员向该群发起显式转述。",
+        json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /mai_relay 触发该群 Planner。", 5,
+                              label_en="Allow Relay Target", hint_en="Allow owner/admin /mai_relay triggers for this group."),
+    )
+
+    @field_validator("group_id", "alias", "display_name", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class SocialRelationProfile(PluginConfigBase):
+    """可被显式 @ 的群友关系词条。"""
+
+    __ui_label__: ClassVar[str] = "群友关系词条"
+
+    group_alias: str = Field(default="", description="群友所属群别名。",
+        json_schema_extra=_ui("所属群别名", "必须与群聊白名单中的群别名完全一致。", 0,
+                              label_en="Group Alias", hint_en="Must exactly match a configured group alias."))
+    alias: str = Field(default="", description="命令中使用的关系别名。",
+        json_schema_extra=_ui("群友别名", "例如“小明”；同一群内必须唯一。", 1,
+                              label_en="Member Alias", hint_en="Must be unique within the configured group."))
+    user_id: str = Field(default="", description="群友 QQ 号。",
+        json_schema_extra=_ui("群友QQ号", "用于生成 Host 标准 @ 消息段，不依赖适配器私有格式。", 2,
+                              label_en="Member QQ ID", hint_en="Used to build a standard Host mention component.",
+                              placeholder="123456789"))
+    display_name: str = Field(default="", description="群友显示名。",
+        json_schema_extra=_ui("群友显示名", "可留空；用于 Planner 理解转述对象。", 3,
+                              label_en="Member Display Name", hint_en="Optional name supplied to the Planner."))
+
+    @field_validator("group_alias", "alias", "user_id", "display_name", mode="before")
+    @classmethod
+    def normalize_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class SocialSettings(PluginConfigBase):
+    """群聊观察、显式转述和群转私的共同边界。"""
+
+    __ui_label__: ClassVar[str] = "社交转述"
+    __ui_order__: ClassVar[int] = 16
+
+    enabled: bool = Field(default=False, description="社交转述总开关。",
+        json_schema_extra=_ui("启用社交转述", "默认关闭；只处理下方显式配置的 QQ 群。", 0,
+                              label_en="Enable Social Relay", hint_en="Disabled by default and limited to configured QQ groups."))
+    owner_group_to_private_enabled: bool = Field(default=True, description="允许向主人低频分享群聊公开话题。",
+        json_schema_extra=_ui("允许向主人群转私", "仍需群观察开启、已知主人离群至少指定时长，并遵守主动额度。", 1,
+                              label_en="Share Group Topics with Owner", hint_en="Requires observation, inactivity proof and proactive quota."))
+    observation_wait_seconds: float = Field(default=3.0, ge=0.5, le=20, description="群聊话题收口等待。",
+        json_schema_extra=_ui("群话题等待（秒）", "使用独立群缓冲，不复用私聊防抖参数。", 2,
+                              label_en="Group Topic Wait (sec)", hint_en="Uses a separate group buffer from private debounce."))
+    max_buffer_messages: int = Field(default=20, ge=2, le=100, description="单个群话题最多暂存消息数。",
+        json_schema_extra=_ui("群缓冲消息上限", "只在内存中短暂保留，入库前会整理成摘要。", 3,
+                              label_en="Group Buffer Limit", hint_en="Kept briefly in memory and summarized before storage."))
+    inactivity_hours: float = Field(default=6.0, ge=1, le=168, description="群转私前用户需离群的最短时间。",
+        json_schema_extra=_ui("离群时长（小时）", "无已知群活跃记录时不推断用户离群，避免误打扰。", 4,
+                              label_en="Group Inactivity (hours)", hint_en="Unknown activity is not treated as proven absence."))
+    group_share_daily_max: int = Field(default=1, ge=0, le=5, description="每用户每日群转私候选上限。",
+        json_schema_extra=_ui("每日群转私上限", "该上限同时受用户主动消息总额度约束。", 5,
+                              label_en="Daily Group-share Limit", hint_en="Also constrained by the user's total proactive quota."))
+    group_share_min_interval_minutes: int = Field(default=360, ge=30, le=10080, description="群转私候选最小间隔。",
+        json_schema_extra=_ui("群转私最小间隔（分钟）", "默认 6 小时，避免连续搬运群话题。", 6,
+                              label_en="Group-share Interval (min)", hint_en="Default six hours to avoid repeated topic relays."))
+    interesting_threshold: float = Field(default=0.65, ge=0, le=1, description="公开话题进入群转私候选的最低分。",
+        json_schema_extra=_ui("公开话题阈值", "越高越克制；模型不可用时使用保守本地规则。", 7,
+                              label_en="Public Topic Threshold", hint_en="Higher is more conservative; local fallback is used without a model."))
+    summary_retention_hours: int = Field(default=72, ge=1, le=720, description="群聊短摘要保留时长。",
+        json_schema_extra=_ui("群摘要保留（小时）", "到期自动删除，不保存群聊原文。", 8,
+                              label_en="Group Summary Retention", hint_en="Expired summaries are deleted; raw messages are never stored."))
+    relay_pending_seconds: int = Field(default=120, ge=30, le=600, description="显式转述与发送关联窗口。",
+        json_schema_extra=_ui("转述确认窗口（秒）", "Planner 沉默或超时不会记为已发送。", 9,
+                              label_en="Relay Confirmation Window", hint_en="Planner silence or expiry is not counted as sent."))
+    groups: list[SocialGroupProfile] = Field(default_factory=list, description="QQ群白名单。",
+        json_schema_extra=_ui("群聊白名单", "分别控制观察来源与显式转述目标。", 10,
+                              label_en="Group Allowlist", hint_en="Controls observation sources and explicit relay targets."))
+    relations: list[SocialRelationProfile] = Field(default_factory=list, description="可解析的群友关系词条。",
+        json_schema_extra=_ui("群友关系词条", "只有唯一匹配时才会生成真实 @。", 11,
+                              label_en="Member Relations", hint_en="A real mention is built only for an unambiguous match."))
 
 
 class EnvironmentSettings(PluginConfigBase):
@@ -669,6 +789,8 @@ class ModelRoutingSettings(PluginConfigBase):
     news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 12, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
     search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 13, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
     relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 14, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
+    group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务覆盖", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
+    relay_summary_task: str = Field(default="", description="群聊短摘要任务覆盖。", json_schema_extra=_ui("群转述摘要任务覆盖", "留空继承快速任务。", 16, label_en="Relay Summary Override", hint_en="Leave empty to inherit fast task."))
 
 
 class UsageSettings(PluginConfigBase):
@@ -858,4 +980,9 @@ class MaiLifeSettings(PluginConfigBase):
     search: SearchSettings = Field(
         default_factory=SearchSettings,
         json_schema_extra=_ui("主动搜索", "自建 SearXNG 或通用 JSON 搜索接口。", 15,label_en="Proactive Search",hint_en="Self-hosted SearXNG or generic JSON search."),
+    )
+    social: SocialSettings = Field(
+        default_factory=SocialSettings,
+        json_schema_extra=_ui("社交转述", "群聊白名单、群友关系和群转私边界。", 16,
+                              label_en="Social Relay", hint_en="Group allowlists, member relations and group-to-private boundaries."),
     )

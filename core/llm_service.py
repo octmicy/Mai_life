@@ -37,6 +37,8 @@ class LLMService:
             "news": models.news_task or models.fast_task,
             "search": models.search_task or models.reasoning_task,
             "relevance": models.relevance_task or models.reasoning_task,
+            "group_judgment": models.group_judgment_task or models.fast_task,
+            "relay_summary": models.relay_summary_task or models.fast_task,
         }
         return str(routes.get(kind) or models.reasoning_task or "planner").strip()
 

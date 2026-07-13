@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class LifeStore:
@@ -253,12 +253,49 @@ class LifeStore:
               next_retry_at REAL NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
               etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS group_observations(
+              id TEXT PRIMARY KEY, group_id TEXT NOT NULL, group_alias TEXT NOT NULL,
+              topic TEXT NOT NULL, summary TEXT NOT NULL, interest_score REAL NOT NULL DEFAULT 0,
+              source_adapter TEXT NOT NULL DEFAULT 'unknown', created_at REAL NOT NULL,
+              expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_observation_time
+              ON group_observations(group_id,created_at);
+            CREATE TABLE IF NOT EXISTS relationship_entries(
+              group_alias TEXT NOT NULL, alias TEXT NOT NULL, user_id TEXT NOT NULL,
+              display_name TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
+              PRIMARY KEY(group_alias,alias,user_id)
+            );
+            CREATE TABLE IF NOT EXISTS group_user_activity(
+              group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+              display_name TEXT NOT NULL DEFAULT '', last_active_at REAL NOT NULL,
+              PRIMARY KEY(group_id,user_id)
+            );
+            CREATE TABLE IF NOT EXISTS relay_candidates(
+              id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+              opportunity_id TEXT NOT NULL DEFAULT '',
+              source_observation_id TEXT NOT NULL DEFAULT '', source_group_id TEXT NOT NULL DEFAULT '',
+              target_group_id TEXT NOT NULL DEFAULT '', target_user_id TEXT NOT NULL DEFAULT '',
+              target_stream_id TEXT NOT NULL, summary TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+              mention_user_id TEXT NOT NULL DEFAULT '', mention_name TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
+              sent_at REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_relay_pending
+              ON relay_candidates(target_stream_id,status,expires_at);
+            CREATE INDEX IF NOT EXISTS idx_relay_user_time
+              ON relay_candidates(target_user_id,kind,created_at);
+            CREATE TABLE IF NOT EXISTS relay_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, relay_id TEXT NOT NULL,
+              status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+            );
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
         self._ensure_column("users", "role", "TEXT NOT NULL DEFAULT 'friend'")
         self._ensure_column("users", "daily_proactive_max", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("proactive_opportunities", "target_user_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("relay_candidates", "opportunity_id", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),
@@ -571,7 +608,7 @@ class LifeStore:
         async with self._lock:
             # 普通被动回复没有 pending 记录，只读查询不会创建 SQLite journal。
             row=self.conn.execute(
-                "SELECT id,user_id FROM proactive_events WHERE stream_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id,user_id,opportunity_id FROM proactive_events WHERE stream_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
                 (stream_id,now),
             ).fetchone()
             if not row:
@@ -584,6 +621,14 @@ class LifeStore:
                     conn.execute("UPDATE users SET proactive_count=proactive_count+1,last_proactive_at=? WHERE user_id=?",(now,row[1]))
                 else:
                     conn.execute("UPDATE users SET proactive_day=?,proactive_count=1,last_proactive_at=? WHERE user_id=?",(day,now,row[1]))
+                relay=conn.execute(
+                    "SELECT id FROM relay_candidates WHERE opportunity_id=? AND kind='group_to_private' AND status='queued'",
+                    (row[2],),
+                ).fetchone()
+                if relay:
+                    conn.execute("UPDATE relay_candidates SET status='sent',sent_at=? WHERE id=?",(now,relay[0]))
+                    conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                                 (relay[0],"sent","proactive_after_send",now))
                 return True
 
     async def expire_pending(self, now: float) -> None:
@@ -664,6 +709,153 @@ class LifeStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def sync_relationship_entries(self, profiles: list[Any]) -> None:
+        """把 WebUI 关系词条同步到 SQLite，热更新时不会留下已删除别名。"""
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM relationship_entries")
+                now=time.time()
+                for profile in profiles:
+                    group_alias=str(getattr(profile,"group_alias","") or "").strip()
+                    alias=str(getattr(profile,"alias","") or "").strip()
+                    user_id=str(getattr(profile,"user_id","") or "").strip()
+                    if not group_alias or not alias or not user_id:continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO relationship_entries
+                        (group_alias,alias,user_id,display_name,updated_at) VALUES(?,?,?,?,?)""",
+                        (group_alias,alias,user_id,str(getattr(profile,"display_name","") or "")[:120],now),
+                    )
+
+    async def record_group_activity(self, group_id: str, user_id: str, display_name: str, now: float) -> None:
+        if not group_id or not user_id:return
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO group_user_activity(group_id,user_id,display_name,last_active_at)
+                VALUES(?,?,?,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
+                display_name=excluded.display_name,last_active_at=excluded.last_active_at""",
+                (group_id,user_id,display_name[:120],now),
+            )
+            self.conn.commit()
+
+    async def get_group_activity(self, group_id: str, user_id: str) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM group_user_activity WHERE group_id=? AND user_id=?",(group_id,user_id)
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def save_group_observation(self, item: dict[str, Any]) -> bool:
+        """群聊原文不会传入存储层，只接受长度受限的公开话题摘要。"""
+        async with self._lock:
+            cursor=self.conn.execute(
+                """INSERT OR IGNORE INTO group_observations
+                (id,group_id,group_alias,topic,summary,interest_score,source_adapter,created_at,expires_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (item["id"],item["group_id"],item["group_alias"],item["topic"][:240],item["summary"][:1200],
+                 max(0,min(1,float(item.get("interest_score") or 0))),item.get("source_adapter","unknown")[:32],
+                 float(item["created_at"]),float(item["expires_at"])),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def recent_group_observations(self, now: float, limit: int=10) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM group_observations WHERE expires_at>?
+                ORDER BY created_at DESC LIMIT ?""",(now,max(1,min(100,int(limit))))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def create_relay_candidate(self, item: dict[str, Any]) -> bool:
+        async with self._lock:
+            with self._tx() as conn:
+                if item["kind"]=="explicit":
+                    sending=conn.execute(
+                        """SELECT 1 FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
+                        AND status='sending' AND expires_at>? LIMIT 1""",
+                        (item.get("target_stream_id",""),float(item["created_at"])),
+                    ).fetchone()
+                    if sending:return False
+                    stale=conn.execute(
+                        """SELECT id FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
+                        AND status='pending' AND expires_at>?""",
+                        (item.get("target_stream_id",""),float(item["created_at"])),
+                    ).fetchall()
+                    conn.execute(
+                        """UPDATE relay_candidates SET status='superseded' WHERE target_stream_id=?
+                        AND kind='explicit' AND status='pending'""",(item.get("target_stream_id",""),)
+                    )
+                    conn.executemany(
+                        "INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,'superseded','newer_relay',?)",
+                        [(row[0],float(item["created_at"])) for row in stale],
+                    )
+                cursor=conn.execute(
+                    """INSERT OR IGNORE INTO relay_candidates
+                    (id,kind,opportunity_id,source_observation_id,source_group_id,target_group_id,target_user_id,target_stream_id,
+                     summary,reason,mention_user_id,mention_name,status,created_at,expires_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (item["id"],item["kind"],item.get("opportunity_id","")[:80],item.get("source_observation_id","")[:80],item.get("source_group_id","")[:80],
+                     item.get("target_group_id","")[:80],item.get("target_user_id","")[:80],item.get("target_stream_id","")[:160],
+                     item.get("summary","")[:1200],item.get("reason","")[:1200],item.get("mention_user_id","")[:80],
+                     item.get("mention_name","")[:120],item.get("status","pending")[:24],float(item["created_at"]),
+                     float(item["expires_at"])),
+                )
+                if cursor.rowcount:
+                    conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                                 (item["id"],item.get("status","pending"),"created",float(item["created_at"])))
+                return cursor.rowcount==1
+
+    async def pending_relay_context(self, stream_id: str, now: float) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT * FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
+                AND status IN ('pending','sending') AND expires_at>?
+                ORDER BY created_at DESC LIMIT 1""",(stream_id,now)
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def reserve_relay_for_send(self, stream_id: str, now: float) -> dict[str, Any]:
+        """发送前原子占用一次 @；Host 正常分段时只有第一段会命中。"""
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute(
+                    """SELECT * FROM relay_candidates WHERE target_stream_id=? AND kind='explicit'
+                    AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1""",(stream_id,now)
+                ).fetchone()
+                if not row:return {}
+                changed=conn.execute("UPDATE relay_candidates SET status='sending' WHERE id=? AND status='pending'",
+                                     (row["id"],)).rowcount
+                if not changed:return {}
+                conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                             (row["id"],"sending","before_send",now))
+                return dict(row)
+
+    async def finish_relay_send(self, relay_id: str, sent: bool, now: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute("SELECT expires_at FROM relay_candidates WHERE id=?",(relay_id,)).fetchone()
+                if not row:return
+                status="sent" if sent else ("pending" if float(row[0])>now else "expired")
+                conn.execute("UPDATE relay_candidates SET status=?,sent_at=? WHERE id=?",
+                             (status,now if sent else 0,relay_id))
+                conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                             (relay_id,status,"after_send",now))
+
+    async def set_relay_status(self, relay_id: str, status: str, now: float, detail: str="") -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("UPDATE relay_candidates SET status=? WHERE id=?",(status[:24],relay_id))
+                conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                             (relay_id,status[:24],detail[:300],now))
+
+    async def social_share_stats(self, user_id: str, since: float) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT COUNT(*) count,MAX(created_at) last_at FROM relay_candidates
+                WHERE target_user_id=? AND kind='group_to_private' AND created_at>=?
+                AND status IN ('queued','sent')""",(user_id,since)
+            ).fetchone()
+            return {"count":int(row[0] or 0),"last_at":float(row[1] or 0)} if row else {"count":0,"last_at":0}
+
     async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
         async with self._lock:
             with self._tx() as conn:
@@ -671,6 +863,8 @@ class LifeStore:
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
+                conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
+                conn.execute("UPDATE relay_candidates SET status='expired' WHERE expires_at<=? AND status IN ('pending','sending','queued')",(now,))
 
     async def record_llm_usage(self, *, created_at: float, source: str, task_name: str, model_name: str,
                                request_type: str, prompt_tokens: int, completion_tokens: int,

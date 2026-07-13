@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.3.0"
+config_version = "1.4.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -64,6 +64,9 @@ initial_temperature = 30
 # 该用户的主动消息免打扰时段，支持跨午夜。
 quiet_start = "00:00"
 quiet_end = "08:00"
+
+# 是否允许把白名单群聊中的公开话题低频转述到该用户私聊。朋友默认关闭。
+group_to_private_enabled = false
 
 # 第二个用户示例：取消下面注释后填写。
 # [[users.profiles]]
@@ -200,6 +203,8 @@ skill_task = ""
 news_task = ""
 search_task = ""
 relevance_task = ""
+group_judgment_task = ""
+relay_summary_task = ""
 
 
 [usage]
@@ -294,3 +299,32 @@ include_chat_topics = false
 interest_keywords = ["科技", "创作", "游戏", "生活方式"]
 allowed_schedule_types = ["leisure", "rest"]
 note_retention_days = 30
+
+
+[social]
+# 社交能力默认关闭。SnowLuma 与 NapCat 都填写真实 QQ 群号，不填写适配器内部 ID。
+enabled = false
+owner_group_to_private_enabled = true
+observation_wait_seconds = 3.0
+max_buffer_messages = 20
+inactivity_hours = 6.0
+group_share_daily_max = 1
+group_share_min_interval_minutes = 360
+interesting_threshold = 0.65
+summary_retention_hours = 72
+relay_pending_seconds = 120
+
+# 群聊和群友关系建议在 WebUI 添加。手动配置示例：
+# [[social.groups]]
+# group_id = "123456789"
+# alias = "朋友群"
+# display_name = "朋友群"
+# enabled = true
+# observe_enabled = true
+# relay_target_enabled = true
+#
+# [[social.relations]]
+# group_alias = "朋友群"
+# alias = "小明"
+# user_id = "987654321"
+# display_name = "小明"

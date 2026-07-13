@@ -9,9 +9,9 @@ import re
 from typing import Any, ClassVar, Literal
 
 from maibot_sdk import Field, PluginConfigBase
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.0.2"
+CONFIG_SCHEMA_VERSION = "1.1.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -84,13 +84,12 @@ class PluginSettings(PluginConfigBase):
             label_en="Enable Mai Life", hint_en="Keep data but stop simulation and proactive behavior when disabled.",
         ),
     )
-    llm_model: Literal["reply", "planner", "utils"] = Field(
+    llm_model: str = Field(
         default="planner",
-        description="生成日程、场景和梦境时使用的 MaiBot 模型类型。",
+        description="旧版生活生成任务名；新配置优先使用“模型与成本编排”。",
         json_schema_extra=_ui(
-            "生活生成模型", "planner 最均衡；reply 语言更自然；utils 成本通常更低。", 1,
+            "兼容生活生成任务", "保留用于兼容旧配置；建议在“模型与成本编排”中设置。", 1,
             label_en="Life Generation Model", hint_en="Model used for schedules, scenes and dreams.",
-            enum_labels={"reply": "回复模型（reply）", "planner": "规划模型（planner）", "utils": "工具模型（utils）"},
         ),
     )
     admin_user_ids: list[str] = Field(
@@ -102,6 +101,13 @@ class PluginSettings(PluginConfigBase):
             placeholder="123456789",
         ),
     )
+
+    @field_validator("config_version", mode="before")
+    @classmethod
+    def normalize_config_version(cls, value: Any) -> str:
+        # 只校正框架必需的版本号，其他旧配置值仍由 SDK 默认补齐，不重写用户资料。
+        del value
+        return CONFIG_SCHEMA_VERSION
 
 
 class UserProfile(PluginConfigBase):
@@ -136,11 +142,29 @@ class UserProfile(PluginConfigBase):
             label_en="Allow Proactive Chat", hint_en="Passive chat remains available, but Mai will not proactively message this user.",
         ),
     )
+
+    role: Literal["owner", "friend"] = Field(
+        default="friend",
+        description="该私聊用户在麦麦关系中的权限角色。",
+        json_schema_extra=_ui(
+            "关系角色", "最多只能有一个主人；朋友不会获得主人专属上下文和敏感能力。", 3,
+            label_en="Relationship Role", hint_en="At most one owner is allowed. Friends never receive owner-only context.",
+            enum_labels={"owner": "主人（owner）", "friend": "朋友（friend）"},
+        ),
+    )
+    daily_proactive_max: int = Field(
+        default=-1, ge=-1, le=20,
+        description="该用户每日主动消息上限；-1 按角色自动取值。",
+        json_schema_extra=_ui(
+            "用户每日主动上限", "-1 表示主人 2 次、朋友 1 次；0 表示禁止主动消息。", 4,
+            label_en="Per-user Daily Proactive Limit", hint_en="-1 uses role defaults: owner 2, friend 1. Set 0 to disable.",
+        ),
+    )
     display_name: str = Field(
         default="",
         description="麦麦用于识别该用户的称呼。",
         json_schema_extra=_ui(
-            "用户称呼", "可留空；填写后用于状态面板和后续个性化上下文。", 3,
+            "用户称呼", "可留空；填写后用于状态面板和后续个性化上下文。", 5,
             label_en="Display Name", hint_en="Optional name used in status and personalized context.", placeholder="例如：小明",
         ),
     )
@@ -148,7 +172,7 @@ class UserProfile(PluginConfigBase):
         default=30, ge=0, le=100,
         description="首次创建用户档案时使用的关系温度。",
         json_schema_extra=_ui(
-            "初始关系温度", "仅首次创建档案时使用。30 表示“认识”，不会自动进入恋爱语气。", 4,
+            "初始关系温度", "仅首次创建档案时使用。30 表示“认识”，不会自动进入恋爱语气。", 6,
             label_en="Initial Relationship Temperature", hint_en="Used only when the profile is first created. Default 30 means acquaintance.",
         ),
     )
@@ -156,7 +180,7 @@ class UserProfile(PluginConfigBase):
         default="00:00",
         description="该用户免打扰时段开始时间。",
         json_schema_extra=_ui(
-            "免打扰开始", "此时间后不向该用户主动发消息，支持跨午夜时段。格式 HH:MM。", 5,
+            "免打扰开始", "此时间后不向该用户主动发消息，支持跨午夜时段。格式 HH:MM。", 7,
             label_en="Quiet Hours Start", hint_en="No proactive messages after this time. HH:MM format.", placeholder="00:00",
         ),
     )
@@ -164,7 +188,7 @@ class UserProfile(PluginConfigBase):
         default="08:00",
         description="该用户免打扰时段结束时间。",
         json_schema_extra=_ui(
-            "免打扰结束", "到达此时间后恢复主动消息。格式 HH:MM。", 6,
+            "免打扰结束", "到达此时间后恢复主动消息。格式 HH:MM。", 8,
             label_en="Quiet Hours End", hint_en="Proactive messaging resumes after this time. HH:MM format.", placeholder="08:00",
         ),
     )
@@ -202,6 +226,13 @@ class UsersSettings(PluginConfigBase):
             label_en="Private User Profiles", hint_en="Life state is global while relationship, quota and quiet hours are per user.",
         ),
     )
+
+    @model_validator(mode="after")
+    def only_one_owner(self) -> "UsersSettings":
+        owners = [profile.user_id for profile in self.profiles if profile.enabled and profile.role == "owner"]
+        if len(owners) > 1:
+            raise ValueError("私聊用户中最多只能配置一个主人")
+        return self
 
 
 class EnvironmentSettings(PluginConfigBase):
@@ -349,6 +380,114 @@ class RestGateSettings(PluginConfigBase):
             enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）"},
         ),
     )
+    night_start: str = Field(
+        default="22:30", description="夜间闸门开始时间。",
+        json_schema_extra=_ui("夜间闸门开始", "默认 22:30，支持跨午夜。", 6, label_en="Night Gate Start", hint_en="Night gate start in HH:MM format."),
+    )
+    night_end: str = Field(
+        default="08:00", description="夜间闸门结束时间。",
+        json_schema_extra=_ui("夜间闸门结束", "默认 08:00。", 7, label_en="Night Gate End", hint_en="Night gate end in HH:MM format."),
+    )
+    nap_start: str = Field(
+        default="12:00", description="午休闸门开始时间。",
+        json_schema_extra=_ui("午休闸门开始", "默认 12:00。", 8, label_en="Nap Gate Start", hint_en="Nap gate start in HH:MM format."),
+    )
+    nap_end: str = Field(
+        default="14:30", description="午休闸门结束时间。",
+        json_schema_extra=_ui("午休闸门结束", "默认 14:30。", 9, label_en="Nap Gate End", hint_en="Nap gate end in HH:MM format."),
+    )
+
+    @field_validator("night_start", "night_end", "nap_start", "nap_end", mode="before")
+    @classmethod
+    def validate_gate_time(cls, value: Any) -> str:
+        return _time(value, "00:00")
+
+
+class ContextSettings(PluginConfigBase):
+    """被动回复增强与朋友边界。"""
+
+    __ui_label__: ClassVar[str] = "被动回复增强"
+    __ui_order__: ClassVar[int] = 5
+
+    enabled: bool = Field(
+        default=True, description="向配置私聊注入生活与关系背景。",
+        json_schema_extra=_ui("启用被动回复增强", "只处理配置的私聊用户，不影响群聊。", 0, label_en="Enable Passive Context", hint_en="Inject context only for configured private users."),
+    )
+    continuity_enabled: bool = Field(
+        default=True, description="维护轻量未完话题元数据。",
+        json_schema_extra=_ui("启用连续话题", "异步整理意图与未完话题，不复制完整聊天记忆。", 1, label_en="Enable Conversation Continuity", hint_en="Maintain lightweight unfinished-topic metadata asynchronously."),
+    )
+    continuity_interval_minutes: int = Field(
+        default=10, ge=1, le=180, description="同一会话整理连续话题的最小间隔。",
+        json_schema_extra=_ui("话题整理间隔（分钟）", "默认 10 分钟，不阻塞当前回复。", 2, label_en="Continuity Update Interval", hint_en="Minimum interval between continuity summaries."),
+    )
+    owner_only_terms: list[str] = Field(
+        default_factory=lambda: ["主人", "老公", "老婆", "亲爱的主人"],
+        description="朋友回复中禁止出现的主人专属称呼。",
+        json_schema_extra=_ui("主人专属称呼", "朋友回复命中后会重生成一次，仍命中则静默。请只填写明确专属词。", 3, label_en="Owner-only Terms", hint_en="Terms forbidden in friend replies."),
+    )
+    prompt_max_chars: int = Field(
+        default=2400, ge=600, le=8000, description="插件追加上下文的最大字符数。",
+        json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
+    )
+
+
+class DebounceSettings(PluginConfigBase):
+    """配置私聊的消息收口参数。"""
+
+    __ui_label__: ClassVar[str] = "消息收口防抖"
+    __ui_order__: ClassVar[int] = 6
+
+    enabled: bool = Field(default=True, description="合并短时间连续补话。", json_schema_extra=_ui("启用私聊收口", "只对配置私聊用户生效。", 0, label_en="Enable Private Debounce", hint_en="Merge rapid follow-up messages for configured private users."))
+    text_wait_seconds: float = Field(default=1.2, ge=0, le=10, description="文本静默窗口。", json_schema_extra=_ui("文本等待（秒）", "默认 1.2 秒。", 1, label_en="Text Wait (sec)", hint_en="Quiet window for text messages."))
+    image_wait_seconds: float = Field(default=3.0, ge=0, le=15, description="单图等待补充说明时间。", json_schema_extra=_ui("单图等待（秒）", "默认 3 秒，便于用户补充图片说明。", 2, label_en="Single-image Wait (sec)", hint_en="Wait for a caption after a standalone image."))
+    forward_wait_seconds: float = Field(default=2.0, ge=0, le=15, description="合并转发等待时间。", json_schema_extra=_ui("合并转发等待（秒）", "默认 2 秒。", 3, label_en="Forward Wait (sec)", hint_en="Quiet window for forwarded messages."))
+    max_wait_seconds: float = Field(default=6.0, ge=0.5, le=30, description="整轮最长等待。", json_schema_extra=_ui("整轮最长等待（秒）", "无论是否继续补话，达到上限都会结束收口。", 4, label_en="Maximum Burst Wait (sec)", hint_en="Hard limit for one debounce burst."))
+    max_messages: int = Field(default=12, ge=2, le=50, description="单轮最多合并消息数。", json_schema_extra=_ui("单轮最大消息数", "超过后立即结束当前轮次。", 5, label_en="Maximum Messages", hint_en="Maximum messages merged into one burst."))
+    max_media_bytes: int = Field(default=8_388_608, ge=262_144, le=33_554_432, description="单轮媒体 Base64 解码后大小上限。", json_schema_extra=_ui("媒体大小上限（字节）", "默认 8 MiB，超出后失败开放。", 6, label_en="Media Size Limit", hint_en="Decoded media size limit for one burst."))
+    outbound_turn_guard: bool = Field(default=True, description="阻止同一消息触发多次独立 Replyer 回复。", json_schema_extra=_ui("启用同轮回复防重", "不影响一次回复内部的正常分段。", 7, label_en="Enable Reply Turn Guard", hint_en="Prevent repeated Replyer responses for the same user message."))
+    turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 8, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
+
+
+class VisionSettings(PluginConfigBase):
+    """疑难图片预摘要设置。"""
+
+    __ui_label__: ClassVar[str] = "图片转述增强"
+    __ui_order__: ClassVar[int] = 7
+
+    enabled: bool = Field(default=True, description="在视觉任务可用时分析疑难图片。", json_schema_extra=_ui("启用疑难图片摘要", "仅处理单图无文字、引用图、转发图和 GIF。", 0, label_en="Enable Difficult-image Summary", hint_en="Pre-summarize standalone, quoted, forwarded and GIF images."))
+    timeout_seconds: float = Field(default=6.0, ge=1, le=30, description="视觉预摘要最长等待。", json_schema_extra=_ui("视觉等待上限（秒）", "超时后立即交回 MaiBot 原生多模态。", 1, label_en="Vision Timeout", hint_en="Fall back to native multimodal after this timeout."))
+    max_images: int = Field(default=6, ge=1, le=16, description="单轮最多分析图片数。", json_schema_extra=_ui("最多分析图片数", "限制合并转发的视觉成本。", 2, label_en="Maximum Images", hint_en="Maximum images analyzed per message."))
+    gif_max_frames: int = Field(default=4, ge=1, le=8, description="动态 GIF 最大抽帧数。", json_schema_extra=_ui("GIF 最大抽帧", "使用可选 Pillow，不依赖 ffmpeg。", 3, label_en="GIF Maximum Frames", hint_en="Maximum GIF frames extracted with optional Pillow."))
+    summary_ttl_hours: int = Field(default=24, ge=1, le=168, description="视觉摘要缓存时间。", json_schema_extra=_ui("摘要缓存（小时）", "只保存哈希与摘要，不保存图片二进制。", 4, label_en="Summary Cache TTL", hint_en="Store hashes and summaries only."))
+    current_pointer_minutes: int = Field(default=30, ge=1, le=240, description="当前图片指针保留时间。", json_schema_extra=_ui("当前图片指针（分钟）", "图片问答优先关联这段时间内的当前图片。", 5, label_en="Current Image Pointer", hint_en="How long an image remains the current conversation image."))
+
+
+class ModelRoutingSettings(PluginConfigBase):
+    """MaiBot 任务路由名，而不是 Provider API Key。"""
+
+    __ui_label__: ClassVar[str] = "模型与成本编排"
+    __ui_order__: ClassVar[int] = 8
+
+    fast_task: str = Field(default="utils", description="快速整理任务名。", json_schema_extra=_ui("快速任务", "默认 utils，用于连续话题等轻量任务。", 0, label_en="Fast Task", hint_en="MaiBot task name for lightweight analysis."))
+    reasoning_task: str = Field(default="planner", description="推理任务名。", json_schema_extra=_ui("推理任务", "默认 planner，用于日程和复杂判断。", 1, label_en="Reasoning Task", hint_en="MaiBot task name for reasoning."))
+    creative_task: str = Field(default="replyer", description="创作任务名。", json_schema_extra=_ui("创作任务", "默认 replyer，用于梦境和叙事文本。", 2, label_en="Creative Task", hint_en="MaiBot task name for narrative generation."))
+    vision_task: str = Field(default="vlm", description="视觉任务名。", json_schema_extra=_ui("视觉任务", "默认 vlm，必须配置支持图片的模型。", 3, label_en="Vision Task", hint_en="MaiBot task name backed by a visual model."))
+    schedule_task: str = Field(default="", description="日程任务覆盖。", json_schema_extra=_ui("日程任务覆盖", "留空继承推理任务。", 4, label_en="Schedule Override", hint_en="Leave empty to inherit reasoning task."))
+    rest_wakeup_task: str = Field(default="", description="判醒任务覆盖。", json_schema_extra=_ui("判醒任务覆盖", "留空继承快速任务。", 5, label_en="Wake Decision Override", hint_en="Leave empty to inherit fast task."))
+    continuity_task: str = Field(default="", description="连续话题任务覆盖。", json_schema_extra=_ui("话题整理任务覆盖", "留空继承快速任务。", 6, label_en="Continuity Override", hint_en="Leave empty to inherit fast task."))
+    dream_task: str = Field(default="", description="梦境任务覆盖。", json_schema_extra=_ui("梦境任务覆盖", "留空继承创作任务。", 7, label_en="Dream Override", hint_en="Leave empty to inherit creative task."))
+    vision_summary_task: str = Field(default="", description="图片摘要任务覆盖。", json_schema_extra=_ui("图片摘要任务覆盖", "留空继承视觉任务。", 8, label_en="Vision Summary Override", hint_en="Leave empty to inherit vision task."))
+
+
+class UsageSettings(PluginConfigBase):
+    """插件模型调用统计。"""
+
+    __ui_label__: ClassVar[str] = "Token 监控"
+    __ui_order__: ClassVar[int] = 9
+
+    enabled: bool = Field(default=True, description="记录插件与观察到的 Host 模型用量。", json_schema_extra=_ui("启用 Token 统计", "不限制每日额度，只记录调用、Token、耗时与失败。", 0, label_en="Enable Token Monitoring", hint_en="Record usage without enforcing a daily budget."))
+    retention_days: int = Field(default=30, ge=1, le=365, description="明细保留天数。", json_schema_extra=_ui("明细保留天数", "每日聚合可长期保留，调用明细按此清理。", 1, label_en="Detail Retention Days", hint_en="Retention period for individual call records."))
 
 
 class ScheduleSettings(PluginConfigBase):
@@ -484,11 +623,31 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=RestGateSettings,
         json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 4, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
     )
+    context: ContextSettings = Field(
+        default_factory=ContextSettings,
+        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 5, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
+    )
+    debounce: DebounceSettings = Field(
+        default_factory=DebounceSettings,
+        json_schema_extra=_ui("消息收口防抖", "私聊补话合并和同轮回复防重。", 6, label_en="Message Debounce", hint_en="Merge private follow-ups and prevent repeated replies."),
+    )
+    vision: VisionSettings = Field(
+        default_factory=VisionSettings,
+        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 7, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
+    )
+    models: ModelRoutingSettings = Field(
+        default_factory=ModelRoutingSettings,
+        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 8, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
+    )
+    usage: UsageSettings = Field(
+        default_factory=UsageSettings,
+        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 9, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
+    )
     schedule: ScheduleSettings = Field(
         default_factory=ScheduleSettings,
-        json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 5, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
+        json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 10, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
     )
     proactive: ProactiveSettings = Field(
         default_factory=ProactiveSettings,
-        json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 6, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
+        json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 11, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
     )

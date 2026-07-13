@@ -99,7 +99,10 @@ class LifeStateEngine:
         prompt=(f"麦麦刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
                 f"最近生活场景是{state.get('current_activity','普通日常')}。生成一个40到90字、像醒后残留碎片的梦，"
                 "不要解释，不要写成预言，也不要强行出现用户。")
-        text=await self.llm.generate(prompt,"你负责生成克制、自然的梦境碎片，只输出梦境正文。",max_tokens=180,temperature=0.8)
+        text=await self.llm.generate(
+            prompt,"你负责生成克制、自然的梦境碎片，只输出梦境正文。",max_tokens=180,temperature=0.8,
+            task_kind="dream",request_type="dream",
+        )
         if not text: text="只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。"
         mood_delta=0.03 if "光" in text or "暖" in text else 0.0
         await self.store.add_dream(text[:500],mood_delta,0.5,sleep_started_at)

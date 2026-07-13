@@ -2,8 +2,8 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-    "version":  "1.0.0",
-    "description":  "让麦麦拥有共享的生活状态、睡眠梦境、两级日程和面向多个私聊网友的自然主动交流",
+    "version":  "1.1.0",
+    "description":  "让麦麦拥有持续生活状态、私聊消息收口、关系边界、图片理解和更自然的主动交流",
     "author":  {
                    "name":  "octmicy",
                    "url":  "https://github.com/octmicy/Mai_life"
@@ -26,6 +26,8 @@
                          "chat.get_stream_by_user_id",
                          "chat.get_private_streams",
                          "llm.generate",
+                         "llm.get_available_models",
+                         "message.get_by_id",
                          "maisaka.proactive.trigger",
                          "config.get"
                      ],

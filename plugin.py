@@ -1,4 +1,4 @@
-"""Mai_life v1.1.0 插件入口。"""
+"""Mai_life v1.2.0 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime,timedelta
+from datetime import date,datetime,timedelta
 from typing import Any,ClassVar,Iterable,Optional
 
 from maibot_sdk import API,Command,HookHandler,MaiBotPlugin
@@ -18,6 +18,7 @@ from .core.llm_service import LLMService
 from .core.storage import LifeStore
 from .life.continuity import ContinuityService
 from .life.life_state import LifeStateEngine
+from .life.memory_service import MemoryService,skill_stage
 from .life.proactive import ProactiveEngine
 from .life.rest_gate import RestGate
 from .life.schedule_service import ScheduleService,hhmm
@@ -38,6 +39,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._schedule:Optional[ScheduleService]=None; self._rest:Optional[RestGate]=None
         self._proactive:Optional[ProactiveEngine]=None; self._debouncer:Optional[MessageDebouncer]=None
         self._vision:Optional[VisionService]=None; self._continuity:Optional[ContinuityService]=None
+        self._memory:Optional[MemoryService]=None
         self._prompts=PromptBuilder(); self._tasks:list[asyncio.Task[Any]]=[]; self._transient:set[asyncio.Task[Any]]=set()
         self._personality=""; self._maintenance_lock=asyncio.Lock()
         self._session_runtime:dict[str,dict[str,Any]]={}; self._reply_confirmations:dict[str,dict[str,Any]]={}
@@ -45,7 +47,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @property
     def _ready(self)->bool:
         return all((self._store,self._env,self._llm,self._state,self._schedule,self._rest,self._proactive,
-                    self._debouncer,self._vision,self._continuity))
+                    self._debouncer,self._vision,self._continuity,self._memory))
 
     async def on_load(self)->None:
         root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"))
@@ -59,11 +61,12 @@ class MaiLifePlugin(MaiBotPlugin):
         self._debouncer=MessageDebouncer(self.config,self.ctx.logger)
         self._vision=VisionService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         self._continuity=ContinuityService(self._store,self.config,self._llm,self.ctx.logger)
+        self._memory=MemoryService(self._store,self.config,self._llm,self.ctx.logger)
         await self._store.sync_users(self.config.users.profiles)
         await self._refresh_personality(); await self._resolve_all_streams(); await self._llm.refresh_health()
         if self.config.plugin.enabled:
             await self._maintenance_tick(force_weather=True); self._start_tasks()
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.1.0 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.2.0 加载完成")
 
     async def on_unload(self)->None:
         if self._debouncer:await self._debouncer.close()
@@ -75,7 +78,7 @@ class MaiLifePlugin(MaiBotPlugin):
         del config_data,version
         await self._stop_tasks()
         for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
-                        self._debouncer,self._vision,self._continuity):
+                        self._debouncer,self._vision,self._continuity,self._memory):
             if service:service.update_config(self.config)
         if self._store:await self._store.sync_users(self.config.users.profiles)
         if scope=="bot":await self._refresh_personality()
@@ -107,12 +110,14 @@ class MaiLifePlugin(MaiBotPlugin):
     async def _daily_generation_loop(self)->None:
         while True:
             try:
-                assert self._env and self._schedule
+                assert self._env and self._schedule and self._memory
                 now=self._env.now(); next_run=now.replace(hour=self.config.schedule.generate_hour,minute=0,second=0,microsecond=0)
                 if next_run<=now:next_run+=timedelta(days=1)
                 await asyncio.sleep(max(1,(next_run-now).total_seconds()))
                 weather=await self._env.refresh_weather()
-                await self._schedule.ensure_day(self._env.now(),self._personality,self._env.weather_text(weather),force=True)
+                current=self._env.now(); memory_context=await self._memory.schedule_context(current)
+                await self._schedule.ensure_day(current,self._personality,self._env.weather_text(weather),force=True,
+                                                memory_context=memory_context)
             except asyncio.CancelledError:raise
             except Exception as exc:self.ctx.logger.error(f"[MaiLife] 每日日程生成异常: {exc}")
 
@@ -135,9 +140,10 @@ class MaiLifePlugin(MaiBotPlugin):
     async def _maintenance_tick(self,force_weather:bool=False)->None:
         if not self._ready:return
         async with self._maintenance_lock:
-            assert self._env and self._schedule and self._store and self._state
+            assert self._env and self._schedule and self._store and self._state and self._memory
             now=self._env.now(); weather=await self._env.refresh_weather(force=force_weather)
-            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather))
+            await self._memory.ensure_daily(now); memory_context=await self._memory.schedule_context(now)
+            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),memory_context=memory_context)
             context=await self._schedule.context(now); state=await self._store.get_state()
             await self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)); context=await self._schedule.context(now)
             await self._state.advance(now,context.get("current"),context.get("scene")); await self._schedule.apply_completed(now,self._state)
@@ -188,7 +194,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not message or message.get("is_notify"):return {"action":"continue"}
         uid,session,mid,private=message_identity(message)
         if not private or not uid or is_command(message):return {"action":"continue"}
-        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._vision and self._continuity
+        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._vision and self._continuity and self._memory
         user=await self._store.get_user(uid)
         if not user or not user.get("enabled"):return {"action":"continue"}
         if session and session!=user.get("stream_id"):await self._store.set_user_stream(uid,session)
@@ -217,6 +223,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                         "chat_type":"private","updated_at":time.time()}
         await self._store.record_interaction(uid,text or f"发送了{','.join(media) or '一条消息'}",self._env.now().timestamp(),self._env.now().hour)
         self._spawn_transient(self._continuity.refresh(uid,intent),f"mai-life-continuity-{uid}")
+        self._spawn_transient(self._memory.observe_message(uid,text,self._env.now()),f"mai-life-date-{uid}")
         context=await self._schedule.context(self._env.now())
         gate_allowed,gate_reason=await self._rest.decide(uid,text,self._env.now(),context.get("current"),session_id=session,message_id=mid)
         if not gate_allowed:
@@ -229,7 +236,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     async def _prompt_payload(self,session_id:str,consume_backlog:bool=False)->dict[str,Any]|None:
         if not self._ready:return None
-        assert self._store and self._env and self._schedule
+        assert self._store and self._env and self._schedule and self._memory
         user=await self._user_by_session(session_id)
         if not user:return None
         now=self._env.now(); runtime=self._session_runtime.get(session_id) or {}
@@ -239,7 +246,8 @@ class MaiLifePlugin(MaiBotPlugin):
                 "environment":self._env.snapshot(now,platform=str(runtime.get("platform") or "qq"),adapter=str(runtime.get("adapter") or "unknown"),
                                                  chat_type="private",media=runtime.get("media") or ["text"]),
                 "continuity":await self._store.get_continuity(user["user_id"]),"intent":str(runtime.get("intent") or ""),
-                "images":await self._store.current_image_summaries(session_id,now.timestamp())}
+                "images":await self._store.current_image_summaries(session_id,now.timestamp()),
+                "memory":await self._memory.context_for_user(user,now)}
 
     @HookHandler("maisaka.planner.before_request",mode=HookMode.BLOCKING)
     async def on_planner(self,**kwargs:Any)->dict[str,Any]:
@@ -248,7 +256,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not payload:return {"action":"continue"}
         suffix=self._prompts.planner(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
                                      payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
-                                     int(self.config.context.prompt_max_chars))
+                                     int(self.config.context.prompt_max_chars),memory=payload["memory"])
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
         return {"action":"continue","modified_kwargs":kwargs}
 
@@ -266,7 +274,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not payload:return {"action":"continue"}
         suffix=self._prompts.replyer(payload["state"],payload["weather"],payload["context"],payload["user"],payload["backlogs"],
                                      payload["environment"],payload["continuity"],payload["intent"],payload["images"],
-                                     int(self.config.context.prompt_max_chars))
+                                     int(self.config.context.prompt_max_chars),memory=payload["memory"])
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
         return {"action":"continue","modified_kwargs":kwargs}
 
@@ -319,6 +327,15 @@ class MaiLifePlugin(MaiBotPlugin):
         if not admins:admins=[str(profile.user_id) for profile in self.config.users.profiles if str(profile.user_id).strip()][:1]
         return user_id in admins
 
+    async def _is_owner_or_admin(self,user_id:str)->bool:
+        if self._is_admin(user_id):return True
+        user=await self._store.get_user(user_id) if self._store and user_id else {}
+        return bool(user and str(user.get("role") or "friend")=="owner")
+
+    async def _configured_command_user(self,user_id:str)->dict[str,Any]:
+        user=await self._store.get_user(user_id) if self._store and user_id else {}
+        return user if user and user.get("enabled") else {}
+
     async def _send_command(self,kwargs:dict[str,Any],text:str)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); user=await self._store.get_user(uid) if self._store and uid else {}
         if kwargs.get("group_id") or not user or not user.get("enabled"):text="该命令仅对已配置的私聊用户开放。"
@@ -340,6 +357,67 @@ class MaiLifePlugin(MaiBotPlugin):
             f"关系阶段：{relationship_stage(float(user['temperature']))}\n每日主动上限：{user.get('daily_proactive_max',1)}")
         return await self._send_command(kwargs,text)
 
+    @Command(name="/mai_diary",pattern=r"^/mai_diary\b",description="主人或管理员查看最近生活日记")
+    async def cmd_diary(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
+        if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看私人日记。")
+        entries=await self._store.list_diaries(3) if self._store else []
+        if not entries:return await self._send_command(kwargs,"还没有生成生活日记。")
+        lines=["麦麦最近的生活日记"]
+        for item in entries:lines.append(f"\n{item['day']}｜{item['title']}\n{item['content']}\n心情：{item['mood_summary']}")
+        return await self._send_command(kwargs,"\n".join(lines))
+
+    @Command(name="/mai_dates",pattern=r"^/mai_dates\b",description="查看当前用户的重要日期和待确认项")
+    async def cmd_dates(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or ""); dates=await self._store.list_important_dates(uid) if self._store else []
+        candidates=await self._store.list_date_candidates(uid) if self._store else []
+        lines=["你的重要日期"]
+        lines.extend(f"#{item['id']} {item['event_date']} {item['event_name']}"+("（每年）" if item['recurrence']=="annual" else "") for item in dates)
+        if not dates:lines.append("暂无正式日期。")
+        if candidates:
+            lines.append("\n待确认")
+            lines.extend(f"#{item['id']} {item['event_name']}｜{item['date_text']}"+(f"｜建议 {item['suggested_date']}" if item['suggested_date'] else "") for item in candidates)
+        return await self._send_command(kwargs,"\n".join(lines))
+
+    @Command(name="/mai_date_add",pattern=r"^/mai_date_add\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
+    async def cmd_date_add(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
+        if not await self._configured_command_user(uid):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        raw_date=str(groups.get("event_date") or ""); name=str(groups.get("event_name") or "").strip()[:120]
+        try:parsed=date.fromisoformat(raw_date)
+        except ValueError:return await self._send_command(kwargs,"日期格式无效，请使用 YYYY-MM-DD。")
+        recurrence="annual" if any(word in name for word in ("生日","纪念日")) else "none"
+        saved=await self._store.add_important_date(uid,name,parsed.isoformat(),recurrence,"manual",self._env.now().timestamp()) if self._store and self._env and name else 0
+        return await self._send_command(kwargs,f"已记录：{parsed.isoformat()} {name}" if saved else "未能添加日期，请检查输入。")
+
+    @Command(name="/mai_date_remove",pattern=r"^/mai_date_remove\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
+    async def cmd_date_remove(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
+        if not await self._configured_command_user(uid):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        removed=await self._store.remove_important_date(int(groups.get("date_id") or 0),uid) if self._store else False
+        return await self._send_command(kwargs,"已删除该日期。" if removed else "没有找到属于你的该日期。")
+
+    @Command(name="/mai_date_confirm",pattern=r"^/mai_date_confirm\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
+    async def cmd_date_confirm(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
+        if not await self._configured_command_user(uid):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        candidate_id=int(groups.get("candidate_id") or 0); candidates=await self._store.list_date_candidates(uid) if self._store else []
+        candidate=next((item for item in candidates if int(item["id"])==candidate_id),None)
+        raw_date=str(groups.get("event_date") or (candidate or {}).get("suggested_date") or "")
+        try:parsed=date.fromisoformat(raw_date)
+        except ValueError:return await self._send_command(kwargs,"候选没有明确日期，请在命令末尾补充 YYYY-MM-DD。")
+        saved=await self._store.confirm_date_candidate(candidate_id,uid,parsed.isoformat(),self._env.now().timestamp()) if self._store and self._env else 0
+        return await self._send_command(kwargs,f"已确认日期 #{saved}：{parsed.isoformat()}。" if saved else "没有找到属于你的待确认项。")
+
+    @Command(name="/mai_skills",pattern=r"^/mai_skills\b",description="主人或管理员查看麦麦技能成长")
+    async def cmd_skills(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
+        if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看完整技能记录。")
+        skills=await self._store.list_skills(20) if self._store else []
+        text="尚无技能实践记录。" if not skills else "麦麦的技能熟悉度\n"+"\n".join(
+            f"{item['skill_name']}：{skill_stage(float(item['level']))}（{float(item['level']):.1f}/100，证据 {item['evidence_count']}）" for item in skills)
+        return await self._send_command(kwargs,text)
+
     @Command(name="/mai_tokens",pattern=r"^/mai_tokens\b",description="管理员查看今日插件 Token 统计")
     async def cmd_tokens(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
@@ -350,20 +428,22 @@ class MaiLifePlugin(MaiBotPlugin):
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n配置用户：{len(self.config.users.profiles)}\n"
               f"消息收口：{'开启' if self.config.debounce.enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
+              f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
               f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}/{self.config.models.vision_task}")
         return await self._send_command(kwargs,text)
 
     @Command(name="/mai_help",pattern=r"^/mai_help\b",description="查看麦麦生活命令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
-        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
+        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_skills 技能成长\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
 
     @Command(name="/mai_regenerate_schedule",pattern=r"^/mai_regenerate_schedule\b",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not self._is_admin(uid):return await self._send_command(kwargs,"只有管理员可以重新生成日程。")
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
-        assert self._env and self._schedule
-        now=self._env.now(); weather=await self._env.refresh_weather(); nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True)
+        assert self._env and self._schedule and self._memory
+        now=self._env.now(); weather=await self._env.refresh_weather(); memory_context=await self._memory.schedule_context(now)
+        nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True,memory_context=memory_context)
         return await self._send_command(kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
 
     @Command(name="/mai_rest_test",pattern=r"^/mai_rest_test\b",description="管理员查看休息闸门状态")
@@ -382,11 +462,13 @@ class MaiLifePlugin(MaiBotPlugin):
         assert self._store and self._env and self._schedule and self._llm and self._debouncer
         state=await self._store.get_state(); weather=await self._env.refresh_weather(); context=await self._schedule.context(self._env.now())
         tasks=",".join(sorted(self._llm.available_tasks)) or "未知"
-        return (f"麦麦生活 v1.1.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        diaries=await self._store.list_diaries(1); skills=await self._store.list_skills(100)
+        return (f"麦麦生活 v1.2.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：{'开启' if self.config.debounce.enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
                 f"视觉摘要：{'可用' if self._llm.task_available('vision_summary') else '降级'}\n可用模型任务：{tasks}\n"
+                f"生活记忆：日记 {len(diaries)}（最近一篇），技能 {len(skills)} 项\n"
                 f"模型健康：{self._llm.health_error or '正常'}\n后台任务：{len(self._tasks)}")
 
     async def _schedule_report(self)->str:

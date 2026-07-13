@@ -2,8 +2,8 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-    "version":  "1.1.0",
-    "description":  "让麦麦拥有持续生活状态、私聊消息收口、关系边界、图片理解和更自然的主动交流",
+    "version":  "1.2.0",
+    "description":  "让麦麦拥有持续生活状态、生活记忆、关系边界、图片理解和更自然的主动交流",
     "author":  {
                    "name":  "octmicy",
                    "url":  "https://github.com/octmicy/Mai_life"

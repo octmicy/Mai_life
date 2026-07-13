@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.1.0"
+CONFIG_SCHEMA_VERSION = "1.2.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -321,6 +321,90 @@ class StateSettings(PluginConfigBase):
     )
 
 
+class MemorySettings(PluginConfigBase):
+    """梦境、日记、重要日期与技能成长。"""
+
+    __ui_label__: ClassVar[str] = "生活记忆"
+    __ui_order__: ClassVar[int] = 4
+
+    enabled: bool = Field(
+        default=True, description="启用离线生活记忆结算。",
+        json_schema_extra=_ui("启用生活记忆", "总开关；关闭后保留已有日记、日期和技能数据。", 0,
+                              label_en="Enable Life Memory", hint_en="Keep existing data while pausing memory settlement."),
+    )
+    dream_fragments_enabled: bool = Field(
+        default=True, description="在有效夜间睡眠后保存梦境碎片。",
+        json_schema_extra=_ui("启用梦境碎片", "梦境摘要之外保存少量醒后片段，不强制在聊天中提起。", 1,
+                              label_en="Enable Dream Fragments", hint_en="Store a few wake-up fragments alongside the dream summary."),
+    )
+    dream_fragment_count: int = Field(
+        default=3, ge=1, le=5, description="每次梦境最多保存的碎片数。",
+        json_schema_extra=_ui("梦境碎片数量", "范围 1～5，默认 3。", 2,
+                              label_en="Dream Fragment Count", hint_en="Maximum fragments stored per dream."),
+    )
+    diary_enabled: bool = Field(
+        default=True, description="每天生成前一天的抽象日记。",
+        json_schema_extra=_ui("启用抽象日记", "只使用生活节点、梦境和互动数量，不复制聊天原文。", 3,
+                              label_en="Enable Abstract Diary", hint_en="Uses life events and interaction counts, never chat transcripts."),
+    )
+    diary_hour: int = Field(
+        default=2, ge=0, le=23, description="每天结算前一天日记的小时。",
+        json_schema_extra=_ui("日记结算时间（小时）", "默认凌晨 2 点，在 3 点生成新日程之前完成。", 4,
+                              label_en="Diary Settlement Hour", hint_en="Hour used to settle the previous day."),
+    )
+    diary_max_chars: int = Field(
+        default=1200, ge=300, le=4000, description="单篇日记正文最大字符数。",
+        json_schema_extra=_ui("日记长度上限", "限制日记和后续 Prompt 占用。", 5,
+                              label_en="Diary Length Limit", hint_en="Maximum characters in one diary entry."),
+    )
+    important_dates_enabled: bool = Field(
+        default=True, description="识别并维护生日、考试、约定等日期。",
+        json_schema_extra=_ui("启用重要日期", "明确日期自动记录，模糊日期只进入待确认列表。", 6,
+                              label_en="Enable Important Dates", hint_en="Save explicit dates and keep ambiguous dates as candidates."),
+    )
+    date_model_analysis_enabled: bool = Field(
+        default=False, description="本地规则未识别时调用快速模型分析日期。",
+        json_schema_extra=_ui("启用日期模型分析", "默认关闭；开启会增加私聊后的异步模型调用。", 7,
+                              label_en="Enable Date Model Analysis", hint_en="Disabled by default because it adds an asynchronous model call."),
+    )
+    date_candidate_retention_days: int = Field(
+        default=90, ge=7, le=365, description="未确认日期候选的保留天数。",
+        json_schema_extra=_ui("日期候选保留天数", "过期候选只清理待确认项，不删除正式日期。", 8,
+                              label_en="Date Candidate Retention", hint_en="Retention for unconfirmed date candidates."),
+    )
+    date_reminder_lead_days: list[int] = Field(
+        default_factory=lambda: [30,7,1,0], description="重要日期提前准备和提醒的天数。",
+        json_schema_extra=_ui("重要日期提前天数", "默认提前 30、7、1 天以及当天生成一次专属契机。", 9,
+                              label_en="Important Date Lead Days", hint_en="Days before an event when a private opportunity may be created."),
+    )
+    skills_enabled: bool = Field(
+        default=True, description="根据真实生活证据缓慢增加能力熟悉度。",
+        json_schema_extra=_ui("启用技能成长", "只根据日程实践、创作和真实工具使用增长。", 10,
+                              label_en="Enable Skill Growth", hint_en="Grow skills only from observed practice evidence."),
+    )
+    skill_daily_gain_max: float = Field(
+        default=1.0, ge=0.1, le=5.0, description="单项技能每日最多增长值。",
+        json_schema_extra=_ui("单技能每日增长上限", "默认 1.0，避免短期内从陌生直接变成熟练。", 11,
+                              label_en="Daily Skill Gain Limit", hint_en="Maximum daily gain for one skill."),
+    )
+    skill_model_analysis_enabled: bool = Field(
+        default=False, description="使用快速模型从生活场景补充技能证据分类。",
+        json_schema_extra=_ui("启用技能模型分析", "默认关闭；规则无法覆盖的人设技能可开启。模型仍不能直接修改熟悉度。", 12,
+                              label_en="Enable Skill Model Analysis", hint_en="The model may classify evidence but cannot directly set skill levels."),
+    )
+
+    @field_validator("date_reminder_lead_days", mode="before")
+    @classmethod
+    def normalize_lead_days(cls, value: Any) -> list[int]:
+        values=value if isinstance(value,list) else [30,7,1,0]
+        cleaned=[]
+        for item in values:
+            try:number=int(item)
+            except (TypeError,ValueError):continue
+            if 0<=number<=365 and number not in cleaned:cleaned.append(number)
+        return sorted(cleaned or [30,7,1,0],reverse=True)
+
+
 class RestGateSettings(PluginConfigBase):
     """睡眠和午休期间的被动回复判醒设置。"""
 
@@ -478,6 +562,9 @@ class ModelRoutingSettings(PluginConfigBase):
     continuity_task: str = Field(default="", description="连续话题任务覆盖。", json_schema_extra=_ui("话题整理任务覆盖", "留空继承快速任务。", 6, label_en="Continuity Override", hint_en="Leave empty to inherit fast task."))
     dream_task: str = Field(default="", description="梦境任务覆盖。", json_schema_extra=_ui("梦境任务覆盖", "留空继承创作任务。", 7, label_en="Dream Override", hint_en="Leave empty to inherit creative task."))
     vision_summary_task: str = Field(default="", description="图片摘要任务覆盖。", json_schema_extra=_ui("图片摘要任务覆盖", "留空继承视觉任务。", 8, label_en="Vision Summary Override", hint_en="Leave empty to inherit vision task."))
+    diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务覆盖", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
+    date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务覆盖", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
+    skill_task: str = Field(default="", description="技能整理任务覆盖。", json_schema_extra=_ui("技能整理任务覆盖", "留空继承快速任务。", 11, label_en="Skill Analysis Override", hint_en="Leave empty to inherit fast task."))
 
 
 class UsageSettings(PluginConfigBase):
@@ -619,35 +706,40 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=StateSettings,
         json_schema_extra=_ui("生活状态", "精力、饥饿、健康和周期。", 3, label_en="Life State", hint_en="Energy, hunger, health and body cycle."),
     )
+    memory: MemorySettings = Field(
+        default_factory=MemorySettings,
+        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记、重要日期和技能成长。", 4,
+                              label_en="Life Memory", hint_en="Dream fragments, diary, important dates and skill growth."),
+    )
     rest_gate: RestGateSettings = Field(
         default_factory=RestGateSettings,
-        json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 4, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
+        json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 5, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
     )
     context: ContextSettings = Field(
         default_factory=ContextSettings,
-        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 5, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
+        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 6, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
     )
     debounce: DebounceSettings = Field(
         default_factory=DebounceSettings,
-        json_schema_extra=_ui("消息收口防抖", "私聊补话合并和同轮回复防重。", 6, label_en="Message Debounce", hint_en="Merge private follow-ups and prevent repeated replies."),
+        json_schema_extra=_ui("消息收口防抖", "私聊补话合并和同轮回复防重。", 7, label_en="Message Debounce", hint_en="Merge private follow-ups and prevent repeated replies."),
     )
     vision: VisionSettings = Field(
         default_factory=VisionSettings,
-        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 7, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
+        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 8, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
     )
     models: ModelRoutingSettings = Field(
         default_factory=ModelRoutingSettings,
-        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 8, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
+        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 9, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
     )
     usage: UsageSettings = Field(
         default_factory=UsageSettings,
-        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 9, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
+        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 10, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
     )
     schedule: ScheduleSettings = Field(
         default_factory=ScheduleSettings,
-        json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 10, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
+        json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 11, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
     )
     proactive: ProactiveSettings = Field(
         default_factory=ProactiveSettings,
-        json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 11, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
+        json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 12, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
     )

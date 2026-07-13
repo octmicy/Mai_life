@@ -53,6 +53,8 @@ class ProactiveEngine:
             if last_pro and now.timestamp()-last_pro<cfg.min_interval_minutes*60:continue
             if last_user and now.timestamp()-last_user<cfg.recent_user_silence_minutes*60:continue
             for opportunity in opportunities:
+                target=str(opportunity.get("target_user_id") or "")
+                if target and target!=str(user.get("user_id") or ""):continue
                 score=await self._score(user,opportunity,state,now)
                 if score>=cfg.score_threshold:candidates.append((score,user,opportunity))
         if not candidates:return False

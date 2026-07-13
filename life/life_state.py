@@ -96,16 +96,31 @@ class LifeStateEngine:
 
     # 梦境只负责叙事和轻微余韵，不制造预言或重大健康事件。
     async def generate_dream(self, state: dict[str, Any], sleep_started_at: float, hours: float) -> None:
-        prompt=(f"麦麦刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
-                f"最近生活场景是{state.get('current_activity','普通日常')}。生成一个40到90字、像醒后残留碎片的梦，"
-                "不要解释，不要写成预言，也不要强行出现用户。")
-        text=await self.llm.generate(
-            prompt,"你负责生成克制、自然的梦境碎片，只输出梦境正文。",max_tokens=180,temperature=0.8,
-            task_kind="dream",request_type="dream",
-        )
-        if not text: text="只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。"
-        mood_delta=0.03 if "光" in text or "暖" in text else 0.0
-        await self.store.add_dream(text[:500],mood_delta,0.5,sleep_started_at)
+        count=int(self.config.memory.dream_fragment_count) if self.config.memory.dream_fragments_enabled else 0
+        fallback={"summary":"只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。",
+                  "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声"][:count],"mood":"calm"}
+        result=fallback
+        if self.llm.task_available("dream"):
+            prompt=(f"麦麦刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
+                    f"最近生活场景是{state.get('current_activity','普通日常')}。生成克制自然的醒后梦境，"
+                    f"返回JSON：summary为40到120字摘要，fragments为最多{count}个短片段，mood为calm/warm/uneasy之一。"
+                    "不要解释，不要写成预言，不要强行出现用户，也不要制造重大健康事件。")
+            raw=await self.llm.generate_json(
+                prompt,"你只输出合法JSON格式的梦境记录。",fallback,max_tokens=360,
+                task_kind="dream",request_type="dream",
+            )
+            if isinstance(raw,dict):result=raw
+        text=str(result.get("summary") or fallback["summary"])[:500]
+        raw_fragments=result.get("fragments") if isinstance(result.get("fragments"),list) else []
+        fragments=[str(item).strip()[:300] for item in raw_fragments if str(item).strip()][:count]
+        mood=str(result.get("mood") or "calm"); mood_delta=0.03 if mood=="warm" else -0.02 if mood=="uneasy" else 0.0
+        dream_id=await self.store.add_dream(text,mood_delta,0.5,sleep_started_at,fragments)
+        now=time.time()
+        await self.store.add_opportunity({
+            "id":f"dream-{dream_id}","framework_id":f"dream:{dream_id}","topic":"昨晚醒来后还记得一点梦",
+            "motive":"梦境留下了短暂余韵，可能想向熟悉的网友自然提起",
+            "weight":0.46,"privacy":"normal","expires_at":now+12*3600,
+        })
         await self.apply_deltas({"mood_valence":mood_delta,"energy":0.5})
 
     # 被用户叫醒后设置清醒宽限，避免每条消息反复判醒。

@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.1.0"
+config_version = "1.2.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -106,6 +106,25 @@ body_cycle_length_days = 28
 body_cycle_period_days = 5
 
 
+[memory]
+# 离线生活记忆默认开启；关闭总开关不会删除已有数据。
+enabled = true
+dream_fragments_enabled = true
+dream_fragment_count = 3
+diary_enabled = true
+diary_hour = 2
+diary_max_chars = 1200
+important_dates_enabled = true
+
+# 本地规则不能识别日期时是否额外调用快速模型。默认关闭以控制成本。
+date_model_analysis_enabled = false
+date_candidate_retention_days = 90
+date_reminder_lead_days = [30, 7, 1, 0]
+skills_enabled = true
+skill_daily_gain_max = 1.0
+skill_model_analysis_enabled = false
+
+
 [rest_gate]
 # 休息回复闸门默认关闭。开启后，睡眠或午休时可能不回复普通消息。
 enabled = false
@@ -175,6 +194,9 @@ rest_wakeup_task = ""
 continuity_task = ""
 dream_task = ""
 vision_summary_task = ""
+diary_task = ""
+date_analysis_task = ""
+skill_task = ""
 
 
 [usage]

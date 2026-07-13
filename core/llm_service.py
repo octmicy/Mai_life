@@ -31,6 +31,9 @@ class LLMService:
             "continuity": models.continuity_task or models.fast_task,
             "dream": models.dream_task or models.creative_task,
             "vision_summary": models.vision_summary_task or models.vision_task,
+            "diary": models.diary_task or models.creative_task,
+            "date_analysis": models.date_analysis_task or models.fast_task,
+            "skill": models.skill_task or models.fast_task,
         }
         return str(routes.get(kind) or models.reasoning_task or "planner").strip()
 

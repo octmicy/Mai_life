@@ -14,30 +14,66 @@ from .adapter_compat import component_kind, component_text, walk_components
 
 _URGENT_RE=re.compile(r"急事|紧急|救命|出事了|危险|报警|叫醒|醒醒|快醒|撑不住|自杀|轻生",re.I)
 _QUIET_RE=re.compile(r"别回|不要回|不用回|继续睡|别醒|别打扰|不用理我",re.I)
+_MEDIA_PLACEHOLDER_RE=re.compile(
+    r"\[(?:image|图片|emoji|voice|语音|video|视频|file|文件|reply|forward|unsupported)\]",
+    re.I,
+)
+_PLACEHOLDER_MEDIA={
+    "image":re.compile(r"\[(?:image|图片)\]",re.I),
+    "emoji":re.compile(r"\[emoji\]",re.I),
+    "voice":re.compile(r"\[(?:voice|语音)\]",re.I),
+    "video":re.compile(r"\[(?:video|视频)\]",re.I),
+    "file":re.compile(r"\[(?:file|文件)\]",re.I),
+    "reply":re.compile(r"\[reply\]",re.I),
+    "forward":re.compile(r"\[forward\]",re.I),
+}
 
 
 _walk_components=walk_components
 
 
 def plain_text(message: dict[str,Any]) -> str:
+    """提取用户真正输入的文字，忽略两套 QQ 适配器生成的媒介占位符。"""
     processed=message.get("processed_plain_text")
-    if isinstance(processed,str) and processed.strip():return processed.strip()
+    if isinstance(processed,str) and processed.strip():
+        cleaned=" ".join(_MEDIA_PLACEHOLDER_RE.sub(" ",processed).split())
+        if cleaned:return cleaned
     values=[]
     for item in _walk_components(message.get("raw_message") or []):
         if component_kind(item)=="text":values.append(component_text(item))
-    return " ".join(value.strip() for value in values if value.strip()).strip()
+    return " ".join(_MEDIA_PLACEHOLDER_RE.sub(" ",value).strip() for value in values
+                    if _MEDIA_PLACEHOLDER_RE.sub(" ",value).strip()).strip()
+
+
+def direct_text(message:dict[str,Any])->str:
+    """只读取顶层用户文字，控制逻辑不得把合并转发里的原话当成用户指令。"""
+    values=[]
+    raw=message.get("raw_message")
+    if isinstance(raw,list):
+        for item in raw:
+            if isinstance(item,dict) and component_kind(item)=="text":values.append(component_text(item))
+    text=" ".join(_MEDIA_PLACEHOLDER_RE.sub(" ",value).strip() for value in values
+                  if _MEDIA_PLACEHOLDER_RE.sub(" ",value).strip()).strip()
+    if text or isinstance(raw,list):return text
+    processed=message.get("processed_plain_text")
+    return " ".join(_MEDIA_PLACEHOLDER_RE.sub(" ",str(processed or "")).split())
 
 
 def media_types(message: dict[str,Any]) -> list[str]:
     found=[]
+    display_parts=[str(message.get("processed_plain_text") or "")]
     for item in _walk_components(message.get("raw_message") or []):
         kind=component_kind(item)
         if kind in {"image","voice","video","reply","forward","file","emoji"} and kind not in found:found.append(kind)
+        if kind=="text":display_parts.append(component_text(item))
         if kind=="image":
             fmt=str(item.get("format") or item.get("image_format") or "").lower()
             data=str(item.get("binary_data_base64") or item.get("base64") or item.get("base64_data") or "")
             if fmt=="gif" or data.startswith("R0lGOD"):
                 if "gif" not in found:found.append("gif")
+    display=" ".join(display_parts)
+    for kind,pattern in _PLACEHOLDER_MEDIA.items():
+        if kind not in found and pattern.search(display):found.append(kind)
     if plain_text(message) and "text" not in found:found.insert(0,"text")
     return found
 
@@ -65,7 +101,7 @@ def message_identity(message: dict[str,Any]) -> tuple[str,str,str,bool]:
 
 
 def is_command(message: dict[str,Any]) -> bool:
-    return bool(message.get("is_command")) or plain_text(message).lstrip().startswith("/")
+    return bool(message.get("is_command")) or direct_text(message).lstrip().startswith("/")
 
 
 def media_bytes(message: dict[str,Any]) -> int:
@@ -143,7 +179,7 @@ class MessageDebouncer:
             burst.messages.append(copy.deepcopy(message)); burst.generation+=1
             generation=burst.generation; event=burst.event
             over_limit=len(burst.messages)>=int(cfg.max_messages) or sum(media_bytes(item) for item in burst.messages)>int(cfg.max_media_bytes)
-            text=plain_text(message); immediate=bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
+            text=direct_text(message); immediate=bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
         while not immediate:
             async with self._lock:
                 current=self._bursts.get(session)

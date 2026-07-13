@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import time
 import unittest
@@ -33,8 +34,12 @@ class DummyAPI:
     def __init__(self):self.calls=[]
     async def call(self,name,**kwargs):
         self.calls.append((name,kwargs))
-        return {"items":[{"id":"page-1","title":"一页素材","summary":"一段可供阅读的文字摘要。",
-                           "binary_data_base64":"QUJD","image":b"ignored"}]}
+        return {"items":[
+            {"id":"page-1","title":"一页素材","summary":"一段可供阅读的文字摘要。",
+             "binary_data_base64":"QUJD","image":b"ignored"},
+            {"id":"page-2","title":"二进制素材","summary":b"ignored-binary"},
+            {"id":"page-3","title":"Data URL 素材","content":"data:image/png;base64,QUJD"},
+        ]}
 
 
 class DummyContext:
@@ -76,6 +81,30 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(document["content"])
         again=await service.tick(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},force=True)
         self.assertEqual(again["status"],"daily_limit")
+
+    async def test_concurrent_creation_cannot_exceed_daily_limit(self):
+        self.config.creation.enabled=True; self.config.creation.plaintext_storage_acknowledged=True
+        await self.add_inspiration(); service=CreationService(self.ctx,self.store,self.config,self.llm,DummyLogger())
+        state=await self.store.get_state(); schedule={"current":{"kind":"leisure"}}
+        results=await asyncio.gather(
+            service.tick(self.now,"人格",state,schedule,force=True),
+            service.tick(self.now,"人格",state,schedule,force=True),
+        )
+        self.assertEqual(sum(item["status"]=="archived" for item in results),1)
+        self.assertEqual(await self.store.archived_work_count(self.now.replace(hour=0).timestamp(),
+                                                              (self.now.replace(hour=0)+timedelta(days=1)).timestamp()),1)
+
+    async def test_interrupted_creation_claim_is_recovered(self):
+        await self.add_inspiration(); self.assertTrue(await self.store.claim_creation_inspiration("inspiration-life-test"))
+        await self.store.create_bookshelf_document({"id":"unfinished","doc_type":"work","work_type":"essay",
+            "title":"未完成","privacy":"private","status":"draft","source_kind":"life","source_ref":"test",
+            "summary":"","created_at":self.now.timestamp()})
+        await self.store.start_creation_run("run-unfinished","inspiration-life-test","unfinished",self.now.timestamp())
+        await self.store.recover_creation_claims(self.now.timestamp()+1)
+        inspiration=self.store.conn.execute("SELECT status FROM creation_inspirations WHERE id='inspiration-life-test'").fetchone()[0]
+        run=self.store.conn.execute("SELECT status FROM creation_runs WHERE id='run-unfinished'").fetchone()[0]
+        document=self.store.conn.execute("SELECT status FROM bookshelf_documents WHERE id='unfinished'").fetchone()[0]
+        self.assertEqual((inspiration,run,document),("pending","interrupted","failed"))
 
     async def test_private_work_is_visible_to_owner_not_friend(self):
         self.config.creation.enabled=True; self.config.creation.plaintext_storage_acknowledged=True
@@ -138,7 +167,7 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await upgraded.close(); other.cleanup()
 
-    def test_schema_v6(self):self.assertEqual(SCHEMA_VERSION,6)
+    def test_schema_v7(self):self.assertEqual(SCHEMA_VERSION,7)
 
 
 if __name__=="__main__":unittest.main()

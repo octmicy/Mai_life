@@ -27,6 +27,7 @@ class LLMService:
             "creative": models.creative_task,
             "vision": models.vision_task,
             "schedule": models.schedule_task or models.reasoning_task,
+            "scene_detail": models.scene_detail_task or models.reasoning_task,
             "rest_wakeup": models.rest_wakeup_task or models.fast_task,
             "continuity": models.continuity_task or models.fast_task,
             "dream": models.dream_task or models.creative_task,
@@ -46,11 +47,37 @@ class LLMService:
         }
         return str(routes.get(kind) or models.reasoning_task or "planner").strip()
 
+    def _active_task_kinds(self) -> set[str]:
+        """只检查当前启用功能会实际调用的任务，fallback 不因此阻止插件启动。"""
+        kinds={"schedule","scene_detail"}
+        if self.config.context.enabled and self.config.context.continuity_enabled:kinds.add("continuity")
+        if self.config.rest_gate.enabled and self.config.rest_gate.mode=="llm":kinds.add("rest_wakeup")
+        if self.config.vision.enabled:kinds.add("vision_summary")
+        if self.config.memory.enabled:
+            kinds.add("dream")
+            if self.config.memory.diary_enabled:kinds.add("diary")
+            if self.config.memory.date_model_analysis_enabled:kinds.add("date_analysis")
+            if self.config.memory.skill_model_analysis_enabled:kinds.add("skill")
+        if self.config.information.enabled:
+            if self.config.news.enabled:kinds.add("news")
+            if self.config.search.enabled:kinds.add("search")
+            if self.config.information.association_enabled:kinds.add("relevance")
+        if self.config.social.enabled:kinds.update({"group_judgment","relay_summary"})
+        if self.config.creation.enabled:
+            kinds.update({"creation_outline","creation_body","creation_review"})
+            if self.config.creation.external_reading_enabled and self.config.creation.reading_annotation_enabled:
+                kinds.add("reading_annotation")
+        return kinds
+
     async def refresh_health(self) -> set[str]:
         try:
             tasks = await self.ctx.llm.get_available_models()
             self.available_tasks = {str(item).strip() for item in tasks if str(item).strip()}
-            self.health_error = "" if self.available_tasks else "Host 未返回可用任务"
+            if not self.available_tasks:
+                self.health_error = "Host 未返回可用任务"
+            else:
+                missing=sorted({self.task_for(kind) for kind in self._active_task_kinds()}-self.available_tasks)
+                self.health_error = "任务不可用: "+", ".join(missing) if missing else ""
         except Exception as exc:
             self.available_tasks = set()
             self.health_error = str(exc)[:200]
@@ -91,9 +118,10 @@ class LLMService:
                 prompt=messages, model=task, temperature=temperature, max_tokens=max_tokens,
             )
             success=bool(isinstance(result,dict) and result.get("success") and result.get("response"))
+            failure_reason=str(result.get("error") or "empty_response") if isinstance(result,dict) else "invalid_result"
             await self._record(result=result if isinstance(result,dict) else {},task=task,
                                request_type=request_type,started=started,success=success,
-                               error="" if success else str((result or {}).get("error") or "empty_response"))
+                               error="" if success else failure_reason)
             if success:return str(result["response"]).strip()
         except Exception as exc:
             await self._record(result=result,task=task,request_type=request_type,started=started,success=False,error=str(exc))
@@ -121,8 +149,12 @@ class LLMService:
                               model_name: str, prompt_tokens: int, completion_tokens: int,
                               total_tokens: int, success: bool = True) -> None:
         if not self.store or not self.config.usage.enabled:return
-        await self.store.record_llm_usage(
-            created_at=time.time(),source=source,task_name=task_name,model_name=model_name,
-            request_type=request_type,prompt_tokens=prompt_tokens,completion_tokens=completion_tokens,
-            total_tokens=total_tokens,latency_ms=0,success=success,error_summary="",
-        )
+        try:
+            await self.store.record_llm_usage(
+                created_at=time.time(),source=source,task_name=task_name,model_name=model_name,
+                request_type=request_type,prompt_tokens=prompt_tokens,completion_tokens=completion_tokens,
+                total_tokens=total_tokens,latency_ms=0,success=success,error_summary="",
+            )
+        except Exception as exc:
+            # 统计失败不能干扰 Planner/Replyer 主链。
+            self.ctx.logger.debug(f"[MaiLife] Host Token 观察写入失败: {exc}")

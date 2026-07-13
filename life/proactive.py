@@ -1,5 +1,6 @@
 """Rule filtering and Planner-finalized proactive private chat."""
 from __future__ import annotations
+import asyncio
 import json
 import time
 import uuid
@@ -15,7 +16,8 @@ class ProactiveEngine:
 
     @staticmethod
     def _in_window(start: str,end: str,current: str) -> bool:
-        return start<=current<=end if start<=end else current>=start or current<=end
+        if start==end:return False
+        return start<=current<end if start<end else current>=start or current<end
 
     # 软评分只负责排序，额度、睡眠和免打扰仍由硬过滤控制。
     async def _score(self, user: dict[str,Any], opportunity: dict[str,Any], state: dict[str,Any], now: Any) -> float:
@@ -40,9 +42,12 @@ class ProactiveEngine:
         if float(state.get("energy",0))<cfg.minimum_energy: return False
         opportunities=await self.store.active_opportunities(now.timestamp())
         if not opportunities:return False
-        users=await self.store.list_users(proactive_only=True); current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
+        users=await self.store.list_users(proactive_only=True)
+        pending_users=await self.store.pending_proactive_users(now.timestamp())
+        current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
         candidates=[]
         for user in users:
+            if str(user.get("user_id") or "") in pending_users:continue
             stream=str(user.get("stream_id") or "")
             if not stream or self._in_window(user["quiet_start"],user["quiet_end"],current):continue
             count=int(user.get("proactive_count",0)) if user.get("proactive_day")==day else 0
@@ -79,10 +84,25 @@ class ProactiveEngine:
                            "relationship_temperature":user["temperature"],"score":round(score,3),
                            "privacy":opportunity.get("privacy","normal"),"instruction":instruction},ensure_ascii=False)
         try:
-            await self.ctx.maisaka.proactive.trigger(stream_id=user["stream_id"],intent="mai_life_proactive",reason=reason)
+            result=await self.ctx.maisaka.proactive.trigger(
+                stream_id=user["stream_id"],intent="mai_life_proactive",reason=reason,
+                metadata={"mai_life_event_id":event_id},
+            )
+            if isinstance(result,dict) and result.get("success") is False:
+                raise RuntimeError(str(result.get("error") or "Host 拒绝主动任务"))
+            task_id=str(result.get("task_id") or "") if isinstance(result,dict) else ""
+            if not task_id:
+                raise RuntimeError("Host 未返回可关联的主动任务 ID")
+            if not await self.store.set_proactive_task_id(event_id,task_id):
+                raise RuntimeError("主动候选已失效，无法关联 Host 任务")
             self.logger.info(f"[MaiLife] 主动候选交给 Planner: user={user['user_id']} topic={opportunity['topic']} score={score:.2f}")
             return True
+        except asyncio.CancelledError:
+            await self.store.release_opportunity(opportunity["id"])
+            await self.store.set_proactive_event_status(event_id,"cancelled")
+            raise
         except Exception as exc:
             await self.store.release_opportunity(opportunity["id"])
+            await self.store.set_proactive_event_status(event_id,"failed")
             self.logger.error(f"[MaiLife] proactive.trigger 失败: {exc}")
             return False

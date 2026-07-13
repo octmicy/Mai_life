@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from datetime import timedelta
 from typing import Any
@@ -14,6 +15,16 @@ class InspirationService:
         self._last_external_attempt=0.0
 
     def update_config(self,config:Any)->None:self.config=config
+
+    @staticmethod
+    def _external_text(value:Any,limit:int)->str:
+        """外部联动只接受普通文本，拒绝 bytes、Data URL 和明显 Base64 载荷。"""
+        if not isinstance(value,str):return ""
+        text=" ".join(value.replace("\x00","").split())
+        if text.lower().startswith("data:"):return ""
+        compact="".join(text.split())
+        if len(compact)>512 and re.fullmatch(r"[A-Za-z0-9+/=_-]+",compact):return ""
+        return text[:limit]
 
     async def collect(self,now:Any)->int:
         count=0; cutoff=now.timestamp()-int(self.config.creation.inspiration_lookback_days)*86400
@@ -57,10 +68,13 @@ class InspirationService:
         count=0
         for index,item in enumerate(items[:int(cfg.external_reading_max_items)]):
             if not isinstance(item,dict):continue
-            external_id=str(item.get("id") or item.get("url") or index)[:200]
-            title=" ".join(str(item.get("title") or "未命名阅读素材").split())[:160]
+            external_id=self._external_text(item.get("id"),200) or self._external_text(item.get("url"),200) or str(index)
+            title=self._external_text(item.get("title"),160) or "未命名阅读素材"
             # 明确忽略 bytes/base64/image 等字段，只处理有限长度文字。
-            source=" ".join(str(item.get("summary") or item.get("text") or item.get("content") or "").split())[:6000]
+            source=next((text for text in (
+                self._external_text(item.get("summary"),6000),self._external_text(item.get("text"),6000),
+                self._external_text(item.get("content"),6000),
+            ) if text),"")
             if not source:continue
             digest=hashlib.sha256(f"{api_name}:{external_id}:{source}".encode()).hexdigest()
             annotation=await self._annotate(title,source)

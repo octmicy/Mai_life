@@ -108,9 +108,10 @@ class GroupObserver:
                                           task_kind="group_judgment",request_type="group_judgment")
         if not isinstance(data,dict):return fallback
         topic=" ".join(str(data.get("topic") or "").split())[:120]
+        topic=re.sub(r"@\S+|https?://\S+|\b\d{5,}\b","[已隐去]",topic)
         score=max(0,min(1,float(data.get("score") or 0)))
         public=bool(data.get("public"))
-        if not public:return {"public":False,"score":score,"topic":"","summary":""}
+        if not public or _SENSITIVE_RE.search(topic):return {"public":False,"score":score,"topic":"","summary":""}
         summary=f"群里出现了一段关于{topic or '一个公开话题'}的公开讨论，约有 {len(snippets)} 条连续消息。"
         if self.llm.task_available("relay_summary"):
             summary_prompt=(

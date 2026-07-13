@@ -103,10 +103,23 @@ class InformationService:
                 "motive":str(result.get("motive") or fallback["motive"])[:240]}
 
     @staticmethod
-    def _safe_query(value:str)->str:
+    def _safe_query(value:str,forbidden_terms:list[str]|None=None)->str:
         text=re.sub(r"https?://\S+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|@\S+|\b\d{5,12}\b"," ",str(value or ""))
+        for term in sorted({str(item).strip() for item in forbidden_terms or [] if len(str(item).strip())>=2},key=len,reverse=True):
+            text=re.sub(re.escape(term)," ",text,flags=re.I)
         text=" ".join(text.replace("\x00","").split())
         return text[:100]
+
+    def _private_query_terms(self)->list[str]:
+        """联网搜索前本地移除已配置用户、群和关系网标识。"""
+        terms=[]
+        for item in self.config.users.profiles:
+            terms.extend((str(item.user_id),str(item.display_name or "")))
+        for item in self.config.social.groups:
+            terms.extend((str(item.group_id),str(item.alias),str(item.display_name or "")))
+        for item in self.config.social.relations:
+            terms.extend((str(item.user_id),str(item.alias),str(item.display_name or "")))
+        return terms
 
     async def _plan_query(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->dict[str,str]:
         interests=[str(item).strip() for item in self.config.search.interest_keywords if str(item).strip()]
@@ -124,7 +137,7 @@ class InformationService:
         )
         if not isinstance(result,dict):return fallback
         return {"topic":str(result.get("topic") or fallback["topic"])[:160],
-                "query":self._safe_query(str(result.get("query") or fallback["query"])),
+                "query":self._safe_query(str(result.get("query") or fallback["query"]),self._private_query_terms()),
                 "reason":str(result.get("reason") or fallback["reason"])[:300]}
 
     async def explore_due(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->bool:
@@ -138,7 +151,8 @@ class InformationService:
         runtime=await self.store.get_information_source_runtime(key); now_ts=now.timestamp()
         if float(runtime.get("next_retry_at") or 0)>now_ts:return False
         try:
-            plan=await self._plan_query(now,personality,state,schedule,chat_topics); query=self._safe_query(plan["query"])
+            plan=await self._plan_query(now,personality,state,schedule,chat_topics)
+            query=self._safe_query(plan["query"],self._private_query_terms())
             if not query:raise ValueError("隐私清洗后搜索词为空")
             results=await self.search.search(query); summary=await self._summarize_search(plan,results)
             association=await self._associate({"kind":"search","title":plan["topic"],"summary":summary,

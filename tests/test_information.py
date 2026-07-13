@@ -118,7 +118,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         value=InformationService._safe_query("搜索 @张三 123456789 https://private.example.com 和 test@example.com 的消息")
         self.assertNotIn("张三",value); self.assertNotIn("123456789",value); self.assertNotIn("private.example",value); self.assertNotIn("test@example",value)
 
-    def test_schema_v4(self):self.assertEqual(SCHEMA_VERSION,4)
+    def test_schema_v5(self):self.assertEqual(SCHEMA_VERSION,5)
 
 
 if __name__=="__main__":unittest.main()

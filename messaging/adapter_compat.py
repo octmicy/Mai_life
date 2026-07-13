@@ -26,6 +26,37 @@ def adapter_name(message: Mapping[str, Any]) -> str:
     return "unknown"
 
 
+def group_identity(message: Mapping[str, Any]) -> tuple[str, str]:
+    """读取 Host 标准群资料；两套适配器的私有字段只用于来源诊断。"""
+    info=message.get("message_info")
+    if not isinstance(info,Mapping):return "",""
+    group=info.get("group_info")
+    if not isinstance(group,Mapping):return "",""
+    return str(group.get("group_id") or "").strip(),str(group.get("group_name") or "").strip()
+
+
+def sender_identity(message: Mapping[str, Any]) -> tuple[str, str]:
+    """读取 Host 标准发送者资料，不依赖 NapCat/SnowLuma 原始事件形状。"""
+    info=message.get("message_info")
+    if not isinstance(info,Mapping):return "",""
+    user=info.get("user_info")
+    if not isinstance(user,Mapping):return "",""
+    user_id=str(user.get("user_id") or "").strip()
+    name=str(user.get("user_cardname") or user.get("user_nickname") or "").strip()
+    return user_id,name
+
+
+def standard_at_component(user_id: str, display_name: str="") -> dict[str, Any]:
+    """构造 Host 标准 AtComponent 字典。
+
+    NapCat 与 SnowLuma 都在各自出站编码器中把该结构转换为 OneBot ``at`` 段；
+    插件不直接拼装任一适配器的 ``qq`` 私有载荷。
+    """
+    return {"type":"at","data":{"target_user_id":str(user_id).strip(),
+                                     "target_user_nickname":str(display_name or "").strip() or None,
+                                     "target_user_cardname":None}}
+
+
 def component_kind(component: Mapping[str, Any]) -> str:
     """展开 SnowLuma 用 ``dict`` 包装的 file/video 等媒介类型。"""
     kind = str(component.get("type") or "").strip().lower()

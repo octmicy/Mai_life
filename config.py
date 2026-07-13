@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.4.0"
+CONFIG_SCHEMA_VERSION = "1.5.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -353,6 +353,61 @@ class SocialSettings(PluginConfigBase):
     relations: list[SocialRelationProfile] = Field(default_factory=list, description="可解析的群友关系词条。",
         json_schema_extra=_ui("群友关系词条", "只有唯一匹配时才会生成真实 @。", 11,
                               label_en="Member Relations", hint_en="A real mention is built only for an unambiguous match."))
+
+
+class CreationSettings(PluginConfigBase):
+    """书柜、阅读批注与分阶段创作设置。"""
+
+    __ui_label__: ClassVar[str] = "书柜与创作"
+    __ui_order__: ClassVar[int] = 17
+
+    enabled: bool = Field(default=False, description="启用闲暇创作巡检。",
+        json_schema_extra=_ui("启用书柜创作", "默认关闭；启用后仍需确认 SQLite 明文存储风险。", 0,
+                              label_en="Enable Bookshelf Creation", hint_en="Disabled by default and requires plaintext-storage acknowledgement."))
+    plaintext_storage_acknowledged: bool = Field(default=False, description="确认作品和私人文本以 SQLite 明文保存。",
+        json_schema_extra=_ui("确认明文存储风险", "数据库文件权限由服务器管理员负责；未确认时不会启动创作和外部阅读。", 1,
+                              label_en="Acknowledge Plaintext Storage", hint_en="Creation stays blocked until the server file-permission risk is acknowledged."))
+    patrol_interval_minutes: int = Field(default=60, ge=10, le=1440, description="创作巡检间隔。",
+        json_schema_extra=_ui("创作巡检间隔（分钟）", "默认每小时检查一次空档，不代表每次都会创作。", 2,
+                              label_en="Creation Patrol Interval", hint_en="How often idle-time creation eligibility is checked."))
+    daily_max: int = Field(default=1, ge=0, le=5, description="每日最多归档作品数。",
+        json_schema_extra=_ui("每日作品上限", "默认 1；失败运行不计入已归档作品。", 3,
+                              label_en="Daily Work Limit", hint_en="Maximum archived works per day; failed runs do not count."))
+    minimum_energy: int = Field(default=35, ge=0, le=100, description="允许创作的最低精力。",
+        json_schema_extra=_ui("创作最低精力", "精力不足时优先休息，不启动创作模型链。", 4,
+                              label_en="Minimum Creation Energy", hint_en="Creation is skipped when Mai needs rest."))
+    allowed_schedule_types: list[str] = Field(default_factory=lambda:["leisure","rest"], description="允许创作的日程类型。",
+        json_schema_extra=_ui("允许创作的日程", "建议只保留 leisure 和 rest。", 5,
+                              label_en="Allowed Schedule Types", hint_en="Usually leisure and rest only."))
+    work_types: list[str] = Field(
+        default_factory=lambda:["novel_fragment","poem","essay","screenplay","storyboard","character","worldbuilding"],
+        description="允许生成的作品类型。",
+        json_schema_extra=_ui("作品类型", "可选小说片段、诗、随笔、短剧、分镜、角色和世界观。", 6,
+                              label_en="Work Types", hint_en="Allowed narrative and design formats."))
+    public_works_enabled: bool = Field(default=True, description="允许无私密来源的作品公开给朋友。",
+        json_schema_extra=_ui("允许公开作品", "日记、梦境和私密阅读来源仍会强制保持 private。", 7,
+                              label_en="Allow Public Works", hint_en="Diary, dream and private-reading sources remain private."))
+    create_share_opportunity: bool = Field(default=True, description="归档后生成低频分享契机。",
+        json_schema_extra=_ui("允许分享完成作品", "私人作品只会定向给主人，公开作品仍由 Planner 和主动额度终审。", 8,
+                              label_en="Share Archived Works", hint_en="Private works target the owner; public works still require Planner review."))
+    inspiration_lookback_days: int = Field(default=7, ge=1, le=90, description="灵感来源回看天数。",
+        json_schema_extra=_ui("灵感回看天数", "只读取麦麦自己的生活、梦境和日记摘要。", 9,
+                              label_en="Inspiration Lookback", hint_en="Reads Mai's own life, dreams and diary summaries only."))
+    max_body_chars: int = Field(default=4000, ge=500, le=16000, description="作品正文最大字符数。",
+        json_schema_extra=_ui("作品正文上限", "用于限制模型成本和 SQLite 文本体积。", 10,
+                              label_en="Maximum Work Length", hint_en="Limits model cost and SQLite text size."))
+    external_reading_enabled: bool = Field(default=False, description="从可选插件 API 读取素材摘要。",
+        json_schema_extra=_ui("启用外部阅读联动", "默认关闭；只调用下方插件 API，不直接联网。", 11,
+                              label_en="Enable External Reading", hint_en="Calls an optional plugin API only and performs no direct networking."))
+    external_reading_api_name: str = Field(default="", description="外部阅读插件公开 API 名称。",
+        json_schema_extra=_ui("外部阅读 API", "例如 other-plugin.list_reading_items；留空不会调用。", 12,
+                              label_en="External Reading API", hint_en="Public plugin API name; left empty to disable calls."))
+    external_reading_max_items: int = Field(default=3, ge=1, le=20, description="每次最多读取素材数。",
+        json_schema_extra=_ui("每次阅读素材上限", "忽略二进制，只处理标题和有限长度文字。", 13,
+                              label_en="External Reading Item Limit", hint_en="Binary fields are ignored; only bounded text is processed."))
+    reading_annotation_enabled: bool = Field(default=True, description="为外部阅读摘要生成第一人称批注。",
+        json_schema_extra=_ui("生成阅读批注", "批注保持 private，朋友无权读取。", 14,
+                              label_en="Generate Reading Annotations", hint_en="Annotations remain private and unavailable to friends."))
 
 
 class EnvironmentSettings(PluginConfigBase):
@@ -791,6 +846,10 @@ class ModelRoutingSettings(PluginConfigBase):
     relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 14, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
     group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务覆盖", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
     relay_summary_task: str = Field(default="", description="群聊短摘要任务覆盖。", json_schema_extra=_ui("群转述摘要任务覆盖", "留空继承快速任务。", 16, label_en="Relay Summary Override", hint_en="Leave empty to inherit fast task."))
+    creation_outline_task: str = Field(default="", description="创作提纲任务覆盖。", json_schema_extra=_ui("创作提纲任务覆盖", "留空继承推理任务。", 17, label_en="Creation Outline Override", hint_en="Leave empty to inherit reasoning task."))
+    creation_body_task: str = Field(default="", description="创作正文任务覆盖。", json_schema_extra=_ui("创作正文任务覆盖", "留空继承创作任务。", 18, label_en="Creation Body Override", hint_en="Leave empty to inherit creative task."))
+    creation_review_task: str = Field(default="", description="创作审校任务覆盖。", json_schema_extra=_ui("创作审校任务覆盖", "留空继承推理任务。", 19, label_en="Creation Review Override", hint_en="Leave empty to inherit reasoning task."))
+    reading_annotation_task: str = Field(default="", description="阅读批注任务覆盖。", json_schema_extra=_ui("阅读批注任务覆盖", "留空继承创作任务。", 20, label_en="Reading Annotation Override", hint_en="Leave empty to inherit creative task."))
 
 
 class UsageSettings(PluginConfigBase):
@@ -985,4 +1044,9 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=SocialSettings,
         json_schema_extra=_ui("社交转述", "群聊白名单、群友关系和群转私边界。", 16,
                               label_en="Social Relay", hint_en="Group allowlists, member relations and group-to-private boundaries."),
+    )
+    creation: CreationSettings = Field(
+        default_factory=CreationSettings,
+        json_schema_extra=_ui("书柜与创作", "作品、日记、阅读批注和分阶段创作。", 17,
+                              label_en="Bookshelf and Creation", hint_en="Works, diaries, reading notes and staged creation."),
     )

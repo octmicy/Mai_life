@@ -39,6 +39,10 @@ class LLMService:
             "relevance": models.relevance_task or models.reasoning_task,
             "group_judgment": models.group_judgment_task or models.fast_task,
             "relay_summary": models.relay_summary_task or models.fast_task,
+            "creation_outline": models.creation_outline_task or models.reasoning_task,
+            "creation_body": models.creation_body_task or models.creative_task,
+            "creation_review": models.creation_review_task or models.reasoning_task,
+            "reading_annotation": models.reading_annotation_task or models.creative_task,
         }
         return str(routes.get(kind) or models.reasoning_task or "planner").strip()
 

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class LifeStore:
@@ -103,6 +103,11 @@ class LifeStore:
               content TEXT NOT NULL, mood_delta REAL NOT NULL DEFAULT 0,
               energy_delta REAL NOT NULL DEFAULT 0, sleep_started_at REAL NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS dream_fragments(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, dream_id INTEGER NOT NULL,
+              position INTEGER NOT NULL, content TEXT NOT NULL,
+              UNIQUE(dream_id,position)
+            );
             CREATE TABLE IF NOT EXISTS daily_framework(
               id TEXT PRIMARY KEY, day TEXT NOT NULL, start_minute INTEGER NOT NULL,
               end_minute INTEGER NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL,
@@ -118,6 +123,7 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS proactive_opportunities(
               id TEXT PRIMARY KEY, framework_id TEXT NOT NULL, topic TEXT NOT NULL,
               motive TEXT NOT NULL, weight REAL NOT NULL, privacy TEXT NOT NULL,
+              target_user_id TEXT NOT NULL DEFAULT '',
               expires_at REAL NOT NULL, consumed_by TEXT NOT NULL DEFAULT '',
               consumed_at REAL NOT NULL DEFAULT 0
             );
@@ -181,11 +187,55 @@ class LifeStore:
               created_at REAL NOT NULL, expires_at REAL NOT NULL,
               PRIMARY KEY(session_id,anchor_message_id)
             );
+            CREATE TABLE IF NOT EXISTS diary_entries(
+              day TEXT PRIMARY KEY, created_at REAL NOT NULL, title TEXT NOT NULL,
+              content TEXT NOT NULL, mood_summary TEXT NOT NULL,
+              privacy TEXT NOT NULL DEFAULT 'private', source_digest TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS important_dates(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+              event_name TEXT NOT NULL, event_date TEXT NOT NULL,
+              recurrence TEXT NOT NULL DEFAULT 'none', source TEXT NOT NULL DEFAULT 'conversation',
+              created_at REAL NOT NULL, updated_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_important_date_unique
+              ON important_dates(user_id,event_name,event_date,recurrence);
+            CREATE INDEX IF NOT EXISTS idx_important_date_user ON important_dates(user_id,event_date);
+            CREATE TABLE IF NOT EXISTS date_candidates(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+              event_name TEXT NOT NULL, date_text TEXT NOT NULL,
+              suggested_date TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0,
+              source_summary TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending'
+            );
+            CREATE INDEX IF NOT EXISTS idx_date_candidate_user ON date_candidates(user_id,status,created_at);
+            CREATE TABLE IF NOT EXISTS skills(
+              skill_name TEXT PRIMARY KEY, category TEXT NOT NULL,
+              level REAL NOT NULL DEFAULT 0, evidence_count INTEGER NOT NULL DEFAULT 0,
+              last_practiced_at REAL NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS skill_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL,
+              skill_name TEXT NOT NULL, source_kind TEXT NOT NULL,
+              evidence_summary TEXT NOT NULL, evidence_key TEXT NOT NULL UNIQUE,
+              gain REAL NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_skill_event_day ON skill_events(day,skill_name);
+            CREATE TABLE IF NOT EXISTS date_trigger_events(
+              date_id INTEGER NOT NULL, occurrence_date TEXT NOT NULL,
+              lead_days INTEGER NOT NULL, created_at REAL NOT NULL,
+              PRIMARY KEY(date_id,occurrence_date,lead_days)
+            );
+            CREATE TABLE IF NOT EXISTS memory_runtime(
+              id INTEGER PRIMARY KEY CHECK(id=1), last_diary_day TEXT NOT NULL DEFAULT '',
+              last_skill_day TEXT NOT NULL DEFAULT '', last_cleanup_at REAL NOT NULL DEFAULT 0
+            );
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
         self._ensure_column("users", "role", "TEXT NOT NULL DEFAULT 'friend'")
         self._ensure_column("users", "daily_proactive_max", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("proactive_opportunities", "target_user_id", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),
@@ -200,6 +250,7 @@ class LifeStore:
             "INSERT OR IGNORE INTO sleep_runtime VALUES(1,'awake',?,0,0,'初始化')",
             (now,),
         )
+        self.conn.execute("INSERT OR IGNORE INTO memory_runtime(id) VALUES(1)")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
@@ -249,18 +300,47 @@ class LifeStore:
                      runtime.get("woken_count",0),runtime.get("last_event","")),
                 )
 
-    async def add_dream(self, content: str, mood_delta: float, energy_delta: float, sleep_started_at: float) -> None:
+    async def add_dream(self, content: str, mood_delta: float, energy_delta: float,
+                        sleep_started_at: float, fragments: list[str] | None = None) -> int:
         async with self._lock:
-            self.conn.execute(
-                "INSERT INTO dreams(created_at,content,mood_delta,energy_delta,sleep_started_at) VALUES(?,?,?,?,?)",
-                (time.time(), content, mood_delta, energy_delta, sleep_started_at),
-            )
-            self.conn.commit()
+            with self._tx() as conn:
+                cursor=conn.execute(
+                    "INSERT INTO dreams(created_at,content,mood_delta,energy_delta,sleep_started_at) VALUES(?,?,?,?,?)",
+                    (time.time(), content[:1000], mood_delta, energy_delta, sleep_started_at),
+                )
+                dream_id=int(cursor.lastrowid)
+                clean=[str(item).strip()[:300] for item in (fragments or []) if str(item).strip()][:5]
+                conn.executemany(
+                    "INSERT INTO dream_fragments(dream_id,position,content) VALUES(?,?,?)",
+                    [(dream_id,index,item) for index,item in enumerate(clean)],
+                )
+                return dream_id
 
     async def latest_dream(self) -> dict[str, Any]:
         async with self._lock:
             row = self.conn.execute("SELECT * FROM dreams ORDER BY created_at DESC LIMIT 1").fetchone()
-            return dict(row) if row else {}
+            if not row:return {}
+            data=dict(row)
+            fragments=self.conn.execute(
+                "SELECT content FROM dream_fragments WHERE dream_id=? ORDER BY position",(data["id"],)
+            ).fetchall()
+            data["fragments"]=[str(item[0]) for item in fragments]
+            return data
+
+    async def dreams_between(self, start: float, end: float) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT * FROM dreams WHERE created_at>=? AND created_at<? ORDER BY created_at",(start,end)
+            ).fetchall()
+            result=[]
+            for row in rows:
+                data=dict(row)
+                fragments=self.conn.execute(
+                    "SELECT content FROM dream_fragments WHERE dream_id=? ORDER BY position",(data["id"],)
+                ).fetchall()
+                data["fragments"]=[str(item[0]) for item in fragments]
+                result.append(data)
+            return result
 
     # 替换日程时同步清理旧场景和机会，避免旧节点继续触发。
     async def replace_framework(self, day: str, nodes: list[dict[str, Any]]) -> None:
@@ -295,9 +375,9 @@ class LifeStore:
                 for item in opportunities:
                     conn.execute(
                         """INSERT OR IGNORE INTO proactive_opportunities
-                        (id,framework_id,topic,motive,weight,privacy,expires_at) VALUES(?,?,?,?,?,?,?)""",
+                        (id,framework_id,topic,motive,weight,privacy,target_user_id,expires_at) VALUES(?,?,?,?,?,?,?,?)""",
                         (item["id"], framework_id, item["topic"], item["motive"], item["weight"],
-                         item.get("privacy","normal"), item["expires_at"]),
+                         item.get("privacy","normal"),item.get("target_user_id",""),item["expires_at"]),
                     )
 
     async def get_scene(self, framework_id: str) -> dict[str, Any]:
@@ -329,8 +409,9 @@ class LifeStore:
         async with self._lock:
             self.conn.execute(
                 """INSERT OR IGNORE INTO proactive_opportunities
-                (id,framework_id,topic,motive,weight,privacy,expires_at) VALUES(?,?,?,?,?,?,?)""",
-                (item["id"],item["framework_id"],item["topic"],item["motive"],item["weight"],item.get("privacy","normal"),item["expires_at"]),
+                (id,framework_id,topic,motive,weight,privacy,target_user_id,expires_at) VALUES(?,?,?,?,?,?,?,?)""",
+                (item["id"],item["framework_id"],item["topic"],item["motive"],item["weight"],item.get("privacy","normal"),
+                 item.get("target_user_id",""),item["expires_at"]),
             )
             self.conn.commit()
 
@@ -615,6 +696,228 @@ class LifeStore:
                 "DELETE FROM reply_turns WHERE session_id=? AND anchor_message_id=?",
                 (session_id,anchor_message_id),
             )
+            self.conn.commit()
+
+    async def save_diary(self, day: str, title: str, content: str, mood_summary: str,
+                         source_digest: str, created_at: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute(
+                    """INSERT OR IGNORE INTO diary_entries
+                    (day,created_at,title,content,mood_summary,privacy,source_digest)
+                    VALUES(?,?,?,?,?,'private',?)""",
+                    (day,created_at,title[:120],content[:4000],mood_summary[:300],source_digest[:128]),
+                )
+                conn.execute("UPDATE memory_runtime SET last_diary_day=? WHERE id=1",(day,))
+
+    async def get_diary(self, day: str) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM diary_entries WHERE day=?",(day,)).fetchone()
+            return dict(row) if row else {}
+
+    async def list_diaries(self, limit: int=7) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT * FROM diary_entries ORDER BY day DESC LIMIT ?",(max(1,min(100,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def scenes_for_day(self, day: str) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT f.kind,f.summary,f.location,s.scene,s.applied
+                FROM daily_framework f LEFT JOIN detailed_scenes s ON s.framework_id=f.id
+                WHERE f.day=? ORDER BY f.start_minute""",(day,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def interaction_counts(self, start: float, end: float) -> list[dict[str, Any]]:
+        """日记只读取交互数量，不读取用户消息摘要或原文。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT user_id,kind,COUNT(*) count FROM interaction_events
+                WHERE created_at>=? AND created_at<? GROUP BY user_id,kind""",(start,end)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def add_important_date(self, user_id: str, event_name: str, event_date: str,
+                                 recurrence: str, source: str, now: float) -> int:
+        clean_recurrence=recurrence if recurrence in {"none","annual"} else "none"
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute(
+                    """INSERT OR IGNORE INTO important_dates
+                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (user_id,event_name[:120],event_date,clean_recurrence,source[:40],now,now),
+                )
+                row=conn.execute(
+                    """SELECT id FROM important_dates
+                    WHERE user_id=? AND event_name=? AND event_date=? AND recurrence=?""",
+                    (user_id,event_name[:120],event_date,clean_recurrence),
+                ).fetchone()
+                return int(row[0]) if row else 0
+
+    async def list_important_dates(self, user_id: str="") -> list[dict[str, Any]]:
+        async with self._lock:
+            if user_id:
+                rows=self.conn.execute(
+                    "SELECT * FROM important_dates WHERE user_id=? ORDER BY event_date,event_name",(user_id,)
+                ).fetchall()
+            else:
+                rows=self.conn.execute("SELECT * FROM important_dates ORDER BY event_date,event_name").fetchall()
+            return [dict(row) for row in rows]
+
+    async def remove_important_date(self, date_id: int, user_id: str="") -> bool:
+        async with self._lock:
+            with self._tx() as conn:
+                if user_id:
+                    cursor=conn.execute("DELETE FROM important_dates WHERE id=? AND user_id=?",(date_id,user_id))
+                else:
+                    cursor=conn.execute("DELETE FROM important_dates WHERE id=?",(date_id,))
+                if cursor.rowcount==1:
+                    conn.execute("DELETE FROM date_trigger_events WHERE date_id=?",(date_id,))
+                    conn.execute(
+                        "DELETE FROM proactive_opportunities WHERE framework_id=? AND consumed_at=0",
+                        (f"important-date:{date_id}",),
+                    )
+                return cursor.rowcount==1
+
+    async def add_date_candidate(self, user_id: str, event_name: str, date_text: str,
+                                 suggested_date: str, confidence: float, source_summary: str,
+                                 now: float) -> int:
+        async with self._lock:
+            existing=self.conn.execute(
+                """SELECT id FROM date_candidates WHERE user_id=? AND event_name=? AND date_text=?
+                AND status='pending' ORDER BY created_at DESC LIMIT 1""",
+                (user_id,event_name[:120],date_text[:120]),
+            ).fetchone()
+            if existing:return int(existing[0])
+            cursor=self.conn.execute(
+                """INSERT INTO date_candidates
+                (user_id,event_name,date_text,suggested_date,confidence,source_summary,created_at,status)
+                VALUES(?,?,?,?,?,?,?,'pending')""",
+                (user_id,event_name[:120],date_text[:120],suggested_date[:10],max(0,min(1,float(confidence))),
+                 source_summary[:300],now),
+            )
+            self.conn.commit(); return int(cursor.lastrowid)
+
+    async def list_date_candidates(self, user_id: str, status: str="pending") -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM date_candidates WHERE user_id=? AND status=?
+                ORDER BY created_at DESC""",(user_id,status)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def confirm_date_candidate(self, candidate_id: int, user_id: str,
+                                     event_date: str, now: float) -> int:
+        """候选确认与正式日期写入同一事务，避免出现半确认状态。"""
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute(
+                    "SELECT * FROM date_candidates WHERE id=? AND user_id=? AND status='pending'",
+                    (candidate_id,user_id),
+                ).fetchone()
+                if not row:return 0
+                recurrence="annual" if any(word in str(row["event_name"]) for word in ("生日","纪念日")) else "none"
+                conn.execute(
+                    """INSERT OR IGNORE INTO important_dates
+                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (user_id,row["event_name"],event_date,recurrence,"confirmed_candidate",now,now),
+                )
+                saved=conn.execute(
+                    """SELECT id FROM important_dates
+                    WHERE user_id=? AND event_name=? AND event_date=? AND recurrence=?""",
+                    (user_id,row["event_name"],event_date,recurrence),
+                ).fetchone()
+                conn.execute("UPDATE date_candidates SET status='confirmed' WHERE id=?",(candidate_id,))
+                return int(saved[0]) if saved else 0
+
+    async def add_skill_evidence(self, day: str, skill_name: str, category: str,
+                                 source_kind: str, evidence_summary: str, evidence_key: str,
+                                 gain: float, daily_max: float, now: float) -> bool:
+        async with self._lock:
+            with self._tx() as conn:
+                if conn.execute("SELECT 1 FROM skill_events WHERE evidence_key=?",(evidence_key,)).fetchone():
+                    return False
+                gained=float(conn.execute(
+                    "SELECT COALESCE(SUM(gain),0) FROM skill_events WHERE day=? AND skill_name=?",
+                    (day,skill_name),
+                ).fetchone()[0])
+                applied=max(0,min(float(gain),max(0,float(daily_max)-gained)))
+                if applied<=0:return False
+                conn.execute(
+                    """INSERT INTO skill_events
+                    (day,skill_name,source_kind,evidence_summary,evidence_key,gain,created_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (day,skill_name[:120],source_kind[:40],evidence_summary[:300],evidence_key[:80],applied,now),
+                )
+                conn.execute(
+                    """INSERT INTO skills(skill_name,category,level,evidence_count,last_practiced_at,updated_at)
+                    VALUES(?,?,?,1,?,?)
+                    ON CONFLICT(skill_name) DO UPDATE SET
+                    category=excluded.category,level=MIN(100,skills.level+excluded.level),
+                    evidence_count=skills.evidence_count+1,last_practiced_at=excluded.last_practiced_at,
+                    updated_at=excluded.updated_at""",
+                    (skill_name[:120],category[:80],applied,now,now),
+                )
+                return True
+
+    async def list_skills(self, limit: int=30) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT * FROM skills ORDER BY level DESC,last_practiced_at DESC LIMIT ?",
+                (max(1,min(100,int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def memory_runtime(self) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM memory_runtime WHERE id=1").fetchone()
+            return dict(row) if row else {}
+
+    async def mark_skill_day(self, day: str) -> None:
+        async with self._lock:
+            self.conn.execute("UPDATE memory_runtime SET last_skill_day=? WHERE id=1",(day,)); self.conn.commit()
+
+    async def reserve_date_trigger(self, date_id: int, occurrence_date: str,
+                                   lead_days: int, now: float) -> bool:
+        async with self._lock:
+            cursor=self.conn.execute(
+                """INSERT OR IGNORE INTO date_trigger_events
+                (date_id,occurrence_date,lead_days,created_at) VALUES(?,?,?,?)""",
+                (date_id,occurrence_date,lead_days,now),
+            )
+            self.conn.commit(); return cursor.rowcount==1
+
+    async def add_date_opportunity_once(self, date_id: int, occurrence_date: str, lead_days: int,
+                                        item: dict[str, Any], now: float) -> bool:
+        """日期触发标记和专属主动契机必须一起成功或一起回滚。"""
+        async with self._lock:
+            with self._tx() as conn:
+                cursor=conn.execute(
+                    """INSERT OR IGNORE INTO date_trigger_events
+                    (date_id,occurrence_date,lead_days,created_at) VALUES(?,?,?,?)""",
+                    (date_id,occurrence_date,lead_days,now),
+                )
+                if cursor.rowcount!=1:return False
+                conn.execute(
+                    """INSERT OR IGNORE INTO proactive_opportunities
+                    (id,framework_id,topic,motive,weight,privacy,target_user_id,expires_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                    (item["id"],item["framework_id"],item["topic"],item["motive"],item["weight"],
+                     item.get("privacy","target_only"),item.get("target_user_id",""),item["expires_at"]),
+                )
+                return True
+
+    async def cleanup_date_candidates(self, before: float) -> None:
+        async with self._lock:
+            self.conn.execute(
+                "DELETE FROM date_candidates WHERE status='pending' AND created_at<?",(before,)
+            )
+            self.conn.execute("UPDATE memory_runtime SET last_cleanup_at=? WHERE id=1",(time.time(),))
             self.conn.commit()
 
     # 每个自然日只结算一次关系温度，避免巡检重复加分。

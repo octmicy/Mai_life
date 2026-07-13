@@ -21,8 +21,9 @@ class DummyLogger:
 
 
 class DummyLLM:
+    def task_available(self,kind): return False
     async def generate(self, *args, **kwargs): return ""
-    async def generate_json(self, prompt, system, fallback, max_tokens=0): return fallback
+    async def generate_json(self, prompt, system, fallback, max_tokens=0, **kwargs): return fallback
 
 
 class StoreTests(unittest.IsolatedAsyncioTestCase):
@@ -95,6 +96,23 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         user=await upgraded.get_user("old")
         self.assertEqual(user["temperature"],42); self.assertEqual(user["role"],"friend")
+        await upgraded.close(); other.cleanup()
+
+    async def test_v2_opportunity_table_gains_target_user_without_data_loss(self):
+        other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+        conn=sqlite3.connect(path); conn.executescript("""
+        CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO meta VALUES('schema_version','2');
+        CREATE TABLE proactive_opportunities(
+          id TEXT PRIMARY KEY,framework_id TEXT NOT NULL,topic TEXT NOT NULL,motive TEXT NOT NULL,
+          weight REAL NOT NULL,privacy TEXT NOT NULL,expires_at REAL NOT NULL,
+          consumed_by TEXT NOT NULL DEFAULT '',consumed_at REAL NOT NULL DEFAULT 0);
+        INSERT INTO proactive_opportunities VALUES('old','f1','旧契机','旧数据',0.5,'normal',9999999999,'',0);
+        """); conn.commit(); conn.close()
+        upgraded=LifeStore(other.name); await upgraded.initialize()
+        columns={row[1] for row in upgraded.conn.execute("PRAGMA table_info(proactive_opportunities)")}
+        row=upgraded.conn.execute("SELECT topic,target_user_id FROM proactive_opportunities WHERE id='old'").fetchone()
+        self.assertIn("target_user_id",columns); self.assertEqual(tuple(row),("旧契机",""))
         await upgraded.close(); other.cleanup()
 
 

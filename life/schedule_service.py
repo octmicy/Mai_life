@@ -55,6 +55,18 @@ class ScheduleService:
             ]
         return self._validate(day,raw)
 
+    @staticmethod
+    def _apply_memory_hints(day:str,nodes:list[dict[str,Any]],memory_context:dict[str,Any]|None)->list[dict[str,Any]]:
+        context=memory_context or {}; dates=context.get("private_date_hints") or []
+        if not dates:return nodes
+        result=[dict(item) for item in nodes]
+        target=next((item for item in result if item.get("kind")=="leisure"),None)
+        if target is None:return result
+        target["summary"]=(str(target.get("summary") or "自由活动")+"，也为临近的重要安排做些准备")[:160]
+        seed=f"{day}:{target['start_minute']}:{target['end_minute']}:{target['kind']}:{target['summary']}"
+        target["id"]=hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+        return result
+
     # 所有 LLM 日程必须经过时间、类型、重叠和必要节点校验。
     def _validate(self, day: str, raw: Any) -> list[dict[str, Any]]:
         if not isinstance(raw,list): return []
@@ -85,12 +97,15 @@ class ScheduleService:
         return result if has_sleep and meals>=2 else []
 
     # LLM 失败或结果不合格时使用模板骨架，保证日程服务始终可用。
-    async def ensure_day(self, now: datetime, personality: str, weather_text: str, force: bool=False) -> list[dict[str, Any]]:
+    async def ensure_day(self, now: datetime, personality: str, weather_text: str, force: bool=False,
+                         memory_context: dict[str,Any]|None=None) -> list[dict[str, Any]]:
         day=now.strftime("%Y-%m-%d"); existing=await self.store.get_framework(day)
         if existing and not force: return existing
-        weekend=now.weekday()>=5; fallback=self._fallback(day,weekend)
+        weekend=now.weekday()>=5; fallback=self._apply_memory_hints(day,self._fallback(day,weekend),memory_context)
         prompt=(f"为虚拟网友麦麦生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
                 f"人格：{personality or '自然、独立、有自己的生活'}\n模板骨架：{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
+                f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁；"
+                "技能熟悉度是能力边界，不得安排明显超过当前阶段的高难任务。\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。时间不重叠，包含夜间睡眠和至少两顿饭。")
         raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=2200,task_kind="schedule",request_type="daily_schedule")

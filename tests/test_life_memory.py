@@ -8,7 +8,7 @@ from datetime import datetime,timedelta,timezone
 from Mai_life.config import MaiLifeSettings,UserProfile
 from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
 from Mai_life.life.life_state import LifeStateEngine
-from Mai_life.life.memory_service import MemoryService,skill_stage
+from Mai_life.life.memory_service import MemoryService
 from Mai_life.life.proactive import ProactiveEngine
 
 
@@ -55,41 +55,31 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dream["id"],dream_id); self.assertEqual(dream["fragments"],["片段一","片段二"])
 
     async def test_diary_never_copies_interaction_content(self):
-        await self.store.sync_users([UserProfile(user_id="owner",role="owner",proactive_enabled=True)])
+        await self.store.sync_users([UserProfile(user_id="10001",role="owner",proactive_enabled=True)])
         target=self.now.date()-timedelta(days=1); day=target.isoformat(); start,_=self.service._day_bounds(self.now,target)
         await self.store.replace_framework(day,[{"id":"n1","day":day,"start_minute":480,"end_minute":540,
             "kind":"meal","summary":"做早餐","location":"厨房","energy_load":-1,"shareability":0.3}])
-        await self.store.record_interaction("owner","绝不能进入日记的聊天原句",start+10,9)
+        await self.store.record_interaction("10001","绝不能进入日记的聊天原句",start+10,9)
         await self.service._generate_diary(self.now,target)
         diary=await self.store.get_diary(day)
         self.assertEqual(diary["title"],"收好今天")
         diary_prompt=next(prompt for kind,prompt in self.llm.prompts if kind=="daily_diary")
         self.assertNotIn("绝不能进入日记的聊天原句",diary_prompt)
         opportunities=await self.store.active_opportunities(self.now.timestamp())
-        self.assertEqual(next(item for item in opportunities if item["privacy"]=="owner_only")["target_user_id"],"owner")
+        self.assertEqual(next(item for item in opportunities if item["privacy"]=="owner_only")["target_user_id"],"10001")
 
     async def test_explicit_and_fuzzy_dates_are_isolated(self):
-        await self.service.observe_message("u1","我的生日是8月15日",self.now)
-        await self.service.observe_message("u2","下周三有考试",self.now)
-        await self.service.observe_message("u3","我的生日是2月29日",self.now)
-        dates=await self.store.list_important_dates("u1"); candidates=await self.store.list_date_candidates("u2")
+        await self.service.observe_message("10001","我的生日是8月15日",self.now)
+        await self.service.observe_message("10002","下周三有考试",self.now)
+        await self.service.observe_message("10003","我的生日是2月29日",self.now)
+        dates=await self.store.list_important_dates("10001"); candidates=await self.store.list_date_candidates("10002")
         self.assertEqual(len(dates),1); self.assertEqual(dates[0]["recurrence"],"annual")
         self.assertEqual(len(candidates),1); self.assertEqual(candidates[0]["event_name"],"考试")
-        self.assertEqual(await self.store.list_important_dates("u2"),[])
-        saved=await self.store.confirm_date_candidate(candidates[0]["id"],"u2","2026-07-22",self.now.timestamp())
-        self.assertGreater(saved,0); self.assertEqual((await self.store.list_important_dates("u2"))[0]["event_date"],"2026-07-22")
-        leap=await self.store.list_important_dates("u3")
+        self.assertEqual(await self.store.list_important_dates("10002"),[])
+        saved=await self.store.confirm_date_candidate(candidates[0]["id"],"10002","2026-07-22",self.now.timestamp())
+        self.assertGreater(saved,0); self.assertEqual((await self.store.list_important_dates("10002"))[0]["event_date"],"2026-07-22")
+        leap=await self.store.list_important_dates("10003")
         self.assertEqual(leap[0]["event_date"],"2000-02-29"); self.assertEqual(leap[0]["recurrence"],"annual")
-
-    async def test_skill_growth_uses_evidence_dedup_and_daily_cap(self):
-        day="2026-07-12"; now=self.now.timestamp()
-        first=await self.store.add_skill_evidence(day,"编程","技术","schedule","调试插件","same",0.7,1.0,now)
-        duplicate=await self.store.add_skill_evidence(day,"编程","技术","schedule","调试插件","same",0.7,1.0,now)
-        capped=await self.store.add_skill_evidence(day,"编程","技术","schedule","继续调试","other",0.7,1.0,now)
-        skill=(await self.store.list_skills())[0]
-        self.assertTrue(first); self.assertFalse(duplicate); self.assertTrue(capped)
-        self.assertEqual(skill["level"],1.0); self.assertEqual(skill["evidence_count"],2)
-        self.assertEqual(skill_stage(skill["level"]),"不太熟")
 
     async def test_generated_dream_creates_fragments_and_opportunity(self):
         engine=LifeStateEngine(self.store,self.config,self.llm,DummyLogger())
@@ -101,19 +91,19 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_targeted_date_opportunity_only_triggers_target_user(self):
         await self.store.sync_users([
-            UserProfile(user_id="u1",proactive_enabled=True,quiet_start="00:00",quiet_end="08:00"),
-            UserProfile(user_id="u2",proactive_enabled=True,quiet_start="00:00",quiet_end="08:00"),
+            UserProfile(user_id="10001",proactive_enabled=True,quiet_start="00:00",quiet_end="08:00"),
+            UserProfile(user_id="10002",proactive_enabled=True,quiet_start="00:00",quiet_end="08:00"),
         ])
-        await self.store.set_user_stream("u1","stream-1"); await self.store.set_user_stream("u2","stream-2")
-        now=self.now.replace(hour=10); await self.store.add_important_date("u2","考试",now.date().isoformat(),"none","test",now.timestamp())
+        await self.store.set_user_stream("10001","stream-1"); await self.store.set_user_stream("10002","stream-2")
+        now=self.now.replace(hour=10); await self.store.add_important_date("10002","考试",now.date().isoformat(),"none","test",now.timestamp())
         await self.service._create_date_opportunities(now)
         ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
         triggered=await engine.patrol(now,await self.store.get_state())
         self.assertTrue(triggered); self.assertEqual(ctx.maisaka.calls[0]["stream_id"],"stream-2")
 
     async def test_pending_proactive_prevents_quota_race_until_expiry(self):
-        profile=UserProfile(user_id="u1",role="owner",proactive_enabled=True)
-        await self.store.sync_users([profile]); await self.store.set_user_stream("u1","stream-1")
+        profile=UserProfile(user_id="10001",role="owner",proactive_enabled=True,daily_proactive_max=2)
+        await self.store.sync_users([profile]); await self.store.set_user_stream("10001","stream-1")
         now=self.now.replace(hour=10)
         for index in range(2):
             await self.store.add_opportunity({"id":f"op-{index}","framework_id":"f","topic":f"话题{index}",

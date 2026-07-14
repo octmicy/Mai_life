@@ -6,7 +6,7 @@
 # 1. 不要修改 config_version，它由插件负责升级和迁移。
 # 2. 字符串必须放在英文双引号中，例如 city = "Shanghai"。
 # 3. 布尔值只能写小写 true 或 false，不能写 True、False、开、关。
-# 4. 数字不要加引号，例如 daily_max_per_user = 2。
+# 4. 数字不要加引号，例如 daily_proactive_max = 2。
 # 5. 时间统一使用 24 小时 HH:MM 格式，例如 "00:00"、"08:30"。
 # 6. 列表使用英文方括号和英文逗号，例如 ["sleep", "nap"]。
 # 7. 不要填写 null、None 或留下一半的 TOML 语句，TOML 不支持空值对象。
@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.6.0"
+config_version = "1.7.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -52,11 +52,8 @@ proactive_enabled = false
 # 关系角色：friend / owner。最多只能有一个 owner。
 role = "friend"
 
-# -1 按角色自动取值（主人 2、朋友 1），0 表示禁止主动消息。
-daily_proactive_max = -1
-
-# 可选：用户称呼，留空不会影响运行。
-display_name = ""
+# 明确填写 0～20；0 禁止主动，朋友通常为 1，主人通常为 2。
+daily_proactive_max = 1
 
 # 首次创建档案时的关系温度，范围 0～100。推荐保持 30。
 initial_temperature = 30
@@ -68,12 +65,13 @@ quiet_end = "08:00"
 # 是否允许把白名单群聊中的公开话题低频转述到该用户私聊。朋友默认关闭。
 group_to_private_enabled = false
 
-# 第二个用户示例：取消下面注释后填写。
+# 主人示例：取消下面注释后填写。最多只能有一个 owner。
 # [[users.profiles]]
 # user_id = "987654321"
 # enabled = true
 # proactive_enabled = true
-# display_name = "朋友"
+# role = "owner"
+# daily_proactive_max = 2
 # initial_temperature = 30
 # quiet_start = "00:00"
 # quiet_end = "08:00"
@@ -123,9 +121,6 @@ important_dates_enabled = true
 date_model_analysis_enabled = false
 date_candidate_retention_days = 90
 date_reminder_lead_days = [30, 7, 1, 0]
-skills_enabled = true
-skill_daily_gain_max = 1.0
-skill_model_analysis_enabled = false
 
 
 [rest_gate]
@@ -171,6 +166,13 @@ text_wait_seconds = 1.2
 image_wait_seconds = 3.0
 forward_wait_seconds = 2.0
 max_wait_seconds = 6.0
+
+# 群聊防抖默认关闭；开启后覆盖所有 QQ 群，并按“群号 + 发送者 QQ”隔离。
+group_enabled = false
+group_text_wait_seconds = 0.8
+group_image_wait_seconds = 2.0
+group_forward_wait_seconds = 1.2
+group_max_wait_seconds = 4.0
 max_messages = 12
 max_media_bytes = 8388608
 outbound_turn_guard = true
@@ -210,7 +212,6 @@ dream_task = ""
 vision_summary_task = ""
 diary_task = ""
 date_analysis_task = ""
-skill_task = ""
 news_task = ""
 search_task = ""
 relevance_task = ""
@@ -247,9 +248,6 @@ enabled = true
 # 检查主动契机的间隔，范围 1～60 分钟。
 patrol_interval_minutes = 10
 
-# 每位用户每天实际主动发送上限。Planner 选择沉默时不计数。
-daily_max_per_user = 2
-
 # 同一用户两次主动消息之间的最小间隔，单位分钟。
 min_interval_minutes = 180
 
@@ -273,42 +271,45 @@ association_enabled = true
 association_threshold = 0.65
 proactive_share_enabled = true
 context_item_limit = 3
-initial_backoff_minutes = 15
-maximum_backoff_minutes = 360
+
+
+[search_api]
+# 新闻和主动搜索共用这条有序服务链；默认没有启用服务，也不内置任何 Key。
+timeout_seconds = 12.0
+max_attempts = 12
+max_results = 5
+
+# 建议在 WebUI 添加。列表顺序就是跨服务降级顺序。
+# provider_type 可选：bocha / tavily / you / openai_responses / openai_chat
+# [[search_api.providers]]
+# enabled = true
+# provider_type = "bocha"
+# api_keys = ["主Key", "备用Key"]
+# endpoint = ""
+# model = ""
+#
+# 自定义中转示例：
+# [[search_api.providers]]
+# enabled = true
+# provider_type = "openai_responses"
+# api_keys = ["中转Key"]
+# endpoint = "https://example.com/v1"
+# model = "grok-model-name"
 
 
 [news]
 enabled = false
-refresh_minutes = 180
-timeout_seconds = 8.0
+daily_max = 1
+interest_topics = ["科技", "人工智能", "游戏", "文化"]
+full_text_count = 3
 max_concurrency = 2
-max_items_per_source = 10
-fetch_full_text = true
 max_article_chars = 8000
 retention_days = 7
-
-# 新闻源请优先在 WebUI 添加。手动配置示例：
-# [[news.sources]]
-# source_id = "my-feed"
-# enabled = true
-# source_type = "rss"
-# name = "自建订阅"
-# url = "https://rss.example.com/feed.xml"
-# api_name = ""
+allowed_schedule_types = ["leisure", "rest"]
 
 
 [search]
 enabled = false
-connector = "searxng"
-endpoint = ""
-api_key = ""
-query_parameter = "q"
-results_path = "results"
-title_field = "title"
-url_field = "url"
-snippet_field = "content"
-timeout_seconds = 8.0
-max_results = 5
 daily_max = 1
 include_chat_topics = false
 interest_keywords = ["科技", "创作", "游戏", "生活方式"]
@@ -329,20 +330,12 @@ interesting_threshold = 0.65
 summary_retention_hours = 72
 relay_pending_seconds = 120
 
-# 群聊和群友关系建议在 WebUI 添加。手动配置示例：
+# 群聊建议在 WebUI 添加。群名称由 MaiBot 会话自动读取，只按 QQ 群号匹配。
 # [[social.groups]]
 # group_id = "123456789"
-# alias = "朋友群"
-# display_name = "朋友群"
 # enabled = true
 # observe_enabled = true
 # relay_target_enabled = true
-#
-# [[social.relations]]
-# group_alias = "朋友群"
-# alias = "小明"
-# user_id = "987654321"
-# display_name = "小明"
 
 
 [creation]

@@ -109,7 +109,7 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await self.store.is_recalled_turn("private-1","m2",now+1))
         await self.store.initialize()
-        self.assertEqual(SCHEMA_VERSION,8)
+        self.assertEqual(SCHEMA_VERSION,9)
         columns={row[1] for row in self.store.conn.execute("PRAGMA table_info(recall_events)")}
         self.assertIn("summary_expires_at",columns)
 
@@ -258,7 +258,7 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
     async def test_group_observation_and_pending_buffer_are_removed(self):
         config=MaiLifeSettings(); config.social.enabled=True
         object.__setattr__(config.social,"observation_wait_seconds",0.05)
-        config.social.groups=[SocialGroupProfile(group_id="100",alias="测试群",observe_enabled=True)]
+        config.social.groups=[SocialGroupProfile(group_id="100",observe_enabled=True)]
         observer=GroupObserver(self.store,config,OfflineLLM(),DummyLogger())
         now=datetime.now(timezone.utc)
         pending=asyncio.create_task(observer.observe(group_message("g1"),now))

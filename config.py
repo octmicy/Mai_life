@@ -11,8 +11,14 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.6.0"
+CONFIG_SCHEMA_VERSION = "1.7.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _qq_id(value:Any,field_name:str)->str:
+    text=str(value or "").strip()
+    if text and not re.fullmatch(r"[0-9]+",text):raise ValueError(f"{field_name} 必须填写纯数字 QQ 号")
+    return text
 
 
 def _ui(
@@ -109,6 +115,16 @@ class PluginSettings(PluginConfigBase):
         del value
         return CONFIG_SCHEMA_VERSION
 
+    @field_validator("admin_user_ids",mode="before")
+    @classmethod
+    def normalize_admin_ids(cls,value:Any)->list[str]:
+        values=value if isinstance(value,list) else []
+        result=[]
+        for item in values:
+            user_id=_qq_id(item,"管理员 QQ")
+            if user_id and user_id not in result:result.append(user_id)
+        return result
+
 
 class UserProfile(PluginConfigBase):
     """单个私聊网友的关系和免打扰设置。"""
@@ -153,19 +169,11 @@ class UserProfile(PluginConfigBase):
         ),
     )
     daily_proactive_max: int = Field(
-        default=-1, ge=-1, le=20,
-        description="该用户每日主动消息上限；-1 按角色自动取值。",
+        default=1, ge=0, le=20,
+        description="该用户每天实际收到的主动消息上限。",
         json_schema_extra=_ui(
-            "用户每日主动上限", "-1 表示主人 2 次、朋友 1 次；0 表示禁止主动消息。", 4,
-            label_en="Per-user Daily Proactive Limit", hint_en="-1 uses role defaults: owner 2, friend 1. Set 0 to disable.",
-        ),
-    )
-    display_name: str = Field(
-        default="",
-        description="麦麦用于识别该用户的称呼。",
-        json_schema_extra=_ui(
-            "用户称呼", "可留空；填写后用于状态面板和后续个性化上下文。", 5,
-            label_en="Display Name", hint_en="Optional name used in status and personalized context.", placeholder="例如：小明",
+            "用户每日主动上限", "直接填写 0～20；0 表示禁止主动消息，主人通常设置为 2，朋友通常设置为 1。", 4,
+            label_en="Per-user Daily Proactive Limit", hint_en="Set an explicit value from 0 to 20. Zero disables proactive messages.",
         ),
     )
     initial_temperature: int = Field(
@@ -202,10 +210,21 @@ class UserProfile(PluginConfigBase):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_daily_limit(cls, value: Any) -> Any:
+        """把 v1.6 的 -1 角色默认值迁移为明确数字。"""
+        if not isinstance(value,dict):return value
+        data=dict(value)
+        try:configured=int(data.get("daily_proactive_max",1))
+        except (TypeError,ValueError):configured=1
+        if configured<0:data["daily_proactive_max"]=2 if str(data.get("role") or "friend")=="owner" else 1
+        return data
+
     @field_validator("user_id", mode="before")
     @classmethod
     def normalize_user_id(cls, value: Any) -> str:
-        return str(value or "").strip()
+        return _qq_id(value,"私聊用户")
 
     @field_validator("quiet_start", mode="before")
     @classmethod
@@ -257,62 +276,26 @@ class SocialGroupProfile(PluginConfigBase):
                               label_en="QQ Group ID", hint_en="Real QQ group ID used by both SnowLuma and NapCat.",
                               placeholder="123456789"),
     )
-    alias: str = Field(
-        default="", description="命令中使用的唯一群别名。",
-        json_schema_extra=_ui("群别名", "用于 /mai_relay，建议使用简短且唯一的名称。", 1,
-                              label_en="Group Alias", hint_en="Unique short name used by /mai_relay.", placeholder="朋友群"),
-    )
-    display_name: str = Field(
-        default="", description="群聊显示名称。",
-        json_schema_extra=_ui("群显示名", "可留空；仅用于状态和转述背景。", 2,
-                              label_en="Group Display Name", hint_en="Optional label used in status and relay context."),
-    )
     enabled: bool = Field(
         default=True, description="是否启用该群配置。",
-        json_schema_extra=_ui("启用群配置", "关闭后该群既不观察也不作为转述目标。", 3,
+        json_schema_extra=_ui("启用群配置", "关闭后该群既不观察也不作为转述目标。", 1,
                               label_en="Enable Group", hint_en="Disable all observation and relay behavior for this group."),
     )
     observe_enabled: bool = Field(
         default=False, description="是否观察该群的公开话题。",
-        json_schema_extra=_ui("允许观察公开话题", "只保存短摘要，不保存群聊原文。", 4,
+        json_schema_extra=_ui("允许观察公开话题", "只保存短摘要，不保存群聊原文。", 2,
                               label_en="Observe Public Topics", hint_en="Store short summaries only, never raw group messages."),
     )
     relay_target_enabled: bool = Field(
         default=False, description="是否允许管理员向该群发起显式转述。",
-        json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /mai_relay 触发该群 Planner。", 5,
+        json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /mai_relay 群QQ号 内容触发该群 Planner。", 3,
                               label_en="Allow Relay Target", hint_en="Allow owner/admin /mai_relay triggers for this group."),
     )
 
-    @field_validator("group_id", "alias", "display_name", mode="before")
+    @field_validator("group_id", mode="before")
     @classmethod
     def normalize_text(cls, value: Any) -> str:
-        return str(value or "").strip()
-
-
-class SocialRelationProfile(PluginConfigBase):
-    """可被显式 @ 的群友关系词条。"""
-
-    __ui_label__: ClassVar[str] = "群友关系词条"
-
-    group_alias: str = Field(default="", description="群友所属群别名。",
-        json_schema_extra=_ui("所属群别名", "必须与群聊白名单中的群别名完全一致。", 0,
-                              label_en="Group Alias", hint_en="Must exactly match a configured group alias."))
-    alias: str = Field(default="", description="命令中使用的关系别名。",
-        json_schema_extra=_ui("群友别名", "例如“小明”；同一群内必须唯一。", 1,
-                              label_en="Member Alias", hint_en="Must be unique within the configured group."))
-    user_id: str = Field(default="", description="群友 QQ 号。",
-        json_schema_extra=_ui("群友QQ号", "用于生成 Host 标准 @ 消息段，不依赖适配器私有格式。", 2,
-                              label_en="Member QQ ID", hint_en="Used to build a standard Host mention component.",
-                              placeholder="123456789"))
-    display_name: str = Field(default="", description="群友显示名。",
-        json_schema_extra=_ui("群友显示名", "可留空；用于 Planner 理解转述对象。", 3,
-                              label_en="Member Display Name", hint_en="Optional name supplied to the Planner."))
-
-    @field_validator("group_alias", "alias", "user_id", "display_name", mode="before")
-    @classmethod
-    def normalize_text(cls, value: Any) -> str:
-        return str(value or "").strip()
-
+        return _qq_id(value,"QQ群")
 
 class SocialSettings(PluginConfigBase):
     """群聊观察、显式转述和群转私的共同边界。"""
@@ -351,11 +334,14 @@ class SocialSettings(PluginConfigBase):
         json_schema_extra=_ui("转述确认窗口（秒）", "Planner 沉默或超时不会记为已发送。", 9,
                               label_en="Relay Confirmation Window", hint_en="Planner silence or expiry is not counted as sent."))
     groups: list[SocialGroupProfile] = Field(default_factory=list, description="QQ群白名单。",
-        json_schema_extra=_ui("群聊白名单", "分别控制观察来源与显式转述目标。", 10,
+        json_schema_extra=_ui("群聊白名单", "只填写真实 QQ 群号；群名称由 MaiBot 会话自动读取。", 10,
                               label_en="Group Allowlist", hint_en="Controls observation sources and explicit relay targets."))
-    relations: list[SocialRelationProfile] = Field(default_factory=list, description="可解析的群友关系词条。",
-        json_schema_extra=_ui("群友关系词条", "只有唯一匹配时才会生成真实 @。", 11,
-                              label_en="Member Relations", hint_en="A real mention is built only for an unambiguous match."))
+
+    @model_validator(mode="after")
+    def unique_group_ids(self) -> "SocialSettings":
+        ids=[item.group_id for item in self.groups if item.group_id]
+        if len(ids)!=len(set(ids)):raise ValueError("社交转述中的 QQ 群号不能重复")
+        return self
 
 
 class CreationSettings(PluginConfigBase):
@@ -500,14 +486,14 @@ class StateSettings(PluginConfigBase):
 
 
 class MemorySettings(PluginConfigBase):
-    """梦境、日记、重要日期与技能成长。"""
+    """梦境、日记与重要日期。"""
 
     __ui_label__: ClassVar[str] = "生活记忆"
     __ui_order__: ClassVar[int] = 4
 
     enabled: bool = Field(
         default=True, description="启用离线生活记忆结算。",
-        json_schema_extra=_ui("启用生活记忆", "总开关；关闭后保留已有日记、日期和技能数据。", 0,
+        json_schema_extra=_ui("启用生活记忆", "总开关；关闭后保留已有日记和日期数据。", 0,
                               label_en="Enable Life Memory", hint_en="Keep existing data while pausing memory settlement."),
     )
     dream_fragments_enabled: bool = Field(
@@ -555,22 +541,6 @@ class MemorySettings(PluginConfigBase):
         json_schema_extra=_ui("重要日期提前天数", "默认提前 30、7、1 天以及当天生成一次专属契机。", 9,
                               label_en="Important Date Lead Days", hint_en="Days before an event when a private opportunity may be created."),
     )
-    skills_enabled: bool = Field(
-        default=True, description="根据真实生活证据缓慢增加能力熟悉度。",
-        json_schema_extra=_ui("启用技能成长", "只根据日程实践、创作和真实工具使用增长。", 10,
-                              label_en="Enable Skill Growth", hint_en="Grow skills only from observed practice evidence."),
-    )
-    skill_daily_gain_max: float = Field(
-        default=1.0, ge=0.1, le=5.0, description="单项技能每日最多增长值。",
-        json_schema_extra=_ui("单技能每日增长上限", "默认 1.0，避免短期内从陌生直接变成熟练。", 11,
-                              label_en="Daily Skill Gain Limit", hint_en="Maximum daily gain for one skill."),
-    )
-    skill_model_analysis_enabled: bool = Field(
-        default=False, description="使用快速模型从生活场景补充技能证据分类。",
-        json_schema_extra=_ui("启用技能模型分析", "默认关闭；规则无法覆盖的人设技能可开启。模型仍不能直接修改熟悉度。", 12,
-                              label_en="Enable Skill Model Analysis", hint_en="The model may classify evidence but cannot directly set skill levels."),
-    )
-
     @field_validator("date_reminder_lead_days", mode="before")
     @classmethod
     def normalize_lead_days(cls, value: Any) -> list[int]:
@@ -584,7 +554,7 @@ class MemorySettings(PluginConfigBase):
 
 
 class InformationSettings(PluginConfigBase):
-    """联网任务的公共保护、关联和上下文参数。"""
+    """联网任务的公共开关、关联和上下文参数。"""
 
     __ui_label__: ClassVar[str] = "联网见闻"
     __ui_order__: ClassVar[int] = 13
@@ -592,58 +562,108 @@ class InformationSettings(PluginConfigBase):
     enabled: bool = Field(default=False,description="联网见闻总开关。",json_schema_extra=_ui(
         "启用联网见闻","默认关闭；新闻和搜索子开关还需分别开启。",0,label_en="Enable Connected Discovery",hint_en="Disabled by default; news and search also have separate switches."))
     association_enabled: bool = Field(default=True,description="判断外界信息与麦麦自身的关系。",json_schema_extra=_ui(
-        "启用自我关联","先判断与人格、状态、能力、创作或关系是否有关，再考虑分享。",1,label_en="Enable Self-association",hint_en="Relate external information to Mai before considering sharing."))
+        "启用自我关联","先判断与人格、状态、兴趣、创作或关系是否有关，再考虑分享。",1,label_en="Enable Self-association",hint_en="Relate external information to Mai before considering sharing."))
     association_threshold: float = Field(default=0.65,ge=0,le=1,description="创建主动契机的最低关联分。",json_schema_extra=_ui(
         "关联分数阈值","越高越克制；低于阈值只保留为近期见闻。",2,label_en="Association Threshold",hint_en="Items below this score remain notes and do not create opportunities."))
     proactive_share_enabled: bool = Field(default=True,description="允许高关联见闻创建主动契机。",json_schema_extra=_ui(
         "允许见闻主动分享","仍受用户额度、休息、免打扰和 Planner 终审限制。",3,label_en="Allow Discovery Sharing",hint_en="Still subject to quota, rest, quiet hours and Planner review."))
     context_item_limit: int = Field(default=3,ge=0,le=10,description="被动上下文最多包含的近期见闻数。",json_schema_extra=_ui(
         "近期见闻上下文数量","设为 0 可只积累记录、不注入被动回复。",4,label_en="Discovery Context Items",hint_en="Set to zero to store discoveries without passive context injection."))
-    initial_backoff_minutes: int = Field(default=15,ge=1,le=360,description="联网失败后的首次退避时间。",json_schema_extra=_ui(
-        "首次失败退避（分钟）","连续失败会指数增加等待时间。",5,label_en="Initial Backoff",hint_en="Backoff grows exponentially after consecutive failures."))
-    maximum_backoff_minutes: int = Field(default=360,ge=10,le=1440,description="联网失败最大退避时间。",json_schema_extra=_ui(
-        "最大失败退避（分钟）","默认最多等待 6 小时。",6,label_en="Maximum Backoff",hint_en="Maximum retry delay after failures."))
 
 
-class NewsSourceProfile(PluginConfigBase):
-    """单个 RSS/Atom 或 B 站插件 API 来源。"""
+class SearchProviderProfile(PluginConfigBase):
+    """一个有序搜索服务及其主备 Key。"""
 
-    source_id: str = Field(default="",description="稳定来源标识。",json_schema_extra=_ui(
-        "来源 ID","建议使用简短英文且保持不变；留空时根据名称和地址生成。",0,label_en="Source ID",hint_en="Stable identifier; generated from name and endpoint when empty."))
-    enabled: bool = Field(default=True,description="是否启用该来源。",json_schema_extra=_ui(
-        "启用来源","可以暂时关闭而不删除缓存。",1,label_en="Enable Source",hint_en="Pause this source without deleting cached items."))
-    source_type: Literal["rss","atom","bilibili_api"] = Field(default="rss",description="来源协议。",json_schema_extra=_ui(
-        "来源类型","RSS/Atom 使用 URL；B 站插件来源使用公开插件 API 名称。",2,label_en="Source Type",hint_en="RSS/Atom use a URL; Bilibili plugin sources use a public plugin API.",enum_labels={"rss":"RSS","atom":"Atom","bilibili_api":"B 站插件 API"}))
-    name: str = Field(default="",description="来源展示名称。",json_schema_extra=_ui(
-        "来源名称","用于状态和见闻列表，不影响请求。",3,label_en="Source Name",hint_en="Display name used in status and discovery lists."))
-    url: str = Field(default="",description="RSS/Atom 地址。",json_schema_extra=_ui(
-        "订阅地址","仅允许 http/https；建议填写国内可访问地址或自建 RSSHub。",4,label_en="Feed URL",hint_en="HTTP(S) only; prefer a reachable domestic endpoint or self-hosted RSSHub."))
-    api_name: str = Field(default="",description="可选 B 站消息源插件 API 全名。",json_schema_extra=_ui(
-        "B 站插件 API","例如 other-plugin.list_bilibili_updates；仅在来源类型为 bilibili_api 时使用。",5,label_en="Bilibili Plugin API",hint_en="Fully qualified public plugin API for Bilibili updates."))
+    enabled: bool = Field(default=False,description="是否启用该搜索服务。",json_schema_extra=_ui(
+        "启用服务","列表顺序就是跨服务降级顺序。",0,label_en="Enable Provider",hint_en="List order defines provider failover priority."))
+    provider_type: Literal["bocha","tavily","you","openai_responses","openai_chat"] = Field(
+        default="bocha",description="搜索服务协议。",json_schema_extra=_ui(
+            "服务类型","前三种使用固定官方端点；自定义类型还需填写地址和模型。",1,
+            label_en="Provider Type",hint_en="Built-in providers use fixed endpoints; custom providers require endpoint and model.",
+            enum_labels={"bocha":"博查","tavily":"Tavily","you":"You.com",
+                         "openai_responses":"自定义 Responses 联网","openai_chat":"自定义 Chat 联网"}))
+    api_keys: list[str] = Field(default_factory=list,description="按优先级排列的 API Key。",json_schema_extra=_ui(
+        "API Key 列表","第一个是主 Key；鉴权失败、限流或额度不足时自动尝试后续 Key。",2,
+        label_en="API Keys",hint_en="First key is primary; later keys are fallbacks."))
+    endpoint: str = Field(default="",description="自定义 OpenAI 兼容服务地址。",json_schema_extra=_ui(
+        "自定义服务地址","内置服务留空；可填写基础地址或完整 responses/chat/completions 地址。",3,
+        label_en="Custom Endpoint",hint_en="Leave empty for built-ins; accepts a base URL or full endpoint."))
+    model: str = Field(default="",description="自定义联网模型名称。",json_schema_extra=_ui(
+        "自定义模型名","仅自定义 Responses/Chat 使用，例如中转提供的 Grok 模型名。",4,
+        label_en="Custom Model",hint_en="Required for custom Responses or Chat providers."))
+
+    @field_validator("api_keys",mode="before")
+    @classmethod
+    def normalize_keys(cls,value:Any)->list[str]:
+        values=value if isinstance(value,list) else []
+        cleaned=[]
+        for item in values:
+            key=str(item or "").strip()
+            if key and key not in cleaned:cleaned.append(key)
+        return cleaned[:20]
+
+    @field_validator("endpoint","model",mode="before")
+    @classmethod
+    def normalize_provider_text(cls,value:Any)->str:return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def validate_custom_provider(self)->"SearchProviderProfile":
+        if self.enabled and self.provider_type in {"openai_responses","openai_chat"}:
+            if not self.endpoint:raise ValueError("启用自定义联网服务时必须填写服务地址")
+            if not self.model:raise ValueError("启用自定义联网服务时必须填写模型名")
+        return self
+
+
+class SearchAPISettings(PluginConfigBase):
+    """新闻和主动搜索共用的 API 服务链。"""
+
+    __ui_label__: ClassVar[str] = "联网搜索服务"
+    __ui_order__: ClassVar[int] = 14
+
+    providers: list[SearchProviderProfile] = Field(default_factory=list,description="有序搜索服务列表。",json_schema_extra=_ui(
+        "搜索服务列表","按从上到下的顺序降级；所有服务默认关闭，不内置 Key。",0,
+        label_en="Search Provider Chain",hint_en="Providers fail over from top to bottom; no keys are bundled."))
+    timeout_seconds: float = Field(default=12.0,ge=2,le=60,description="单次外部请求超时。",json_schema_extra=_ui(
+        "请求超时（秒）","超时视为服务故障并切换下一服务，不逐个消耗该服务的 Key。",1,
+        label_en="Request Timeout",hint_en="Timeouts fail over to the next provider without burning all keys."))
+    max_attempts: int = Field(default=12,ge=1,le=12,description="单次逻辑搜索最多外部请求次数。",json_schema_extra=_ui(
+        "单次最大尝试次数","限制错误配置或大量失效 Key 造成的请求风暴。",2,
+        label_en="Maximum Attempts",hint_en="Caps external attempts for one logical search."))
+    max_results: int = Field(default=5,ge=1,le=10,description="单次搜索最多保留结果数。",json_schema_extra=_ui(
+        "单次结果数","默认 5 条，新闻和主动搜索共同使用。",3,
+        label_en="Maximum Results",hint_en="Shared result limit for news and exploration."))
 
 
 class NewsSettings(PluginConfigBase):
     __ui_label__: ClassVar[str] = "新闻阅读"
     __ui_order__: ClassVar[int] = 14
 
-    enabled: bool = Field(default=False,description="启用新闻与订阅源读取。",json_schema_extra=_ui(
-        "启用新闻阅读","默认关闭；还需要配置至少一个启用来源。",0,label_en="Enable News Reading",hint_en="Disabled by default and requires at least one enabled source."))
-    refresh_minutes: int = Field(default=180,ge=15,le=1440,description="订阅源刷新间隔。",json_schema_extra=_ui(
-        "新闻刷新间隔（分钟）","默认 3 小时；失败时还会额外退避。",1,label_en="News Refresh Interval",hint_en="Base interval before failure backoff."))
-    timeout_seconds: float = Field(default=8.0,ge=2,le=30,description="单次网络请求超时。",json_schema_extra=_ui(
-        "新闻请求超时（秒）","超时后使用已有缓存，不阻塞聊天。",2,label_en="News Request Timeout",hint_en="Use cached items after timeout without blocking chat."))
-    max_concurrency: int = Field(default=2,ge=1,le=6,description="新闻来源最大并发数。",json_schema_extra=_ui(
-        "来源并发数","中国网络环境建议保持 1～2。",3,label_en="Source Concurrency",hint_en="Keep low for constrained networks."))
-    max_items_per_source: int = Field(default=10,ge=1,le=50,description="单次每来源最多读取条数。",json_schema_extra=_ui(
-        "每来源最大条数","限制正文请求和模型整理成本。",4,label_en="Items per Source",hint_en="Limits article fetch and model cost."))
-    fetch_full_text: bool = Field(default=True,description="存在正文链接时尝试读取全文。",json_schema_extra=_ui(
-        "优先读取正文","失败时保留标题和订阅摘要，不编造正文。",5,label_en="Prefer Full Article",hint_en="Fall back to feed title and summary without fabrication."))
+    enabled: bool = Field(default=False,description="启用低频 API 新闻阅读。",json_schema_extra=_ui(
+        "启用新闻阅读","默认关闭；还需要在“联网搜索服务”中启用至少一个服务。",0,label_en="Enable News Reading",hint_en="Disabled by default and requires an enabled search provider."))
+    daily_max: int = Field(default=1,ge=0,le=12,description="每天最多发起的新闻阅读次数。",json_schema_extra=_ui(
+        "每日新闻阅读次数","默认 1 次；一次主备 Key 和跨服务降级链合计为一次。",1,label_en="Daily News Reads",hint_en="One provider failover chain counts as one daily attempt."))
+    interest_topics: list[str] = Field(default_factory=lambda:["科技","人工智能","游戏","文化"],description="轮换阅读的新闻兴趣。",json_schema_extra=_ui(
+        "新闻兴趣","每次轮换一个主题并搜索过去 24 小时内容。",2,label_en="News Interests",hint_en="One topic is rotated per read for the previous 24 hours."))
+    full_text_count: int = Field(default=3,ge=0,le=3,description="最多继续读取正文的结果数。",json_schema_extra=_ui(
+        "正文读取数量","最多读取最相关的前 3 篇；0 表示只使用 API 返回内容。",3,label_en="Full-text Articles",hint_en="Read up to three source pages; zero uses API summaries only."))
+    max_concurrency: int = Field(default=2,ge=1,le=4,description="正文读取最大并发数。",json_schema_extra=_ui(
+        "正文读取并发","中国网络环境建议保持 1～2。",4,label_en="Article Concurrency",hint_en="Keep low for constrained networks."))
     max_article_chars: int = Field(default=8000,ge=1000,le=30000,description="保存和整理的正文最大字符数。",json_schema_extra=_ui(
-        "正文长度上限","超长正文会在本地清洗后截断。",6,label_en="Article Length Limit",hint_en="Clean and truncate long articles locally."))
+        "正文长度上限","超长正文会在本地清洗后截断。",5,label_en="Article Length Limit",hint_en="Clean and truncate long articles locally."))
     retention_days: int = Field(default=7,ge=1,le=90,description="新闻正文和摘要保留天数。",json_schema_extra=_ui(
-        "新闻保留天数","过期缓存自动清理。",7,label_en="News Retention",hint_en="Expired cached articles are removed automatically."))
-    sources: list[NewsSourceProfile] = Field(default_factory=list,description="新闻和 B 站消息来源。",json_schema_extra=_ui(
-        "新闻来源","在 WebUI 中添加 RSS、Atom 或可选 B 站插件 API 来源。",8,label_en="News Sources",hint_en="Add RSS, Atom or optional Bilibili plugin API sources."))
+        "新闻保留天数","过期缓存自动清理。",6,label_en="News Retention",hint_en="Expired cached articles are removed automatically."))
+    allowed_schedule_types: list[Literal["leisure","rest"]] = Field(default_factory=lambda:["leisure","rest"],description="允许阅读新闻的日程类型。",json_schema_extra=_ui(
+        "允许阅读的日程","默认只在闲暇或休息时阅读。",7,label_en="Allowed Schedules",hint_en="Read news only during leisure or rest.",enum_labels={"leisure":"闲暇","rest":"休息"}))
+
+    @field_validator("interest_topics",mode="before")
+    @classmethod
+    def normalize_topics(cls,value:Any)->list[str]:
+        values=value if isinstance(value,list) else []
+        cleaned=[]
+        for item in values:
+            topic=" ".join(str(item or "").split())[:60]
+            if topic and topic not in cleaned:cleaned.append(topic)
+        return cleaned[:20] or ["科技","人工智能","游戏","文化"]
 
 
 class SearchSettings(PluginConfigBase):
@@ -651,37 +671,18 @@ class SearchSettings(PluginConfigBase):
     __ui_order__: ClassVar[int] = 15
 
     enabled: bool = Field(default=False,description="启用低频主动搜索。",json_schema_extra=_ui(
-        "启用主动搜索","默认关闭；需要配置自建搜索接口。",0,label_en="Enable Proactive Search",hint_en="Disabled by default and requires a configured endpoint."))
-    connector: Literal["searxng","json"] = Field(default="searxng",description="搜索接口类型。",json_schema_extra=_ui(
-        "搜索连接器","推荐自建 SearXNG；通用 JSON 可适配其他自建接口。",1,label_en="Search Connector",hint_en="Self-hosted SearXNG is recommended.",enum_labels={"searxng":"SearXNG","json":"通用 JSON"}))
-    endpoint: str = Field(default="",description="搜索接口地址。",json_schema_extra=_ui(
-        "搜索接口地址","仅允许 http/https，不内置公共节点。",2,label_en="Search Endpoint",hint_en="HTTP(S) only; no public endpoint is bundled."))
-    api_key: str = Field(default="",description="可选 Bearer API Key。",json_schema_extra=_ui(
-        "搜索 API Key","可留空；不会写入日志、见闻或数据库。",3,label_en="Search API Key",hint_en="Optional Bearer token; never stored in logs or discovery records."))
-    query_parameter: str = Field(default="q",description="查询参数名。",json_schema_extra=_ui(
-        "查询参数名","SearXNG 通常保持 q。",4,label_en="Query Parameter",hint_en="Usually q for SearXNG."))
-    results_path: str = Field(default="results",description="通用 JSON 结果数组路径。",json_schema_extra=_ui(
-        "结果数组路径","使用点号路径，例如 data.items。",5,label_en="Results Path",hint_en="Dotted path to the result array, such as data.items."))
-    title_field: str = Field(default="title",description="结果标题字段。",json_schema_extra=_ui(
-        "标题字段","通用 JSON 结果中的标题键。",6,label_en="Title Field",hint_en="Title key in a generic JSON result."))
-    url_field: str = Field(default="url",description="结果链接字段。",json_schema_extra=_ui(
-        "链接字段","通用 JSON 结果中的 URL 键。",7,label_en="URL Field",hint_en="URL key in a generic JSON result."))
-    snippet_field: str = Field(default="content",description="结果摘要字段。",json_schema_extra=_ui(
-        "摘要字段","SearXNG 默认 content；其他接口按需修改。",8,label_en="Snippet Field",hint_en="Snippet key; SearXNG commonly uses content."))
-    timeout_seconds: float = Field(default=8.0,ge=2,le=30,description="搜索请求超时。",json_schema_extra=_ui(
-        "搜索超时（秒）","失败后记录退避，不阻塞聊天。",9,label_en="Search Timeout",hint_en="Failure enters backoff and never blocks chat."))
-    max_results: int = Field(default=5,ge=1,le=20,description="单次使用的搜索结果数。",json_schema_extra=_ui(
-        "单次结果数","限制探索整理成本。",10,label_en="Maximum Results",hint_en="Limits exploration summarization cost."))
-    daily_max: int = Field(default=1,ge=0,le=10,description="每天最多主动搜索次数。",json_schema_extra=_ui(
-        "每日主动搜索上限","默认 1 次，0 表示不自动搜索。",11,label_en="Daily Search Limit",hint_en="Default one; zero disables automatic searches."))
+        "启用主动搜索","默认关闭；还需要在“联网搜索服务”中启用至少一个服务。",0,
+        label_en="Enable Proactive Search",hint_en="Disabled by default and requires an enabled search provider."))
+    daily_max: int = Field(default=1,ge=0,le=10,description="每天最多发起的主动搜索次数。",json_schema_extra=_ui(
+        "每日主动搜索上限","默认 1 次；失败或空结果也会计入，避免持续请求。",1,label_en="Daily Search Limit",hint_en="Failures and empty results count to prevent repeated external requests."))
     include_chat_topics: bool = Field(default=False,description="允许使用匿名未完话题规划搜索。",json_schema_extra=_ui(
-        "允许参考聊天话题","默认关闭，避免把私聊内容变成外部搜索词。",12,label_en="Use Chat Topics",hint_en="Disabled by default to keep private chat out of external queries."))
+        "允许参考聊天话题","默认关闭，避免把私聊内容变成外部搜索词。",2,label_en="Use Chat Topics",hint_en="Disabled by default to keep private chat out of external queries."))
     interest_keywords: list[str] = Field(default_factory=lambda:["科技","创作","游戏","生活方式"],description="规则 fallback 的人格兴趣。",json_schema_extra=_ui(
-        "兴趣关键词","模型不可用时从这些方向选择低频探索主题。",13,label_en="Interest Keywords",hint_en="Fallback interests used when query planning is unavailable."))
+        "兴趣关键词","模型不可用时从这些方向选择低频探索主题。",3,label_en="Interest Keywords",hint_en="Fallback interests used when query planning is unavailable."))
     allowed_schedule_types: list[Literal["leisure","rest","travel"]] = Field(default_factory=lambda:["leisure","rest"],description="允许主动搜索的日程类型。",json_schema_extra=_ui(
-        "允许搜索的日程类型","只在空档、休息或按配置允许的出行段探索。",14,label_en="Allowed Schedule Types",hint_en="Search only during configured free schedule segments.",enum_labels={"leisure":"闲暇","rest":"休息","travel":"出行"}))
+        "允许搜索的日程类型","只在空档、休息或按配置允许的出行段探索。",4,label_en="Allowed Schedule Types",hint_en="Search only during configured free schedule segments.",enum_labels={"leisure":"闲暇","rest":"休息","travel":"出行"}))
     note_retention_days: int = Field(default=30,ge=1,le=365,description="探索笔记保留天数。",json_schema_extra=_ui(
-        "探索笔记保留天数","过期笔记自动清理。",15,label_en="Exploration Note Retention",hint_en="Expired exploration notes are removed automatically."))
+        "探索笔记保留天数","过期笔记自动清理。",5,label_en="Exploration Note Retention",hint_en="Expired exploration notes are removed automatically."))
 
 
 class RestGateSettings(PluginConfigBase):
@@ -797,20 +798,31 @@ class ContextSettings(PluginConfigBase):
 
 
 class DebounceSettings(PluginConfigBase):
-    """配置私聊的消息收口参数。"""
+    """私聊与群聊相互独立的消息收口参数。"""
 
     __ui_label__: ClassVar[str] = "消息收口防抖"
     __ui_order__: ClassVar[int] = 6
 
     enabled: bool = Field(default=True, description="合并短时间连续补话。", json_schema_extra=_ui("启用私聊收口", "只对配置私聊用户生效。", 0, label_en="Enable Private Debounce", hint_en="Merge rapid follow-up messages for configured private users."))
-    text_wait_seconds: float = Field(default=1.2, ge=0, le=10, description="文本静默窗口。", json_schema_extra=_ui("文本等待（秒）", "默认 1.2 秒。", 1, label_en="Text Wait (sec)", hint_en="Quiet window for text messages."))
-    image_wait_seconds: float = Field(default=3.0, ge=0, le=15, description="单图等待补充说明时间。", json_schema_extra=_ui("单图等待（秒）", "默认 3 秒，便于用户补充图片说明。", 2, label_en="Single-image Wait (sec)", hint_en="Wait for a caption after a standalone image."))
-    forward_wait_seconds: float = Field(default=2.0, ge=0, le=15, description="合并转发等待时间。", json_schema_extra=_ui("合并转发等待（秒）", "默认 2 秒。", 3, label_en="Forward Wait (sec)", hint_en="Quiet window for forwarded messages."))
-    max_wait_seconds: float = Field(default=6.0, ge=0.5, le=30, description="整轮最长等待。", json_schema_extra=_ui("整轮最长等待（秒）", "无论是否继续补话，达到上限都会结束收口。", 4, label_en="Maximum Burst Wait (sec)", hint_en="Hard limit for one debounce burst."))
-    max_messages: int = Field(default=12, ge=2, le=50, description="单轮最多合并消息数。", json_schema_extra=_ui("单轮最大消息数", "超过后立即结束当前轮次。", 5, label_en="Maximum Messages", hint_en="Maximum messages merged into one burst."))
-    max_media_bytes: int = Field(default=8_388_608, ge=262_144, le=33_554_432, description="单轮媒体 Base64 解码后大小上限。", json_schema_extra=_ui("媒体大小上限（字节）", "默认 8 MiB，超出后失败开放。", 6, label_en="Media Size Limit", hint_en="Decoded media size limit for one burst."))
-    outbound_turn_guard: bool = Field(default=True, description="阻止同一消息触发多次独立 Replyer 回复。", json_schema_extra=_ui("启用同轮回复防重", "不影响一次回复内部的正常分段。", 7, label_en="Enable Reply Turn Guard", hint_en="Prevent repeated Replyer responses for the same user message."))
-    turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 8, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
+    text_wait_seconds: float = Field(default=1.2, ge=0, le=10, description="私聊文本静默窗口。", json_schema_extra=_ui("私聊文本等待（秒）", "默认 1.2 秒。", 1, label_en="Private Text Wait (sec)", hint_en="Quiet window for private text messages."))
+    image_wait_seconds: float = Field(default=3.0, ge=0, le=15, description="私聊单图等待补充说明时间。", json_schema_extra=_ui("私聊单图等待（秒）", "默认 3 秒，便于用户补充图片说明。", 2, label_en="Private Image Wait (sec)", hint_en="Wait for a private image caption."))
+    forward_wait_seconds: float = Field(default=2.0, ge=0, le=15, description="私聊合并转发等待时间。", json_schema_extra=_ui("私聊转发等待（秒）", "默认 2 秒。", 3, label_en="Private Forward Wait (sec)", hint_en="Quiet window for private forwarded messages."))
+    max_wait_seconds: float = Field(default=6.0, ge=0.5, le=30, description="私聊整轮最长等待。", json_schema_extra=_ui("私聊最长等待（秒）", "无论是否继续补话，达到上限都会结束收口。", 4, label_en="Private Maximum Wait (sec)", hint_en="Hard limit for one private burst."))
+    group_enabled: bool = Field(default=False,description="是否合并群聊中的连续补话。",json_schema_extra=_ui(
+        "启用群聊收口","默认关闭；开启后覆盖所有 QQ 群，并按群号和发送者 QQ 号隔离。",5,
+        label_en="Enable Group Debounce",hint_en="Disabled by default; isolates bursts by group and sender QQ IDs."))
+    group_text_wait_seconds: float = Field(default=0.8,ge=0,le=10,description="群聊文本静默窗口。",json_schema_extra=_ui(
+        "群聊文本等待（秒）","默认 0.8 秒。",6,label_en="Group Text Wait (sec)",hint_en="Quiet window for group text messages."))
+    group_image_wait_seconds: float = Field(default=2.0,ge=0,le=15,description="群聊单图等待补充说明时间。",json_schema_extra=_ui(
+        "群聊单图等待（秒）","默认 2 秒。",7,label_en="Group Image Wait (sec)",hint_en="Wait for a group image caption."))
+    group_forward_wait_seconds: float = Field(default=1.2,ge=0,le=15,description="群聊合并转发等待时间。",json_schema_extra=_ui(
+        "群聊转发等待（秒）","默认 1.2 秒。",8,label_en="Group Forward Wait (sec)",hint_en="Quiet window for group forwarded messages."))
+    group_max_wait_seconds: float = Field(default=4.0,ge=0.5,le=30,description="群聊整轮最长等待。",json_schema_extra=_ui(
+        "群聊最长等待（秒）","默认 4 秒。",9,label_en="Group Maximum Wait (sec)",hint_en="Hard limit for one group burst."))
+    max_messages: int = Field(default=12, ge=2, le=50, description="单轮最多合并消息数。", json_schema_extra=_ui("单轮最大消息数", "私聊和群聊共同使用；超过后立即结束当前轮次。", 10, label_en="Maximum Messages", hint_en="Shared maximum messages per burst."))
+    max_media_bytes: int = Field(default=8_388_608, ge=262_144, le=33_554_432, description="单轮媒体 Base64 解码后大小上限。", json_schema_extra=_ui("媒体大小上限（字节）", "默认 8 MiB，超出后失败开放。", 11, label_en="Media Size Limit", hint_en="Decoded media size limit for one burst."))
+    outbound_turn_guard: bool = Field(default=True, description="阻止同一消息触发多次独立 Replyer 回复。", json_schema_extra=_ui("启用同轮回复防重", "不影响一次回复内部的正常分段。", 12, label_en="Enable Reply Turn Guard", hint_en="Prevent repeated Replyer responses for the same user message."))
+    turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 13, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
 
 
 class RecallSettings(PluginConfigBase):
@@ -884,10 +896,9 @@ class ModelRoutingSettings(PluginConfigBase):
     vision_summary_task: str = Field(default="", description="图片摘要任务覆盖。", json_schema_extra=_ui("图片摘要任务覆盖", "留空继承视觉任务。", 8, label_en="Vision Summary Override", hint_en="Leave empty to inherit vision task."))
     diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务覆盖", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
     date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务覆盖", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
-    skill_task: str = Field(default="", description="技能整理任务覆盖。", json_schema_extra=_ui("技能整理任务覆盖", "留空继承快速任务。", 11, label_en="Skill Analysis Override", hint_en="Leave empty to inherit fast task."))
-    news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 12, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
-    search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 13, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
-    relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 14, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
+    news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 11, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
+    search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 12, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
+    relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 13, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
     group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务覆盖", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
     relay_summary_task: str = Field(default="", description="群聊短摘要任务覆盖。", json_schema_extra=_ui("群转述摘要任务覆盖", "留空继承快速任务。", 16, label_en="Relay Summary Override", hint_en="Leave empty to inherit fast task."))
     creation_outline_task: str = Field(default="", description="创作提纲任务覆盖。", json_schema_extra=_ui("创作提纲任务覆盖", "留空继承推理任务。", 17, label_en="Creation Outline Override", hint_en="Leave empty to inherit reasoning task."))
@@ -945,12 +956,12 @@ class ScheduleSettings(PluginConfigBase):
 
 
 class ProactiveSettings(PluginConfigBase):
-    """多用户主动私聊频率和评分阈值。"""
+    """主动私聊的公共冷却和评分阈值；每日额度只在用户档案中配置。"""
 
     __ui_label__: ClassVar[str] = "主动私聊"
     __ui_order__: ClassVar[int] = 6
     __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
-        "en_US": {"title": "Proactive Private Chat", "description": "Quota, cooldown and candidate scoring settings."}
+        "en_US": {"title": "Proactive Private Chat", "description": "Shared cooldown and candidate scoring settings."}
     }
 
     enabled: bool = Field(
@@ -969,19 +980,11 @@ class ProactiveSettings(PluginConfigBase):
             label_en="Proactive Patrol Interval (min)", hint_en="How often proactive opportunities are evaluated.",
         ),
     )
-    daily_max_per_user: int = Field(
-        default=2, ge=0, le=20,
-        description="每位用户每天实际主动发送上限。",
-        json_schema_extra=_ui(
-            "每用户每日主动上限", "默认 2 次。Planner 选择沉默时不会消耗实际发送额度。", 2,
-            label_en="Daily Limit per User", hint_en="Maximum actual proactive messages per user each day.",
-        ),
-    )
     min_interval_minutes: int = Field(
         default=180, ge=1, le=1440,
         description="同一用户两次主动消息之间的最小间隔。",
         json_schema_extra=_ui(
-            "主动消息最小间隔（分钟）", "默认 180 分钟，防止短时间连续打扰同一用户。", 3,
+            "主动消息最小间隔（分钟）", "默认 180 分钟，防止短时间连续打扰同一用户。", 2,
             label_en="Minimum Proactive Interval (min)", hint_en="Minimum time between proactive messages to the same user.",
         ),
     )
@@ -989,7 +992,7 @@ class ProactiveSettings(PluginConfigBase):
         default=30, ge=0, le=240,
         description="用户刚发言后暂停主动消息的时间。",
         json_schema_extra=_ui(
-            "用户发言后冷却（分钟）", "用户刚刚聊过时无需再主动开场。默认等待 30 分钟。", 4,
+            "用户发言后冷却（分钟）", "用户刚刚聊过时无需再主动开场。默认等待 30 分钟。", 3,
             label_en="Cooldown after User Message (min)", hint_en="Do not start another proactive topic immediately after the user speaks.",
         ),
     )
@@ -997,7 +1000,7 @@ class ProactiveSettings(PluginConfigBase):
         default=120, ge=30, le=600,
         description="主动触发与 Replyer 回复关联的有效时间。",
         json_schema_extra=_ui(
-            "主动回复确认窗口（秒）", "用于判断 Planner 是否真的生成了主动回复。通常无需修改。", 5,
+            "主动回复确认窗口（秒）", "用于判断 Planner 是否真的生成了主动回复。通常无需修改。", 4,
             label_en="Proactive Confirmation Window (sec)", hint_en="Window used to correlate a Planner trigger with an actual Replyer response.",
         ),
     )
@@ -1005,7 +1008,7 @@ class ProactiveSettings(PluginConfigBase):
         default=25, ge=0, le=100,
         description="允许普通主动聊天所需的最低精力。",
         json_schema_extra=_ui(
-            "主动聊天最低精力", "低于该值时麦麦优先休息，不产生普通主动开场。", 6,
+            "主动聊天最低精力", "低于该值时麦麦优先休息，不产生普通主动开场。", 5,
             label_en="Minimum Energy for Proactive Chat", hint_en="Mai prioritizes rest below this energy level.",
         ),
     )
@@ -1013,7 +1016,7 @@ class ProactiveSettings(PluginConfigBase):
         default=0.45, ge=0, le=2,
         description="主动候选进入 Planner 终审所需的最低综合分。",
         json_schema_extra=_ui(
-            "主动候选分数阈值", "越高越克制。综合考虑契机、精力、心情、关系和用户活跃时间。", 7,
+            "主动候选分数阈值", "越高越克制。综合考虑契机、精力、心情、关系和用户活跃时间。", 6,
             label_en="Proactive Candidate Score Threshold", hint_en="Higher values make proactive behavior more conservative.",
         ),
     )
@@ -1040,8 +1043,8 @@ class MaiLifeSettings(PluginConfigBase):
     )
     memory: MemorySettings = Field(
         default_factory=MemorySettings,
-        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记、重要日期和技能成长。", 4,
-                              label_en="Life Memory", hint_en="Dream fragments, diary, important dates and skill growth."),
+        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记和重要日期。", 4,
+                              label_en="Life Memory", hint_en="Dream fragments, diary and important dates."),
     )
     rest_gate: RestGateSettings = Field(
         default_factory=RestGateSettings,
@@ -1053,7 +1056,7 @@ class MaiLifeSettings(PluginConfigBase):
     )
     debounce: DebounceSettings = Field(
         default_factory=DebounceSettings,
-        json_schema_extra=_ui("消息收口防抖", "私聊补话合并和同轮回复防重。", 7, label_en="Message Debounce", hint_en="Merge private follow-ups and prevent repeated replies."),
+        json_schema_extra=_ui("消息收口防抖", "私聊与群聊独立收口及同轮回复防重。", 7, label_en="Message Debounce", hint_en="Separate private/group debounce and duplicate-reply protection."),
     )
     recall: RecallSettings = Field(
         default_factory=RecallSettings,
@@ -1078,27 +1081,32 @@ class MaiLifeSettings(PluginConfigBase):
     )
     proactive: ProactiveSettings = Field(
         default_factory=ProactiveSettings,
-        json_schema_extra=_ui("主动私聊", "主动消息额度、冷却和评分。", 12, label_en="Proactive Private Chat", hint_en="Quota, cooldown and candidate scoring."),
+        json_schema_extra=_ui("主动私聊", "公共冷却和评分；每日额度在每个私聊用户中设置。", 12, label_en="Proactive Private Chat", hint_en="Shared cooldown and scoring; daily limits are configured per user."),
     )
     information: InformationSettings = Field(
         default_factory=InformationSettings,
-        json_schema_extra=_ui("联网见闻", "公共开关、失败退避和自我关联。", 13,label_en="Connected Discovery",hint_en="Shared switches, backoff and self-association."),
+        json_schema_extra=_ui("联网见闻", "公共开关、上下文和自我关联。", 13,label_en="Connected Discovery",hint_en="Shared switches, context and self-association."),
+    )
+    search_api: SearchAPISettings = Field(
+        default_factory=SearchAPISettings,
+        json_schema_extra=_ui("联网搜索服务", "博查、Tavily、You.com 与自定义联网中转的有序降级链。", 14,
+                              label_en="Search API Providers",hint_en="Ordered failover for built-in and custom web-search providers."),
     )
     news: NewsSettings = Field(
         default_factory=NewsSettings,
-        json_schema_extra=_ui("新闻阅读", "RSS、Atom 和可选 B 站插件来源。", 14,label_en="News Reading",hint_en="RSS, Atom and optional Bilibili plugin sources."),
+        json_schema_extra=_ui("新闻阅读", "按兴趣低频调用统一搜索 API。", 15,label_en="News Reading",hint_en="Low-frequency interest-based reading through the shared search API."),
     )
     search: SearchSettings = Field(
         default_factory=SearchSettings,
-        json_schema_extra=_ui("主动搜索", "自建 SearXNG 或通用 JSON 搜索接口。", 15,label_en="Proactive Search",hint_en="Self-hosted SearXNG or generic JSON search."),
+        json_schema_extra=_ui("主动搜索", "在空闲日程中使用统一搜索 API 探索。", 16,label_en="Proactive Search",hint_en="Explore through the shared search API during free time."),
     )
     social: SocialSettings = Field(
         default_factory=SocialSettings,
-        json_schema_extra=_ui("社交转述", "群聊白名单、群友关系和群转私边界。", 16,
-                              label_en="Social Relay", hint_en="Group allowlists, member relations and group-to-private boundaries."),
+        json_schema_extra=_ui("社交转述", "QQ群号白名单、显式转述和群转私边界。", 17,
+                              label_en="Social Relay", hint_en="QQ group allowlists, relay and group-to-private boundaries."),
     )
     creation: CreationSettings = Field(
         default_factory=CreationSettings,
-        json_schema_extra=_ui("书柜与创作", "作品、日记、阅读批注和分阶段创作。", 17,
+        json_schema_extra=_ui("书柜与创作", "作品、日记、阅读批注和分阶段创作。", 18,
                               label_en="Bookshelf and Creation", hint_en="Works, diaries, reading notes and staged creation."),
     )

@@ -48,7 +48,8 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_role_defaults_resolve_to_per_user_quota(self):
         await self.store.sync_users([
-            UserProfile(user_id="1",role="owner"),UserProfile(user_id="2",role="friend"),
+            UserProfile(user_id="1",role="owner",daily_proactive_max=2),
+            UserProfile(user_id="2",role="friend",daily_proactive_max=1),
         ])
         self.assertEqual((await self.store.get_user("1"))["daily_proactive_max"],2)
         self.assertEqual((await self.store.get_user("2"))["daily_proactive_max"],1)
@@ -169,7 +170,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
         self.assertEqual(len(backups),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"8")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"9")
         await upgraded.close(); other.cleanup()
 
     async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
@@ -177,7 +178,34 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"not-a-sqlite-database")
         upgraded=LifeStore(other.name); await upgraded.initialize()
         self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"8")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"9")
+        await upgraded.close(); other.cleanup()
+
+    async def test_v8_to_v9_drops_skills_aliases_and_converts_legacy_quota(self):
+        other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+        conn=sqlite3.connect(path); conn.executescript("""
+        CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO meta VALUES('schema_version','8');
+        CREATE TABLE users(user_id TEXT PRIMARY KEY,enabled INTEGER NOT NULL,proactive_enabled INTEGER NOT NULL,
+          display_name TEXT NOT NULL,temperature REAL NOT NULL,role TEXT NOT NULL DEFAULT 'friend',
+          daily_proactive_max INTEGER NOT NULL DEFAULT -1,quiet_start TEXT NOT NULL,quiet_end TEXT NOT NULL,
+          stream_id TEXT NOT NULL DEFAULT '',last_user_message_at REAL NOT NULL DEFAULT 0,last_proactive_at REAL NOT NULL DEFAULT 0,
+          proactive_day TEXT NOT NULL DEFAULT '',proactive_count INTEGER NOT NULL DEFAULT 0,last_relation_day TEXT NOT NULL DEFAULT '');
+        INSERT INTO users VALUES('10001',1,1,'手填昵称',35,'owner',-1,'00:00','08:00','private',0,0,'',0,'');
+        CREATE TABLE memory_runtime(id INTEGER PRIMARY KEY,last_diary_day TEXT NOT NULL DEFAULT '',
+          last_skill_day TEXT NOT NULL DEFAULT '',last_cleanup_at REAL NOT NULL DEFAULT 0);
+        INSERT INTO memory_runtime VALUES(1,'2026-07-12','2026-07-12',12);
+        CREATE TABLE skills(id INTEGER PRIMARY KEY,name TEXT);
+        CREATE TABLE skill_events(id INTEGER PRIMARY KEY,name TEXT);
+        CREATE TABLE relationship_entries(id INTEGER PRIMARY KEY,alias TEXT);
+        """); conn.commit(); conn.close()
+        upgraded=LifeStore(other.name); await upgraded.initialize(); await upgraded.initialize()
+        tables={row[0] for row in upgraded.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        columns={row[1] for row in upgraded.conn.execute("PRAGMA table_info(memory_runtime)")}
+        user=await upgraded.get_user("10001")
+        self.assertFalse({"skills","skill_events","relationship_entries"}&tables)
+        self.assertNotIn("last_skill_day",columns); self.assertEqual(user["daily_proactive_max"],2)
+        self.assertEqual(user["display_name"],""); self.assertEqual(user["temperature"],35)
         await upgraded.close(); other.cleanup()
 
 
@@ -285,6 +313,14 @@ class DebounceTests(unittest.IsolatedAsyncioTestCase):
             "message_info":{"user_info":{"user_id":"1","user_nickname":"u"},"group_info":None,"additional_config":{}},
             "raw_message":[{"type":"text","data":text}],"is_command":False,"is_notify":False}
 
+    @staticmethod
+    def group_message(mid,text,group_id="100",user_id="1",adapter="napcat"):
+        return {"message_id":mid,"session_id":"focus-shared","platform":"qq","processed_plain_text":text,
+            "message_info":{"user_info":{"user_id":user_id,"user_nickname":"可变昵称"},
+                "group_info":{"group_id":group_id,"group_name":"群名"},
+                "additional_config":{f"{adapter}_message_type":"group"}},
+            "raw_message":[{"type":"text","data":text}],"is_command":False,"is_notify":False}
+
     async def test_concurrent_followups_only_keep_latest_hook(self):
         config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04; config.debounce.max_wait_seconds=0.5
         service=MessageDebouncer(config,DummyLogger())
@@ -304,6 +340,39 @@ class DebounceTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.01); await service.close()
         result=await asyncio.wait_for(task,0.5)
         self.assertTrue(result[0])
+
+    async def test_group_focus_session_isolated_by_group_and_sender_qq(self):
+        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        config.debounce.group_text_wait_seconds=0.03; config.debounce.group_max_wait_seconds=0.5
+        service=MessageDebouncer(config,DummyLogger())
+        messages=[self.group_message("m1","群一用户一","100","1"),
+                  self.group_message("m2","群一用户二","100","2"),
+                  self.group_message("m3","群二用户一","200","1","snowluma")]
+        results=await asyncio.gather(*(service.collect(item) for item in messages))
+        self.assertTrue(all(item[0] for item in results))
+        self.assertEqual([item[1]["processed_plain_text"] for item in results],
+                         ["群一用户一","群一用户二","群二用户一"])
+
+    async def test_group_same_sender_merges_and_recall_removes_source(self):
+        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        config.debounce.group_text_wait_seconds=0.04; config.debounce.group_max_wait_seconds=0.5
+        service=MessageDebouncer(config,DummyLogger())
+        first=asyncio.create_task(service.collect(self.group_message("m1","第一句")))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(self.group_message("m2","补充一句")))
+        await asyncio.sleep(0.01); removed=await service.recall("focus-shared","m1")
+        old,new=await asyncio.gather(first,second)
+        self.assertEqual(removed["message_id"],"m1"); self.assertFalse(old[0]); self.assertTrue(new[0])
+        self.assertEqual(new[1]["processed_plain_text"],"补充一句")
+
+    def test_group_and_private_use_independent_waits(self):
+        config=MaiLifeSettings(); service=MessageDebouncer(config,DummyLogger())
+        group=self.group_message("g","",adapter="snowluma"); group["raw_message"]=[{"type":"image","binary_data_base64":"AA=="}]
+        private=self.message("p",""); private["raw_message"]=[{"type":"image","binary_data_base64":"AA=="}]
+        self.assertEqual(service._quiet_wait([group],False),config.debounce.group_image_wait_seconds)
+        self.assertEqual(service._quiet_wait([private],True),config.debounce.image_wait_seconds)
+        group["raw_message"]=[{"type":"forward","data":[{"content":[{"type":"text","data":"转发"}]}]}]
+        self.assertEqual(service._quiet_wait([group],False),config.debounce.group_forward_wait_seconds)
 
     def test_local_intent_classifier(self):
         self.assertEqual(classify_intent("这张图里是什么",["image"]),"询问当前图片")

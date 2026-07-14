@@ -59,9 +59,12 @@ class GroupObserver:
     async def observe(self,message:dict[str,Any],now:datetime)->dict[str,Any]:
         """收口一个群话题；较早的并发调用返回 superseded。"""
         if self._closed or not self.config.social.enabled:return {"status":"disabled"}
-        group_id,_group_name=group_identity(message); profile=self._group_profile(group_id)
+        group_id,group_name=group_identity(message); profile=self._group_profile(group_id)
         if not profile:return {"status":"not_allowlisted"}
         user_id,user_name=sender_identity(message)
+        await self.store.upsert_group_directory(
+            group_id,group_name,str(message.get("session_id") or ""),now.timestamp(),
+        )
         if user_id:
             await self.store.record_group_activity(
                 group_id,user_id,user_name,now.timestamp(),str(message.get("message_id") or ""),
@@ -86,7 +89,8 @@ class GroupObserver:
         if not digest.get("public") or not digest.get("summary"):return {"status":"private_or_empty"}
         stamp=now.timestamp(); key="\n".join(snippets)
         observation_id=hashlib.sha1(f"{group_id}:{stamp}:{key}".encode("utf-8","ignore")).hexdigest()[:24]
-        item={"id":observation_id,"group_id":group_id,"group_alias":str(profile.alias),
+        # group_alias 是旧库兼容列，只保存 Host 自动读取的群名称，不参与任何匹配或权限判断。
+        item={"id":observation_id,"group_id":group_id,"group_alias":group_name or f"QQ群 {group_id}",
               "topic":str(digest.get("topic") or "群聊里的公开话题")[:240],
               "summary":str(digest["summary"])[:1200],"interest_score":float(digest.get("score") or 0),
               "source_adapter":source_adapter,"created_at":stamp,
@@ -199,7 +203,7 @@ class GroupObserver:
         await self.store.add_opportunity({
             "id":opportunity_id,"framework_id":f"social:{now.date().isoformat()}",
             "topic":str(observation["topic"])[:160],
-            "motive":f"白名单群“{observation['group_alias']}”有一条公开话题摘要：{observation['summary'][:300]}。"
+            "motive":f"QQ群 {observation['group_id']}（{observation['group_alias']}）有一条公开话题摘要：{observation['summary'][:300]}。"
                      "该用户已较久未在群里出现；只在自然且不泄露群友身份或原句时考虑转述。",
             "weight":min(0.85,max(0.45,float(observation["interest_score"]))),
             "privacy":"group_public","target_user_id":uid,"expires_at":expires_at,

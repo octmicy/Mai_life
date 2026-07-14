@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class LifeStore:
@@ -94,6 +94,7 @@ class LifeStore:
 
     # Schema 使用显式版本号，为后续迁移保留稳定入口。
     def _create_schema(self) -> None:
+        version = 0
         existing = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"
         ).fetchone()
@@ -261,18 +262,6 @@ class LifeStore:
               status TEXT NOT NULL DEFAULT 'pending', source_message_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_date_candidate_user ON date_candidates(user_id,status,created_at);
-            CREATE TABLE IF NOT EXISTS skills(
-              skill_name TEXT PRIMARY KEY, category TEXT NOT NULL,
-              level REAL NOT NULL DEFAULT 0, evidence_count INTEGER NOT NULL DEFAULT 0,
-              last_practiced_at REAL NOT NULL DEFAULT 0, updated_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS skill_events(
-              id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL,
-              skill_name TEXT NOT NULL, source_kind TEXT NOT NULL,
-              evidence_summary TEXT NOT NULL, evidence_key TEXT NOT NULL UNIQUE,
-              gain REAL NOT NULL, created_at REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_skill_event_day ON skill_events(day,skill_name);
             CREATE TABLE IF NOT EXISTS date_trigger_events(
               date_id INTEGER NOT NULL, occurrence_date TEXT NOT NULL,
               lead_days INTEGER NOT NULL, created_at REAL NOT NULL,
@@ -280,7 +269,7 @@ class LifeStore:
             );
             CREATE TABLE IF NOT EXISTS memory_runtime(
               id INTEGER PRIMARY KEY CHECK(id=1), last_diary_day TEXT NOT NULL DEFAULT '',
-              last_skill_day TEXT NOT NULL DEFAULT '', last_cleanup_at REAL NOT NULL DEFAULT 0
+              last_cleanup_at REAL NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS news_items(
               id TEXT PRIMARY KEY, source_id TEXT NOT NULL, title TEXT NOT NULL,
@@ -313,10 +302,9 @@ class LifeStore:
             );
             CREATE INDEX IF NOT EXISTS idx_group_observation_time
               ON group_observations(group_id,created_at);
-            CREATE TABLE IF NOT EXISTS relationship_entries(
-              group_alias TEXT NOT NULL, alias TEXT NOT NULL, user_id TEXT NOT NULL,
-              display_name TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
-              PRIMARY KEY(group_alias,alias,user_id)
+            CREATE TABLE IF NOT EXISTS group_directory(
+              group_id TEXT PRIMARY KEY, group_name TEXT NOT NULL DEFAULT '',
+              stream_id TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS group_user_activity(
               group_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -377,6 +365,22 @@ class LifeStore:
               source_digest TEXT NOT NULL, created_at REAL NOT NULL,
               UNIQUE(source_api,external_id)
             );
+            CREATE TABLE IF NOT EXISTS search_key_runtime(
+              provider_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'healthy', cooldown_until REAL NOT NULL DEFAULT 0,
+              failure_count INTEGER NOT NULL DEFAULT 0, last_error_class TEXT NOT NULL DEFAULT '',
+              last_used_at REAL NOT NULL DEFAULT 0, last_success_at REAL NOT NULL DEFAULT 0,
+              PRIMARY KEY(provider_id,key_fingerprint)
+            );
+            CREATE TABLE IF NOT EXISTS search_api_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
+              operation TEXT NOT NULL, provider_id TEXT NOT NULL, provider_type TEXT NOT NULL,
+              key_fingerprint TEXT NOT NULL DEFAULT '', success INTEGER NOT NULL,
+              status_code INTEGER NOT NULL DEFAULT 0, latency_ms REAL NOT NULL DEFAULT 0,
+              result_count INTEGER NOT NULL DEFAULT 0, error_class TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_search_api_event_time
+              ON search_api_events(created_at,provider_type,success);
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
@@ -413,10 +417,10 @@ class LifeStore:
             (document_id,revision_number,stage,content,model_task,created_at)
             SELECT 'diary:'||day,1,'diary',content,'diary',created_at FROM diary_entries"""
         )
-        self.conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
-            (str(SCHEMA_VERSION),),
-        )
+        if version < 9:
+            self.conn.commit()
+            self._migrate_to_v9()
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
             """INSERT OR IGNORE INTO global_state VALUES
@@ -429,6 +433,29 @@ class LifeStore:
         )
         self.conn.execute("INSERT OR IGNORE INTO memory_runtime(id) VALUES(1)")
         self.conn.commit()
+
+    def _migrate_to_v9(self) -> None:
+        """删除已取消的技能/别名数据，同时保留其余生活状态。"""
+        with self._tx() as conn:
+            conn.execute("DROP TABLE IF EXISTS skill_events")
+            conn.execute("DROP TABLE IF EXISTS skills")
+            conn.execute("DROP TABLE IF EXISTS relationship_entries")
+            # v1.6 的 -1 表示“继承角色默认值”；v1.7 起数据库中只保存明确额度。
+            conn.execute("""UPDATE users SET daily_proactive_max=
+                CASE WHEN role='owner' THEN 2 ELSE 1 END WHERE daily_proactive_max<0""")
+            # 旧版允许手填昵称、群别名和 @ 目标；升级后清空这些展示快照，等待 Host 重新读取。
+            conn.execute("UPDATE users SET display_name='' ")
+            conn.execute("UPDATE group_observations SET group_alias='' ")
+            conn.execute("UPDATE relay_candidates SET mention_user_id='',mention_name='' ")
+            columns={str(row[1]) for row in conn.execute("PRAGMA table_info(memory_runtime)").fetchall()}
+            if "last_skill_day" in columns:
+                conn.execute("""CREATE TABLE memory_runtime_v9(
+                    id INTEGER PRIMARY KEY CHECK(id=1), last_diary_day TEXT NOT NULL DEFAULT '',
+                    last_cleanup_at REAL NOT NULL DEFAULT 0)""")
+                conn.execute("""INSERT OR REPLACE INTO memory_runtime_v9(id,last_diary_day,last_cleanup_at)
+                    SELECT id,last_diary_day,last_cleanup_at FROM memory_runtime""")
+                conn.execute("DROP TABLE memory_runtime")
+                conn.execute("ALTER TABLE memory_runtime_v9 RENAME TO memory_runtime")
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
@@ -625,15 +652,14 @@ class LifeStore:
                     if not uid: continue
                     seen.append(uid)
                     role=str(getattr(p,"role","friend") or "friend")
-                    configured_limit=int(getattr(p,"daily_proactive_max",-1))
-                    daily_limit=(2 if role=="owner" else 1) if configured_limit<0 else configured_limit
+                    daily_limit=max(0,min(20,int(getattr(p,"daily_proactive_max",1))))
                     conn.execute(
                         """INSERT INTO users(user_id,enabled,proactive_enabled,display_name,temperature,role,daily_proactive_max,quiet_start,quiet_end)
                         VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
                         enabled=excluded.enabled,proactive_enabled=excluded.proactive_enabled,
-                        display_name=excluded.display_name,role=excluded.role,daily_proactive_max=excluded.daily_proactive_max,
+                        role=excluded.role,daily_proactive_max=excluded.daily_proactive_max,
                         quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end""",
-                        (uid,int(p.enabled),int(p.proactive_enabled),p.display_name,float(p.initial_temperature),role,daily_limit,p.quiet_start,p.quiet_end),
+                        (uid,int(p.enabled),int(p.proactive_enabled),"",float(p.initial_temperature),role,daily_limit,p.quiet_start,p.quiet_end),
                     )
                 if seen:
                     marks=",".join("?" for _ in seen)
@@ -646,15 +672,22 @@ class LifeStore:
             row=self.conn.execute("SELECT * FROM users WHERE user_id=?",(user_id,)).fetchone()
             return dict(row) if row else {}
 
-    async def list_users(self, proactive_only: bool=False) -> list[dict[str, Any]]:
+    async def list_users(self, proactive_only: bool=False, *, include_disabled:bool=False) -> list[dict[str, Any]]:
         async with self._lock:
-            sql="SELECT * FROM users WHERE enabled=1"
-            if proactive_only: sql += " AND proactive_enabled=1"
+            sql="SELECT * FROM users" if include_disabled else "SELECT * FROM users WHERE enabled=1"
+            if proactive_only:sql += " WHERE enabled=1 AND proactive_enabled=1" if include_disabled else " AND proactive_enabled=1"
             return [dict(r) for r in self.conn.execute(sql).fetchall()]
 
     async def set_user_stream(self, user_id: str, stream_id: str) -> None:
         async with self._lock:
             self.conn.execute("UPDATE users SET stream_id=? WHERE user_id=?",(stream_id,user_id)); self.conn.commit()
+
+    async def update_user_display_name(self,user_id:str,display_name:str)->None:
+        """昵称只作为自动展示快照，身份与授权始终使用 user_id。"""
+        clean=" ".join(str(display_name or "").replace("\x00","").split())[:120]
+        if not user_id or not clean:return
+        async with self._lock:
+            self.conn.execute("UPDATE users SET display_name=? WHERE user_id=?",(clean,user_id)); self.conn.commit()
 
     # 同时记录活跃时段，并识别用户是否回应了近期主动消息。
     async def record_interaction(self, user_id: str, text: str, now: float, hour: int,
@@ -1094,23 +1127,6 @@ class LifeStore:
                     conn.execute("DELETE FROM group_observations WHERE id=?",(observation_id,))
             return len(observation_ids)
 
-    async def sync_relationship_entries(self, profiles: list[Any]) -> None:
-        """把 WebUI 关系词条同步到 SQLite，热更新时不会留下已删除别名。"""
-        async with self._lock:
-            with self._tx() as conn:
-                conn.execute("DELETE FROM relationship_entries")
-                now=time.time()
-                for profile in profiles:
-                    group_alias=str(getattr(profile,"group_alias","") or "").strip()
-                    alias=str(getattr(profile,"alias","") or "").strip()
-                    user_id=str(getattr(profile,"user_id","") or "").strip()
-                    if not group_alias or not alias or not user_id:continue
-                    conn.execute(
-                        """INSERT OR IGNORE INTO relationship_entries
-                        (group_alias,alias,user_id,display_name,updated_at) VALUES(?,?,?,?,?)""",
-                        (group_alias,alias,user_id,str(getattr(profile,"display_name","") or "")[:120],now),
-                    )
-
     async def record_group_activity(self, group_id: str, user_id: str, display_name: str, now: float,
                                     source_message_id: str="") -> None:
         if not group_id or not user_id:return
@@ -1126,6 +1142,39 @@ class LifeStore:
                 (group_id,user_id,display_name[:120],now,source_message_id[:240]),
             )
             self.conn.commit()
+
+    async def upsert_group_directory(self,group_id:str,group_name:str,stream_id:str,now:float)->None:
+        if not group_id:return
+        name=" ".join(str(group_name or "").replace("\x00","").split())[:160]
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO group_directory(group_id,group_name,stream_id,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                group_name=CASE WHEN excluded.group_name!='' THEN excluded.group_name ELSE group_directory.group_name END,
+                stream_id=CASE WHEN excluded.stream_id!='' THEN excluded.stream_id ELSE group_directory.stream_id END,
+                updated_at=MAX(group_directory.updated_at,excluded.updated_at)""",
+                (group_id,name,str(stream_id or "")[:240],float(now)),
+            ); self.conn.commit()
+
+    async def get_group_directory(self,group_id:str)->dict[str,Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM group_directory WHERE group_id=?",(group_id,)).fetchone()
+            return dict(row) if row else {}
+
+    async def list_group_directory(self,limit:int=100)->list[dict[str,Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT * FROM group_directory ORDER BY updated_at DESC LIMIT ?",(max(1,min(500,int(limit))),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def unique_group_for_stream(self,stream_id:str)->str:
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT group_id FROM group_directory WHERE stream_id=? ORDER BY updated_at DESC",(stream_id,)
+            ).fetchall()
+            values={str(row[0]) for row in rows if str(row[0])}
+            return next(iter(values)) if len(values)==1 else ""
 
     async def clear_recalled_group_activity(self, group_id: str, message_id: str) -> int:
         """仅清除仍由该撤回消息占据的最新活跃指针；未知状态不会触发群转私。"""
@@ -1484,14 +1533,6 @@ class LifeStore:
                 "UPDATE creation_inspirations SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)
             ); self.conn.commit()
 
-    async def management_relationship_entries(self, limit: int=100) -> list[dict[str, Any]]:
-        async with self._lock:
-            rows=self.conn.execute(
-                """SELECT group_alias,alias,user_id,display_name,updated_at FROM relationship_entries
-                ORDER BY group_alias,alias LIMIT ?""",(max(1,min(500,int(limit))),)
-            ).fetchall()
-            return [dict(row) for row in rows]
-
     async def management_date_candidates(self, limit: int=100) -> list[dict[str, Any]]:
         async with self._lock:
             rows=self.conn.execute(
@@ -1764,52 +1805,10 @@ class LifeStore:
                 conn.execute("UPDATE date_candidates SET status='confirmed' WHERE id=?",(candidate_id,))
                 return int(saved[0]) if saved else 0
 
-    async def add_skill_evidence(self, day: str, skill_name: str, category: str,
-                                 source_kind: str, evidence_summary: str, evidence_key: str,
-                                 gain: float, daily_max: float, now: float) -> bool:
-        async with self._lock:
-            with self._tx() as conn:
-                if conn.execute("SELECT 1 FROM skill_events WHERE evidence_key=?",(evidence_key,)).fetchone():
-                    return False
-                gained=float(conn.execute(
-                    "SELECT COALESCE(SUM(gain),0) FROM skill_events WHERE day=? AND skill_name=?",
-                    (day,skill_name),
-                ).fetchone()[0])
-                applied=max(0,min(float(gain),max(0,float(daily_max)-gained)))
-                if applied<=0:return False
-                conn.execute(
-                    """INSERT INTO skill_events
-                    (day,skill_name,source_kind,evidence_summary,evidence_key,gain,created_at)
-                    VALUES(?,?,?,?,?,?,?)""",
-                    (day,skill_name[:120],source_kind[:40],evidence_summary[:300],evidence_key[:80],applied,now),
-                )
-                conn.execute(
-                    """INSERT INTO skills(skill_name,category,level,evidence_count,last_practiced_at,updated_at)
-                    VALUES(?,?,?,1,?,?)
-                    ON CONFLICT(skill_name) DO UPDATE SET
-                    category=excluded.category,level=MIN(100,skills.level+excluded.level),
-                    evidence_count=skills.evidence_count+1,last_practiced_at=excluded.last_practiced_at,
-                    updated_at=excluded.updated_at""",
-                    (skill_name[:120],category[:80],applied,now,now),
-                )
-                return True
-
-    async def list_skills(self, limit: int=30) -> list[dict[str, Any]]:
-        async with self._lock:
-            rows=self.conn.execute(
-                "SELECT * FROM skills ORDER BY level DESC,last_practiced_at DESC LIMIT ?",
-                (max(1,min(100,int(limit))),),
-            ).fetchall()
-            return [dict(row) for row in rows]
-
     async def memory_runtime(self) -> dict[str, Any]:
         async with self._lock:
             row=self.conn.execute("SELECT * FROM memory_runtime WHERE id=1").fetchone()
             return dict(row) if row else {}
-
-    async def mark_skill_day(self, day: str) -> None:
-        async with self._lock:
-            self.conn.execute("UPDATE memory_runtime SET last_skill_day=? WHERE id=1",(day,)); self.conn.commit()
 
     async def reserve_date_trigger(self, date_id: int, occurrence_date: str,
                                    lead_days: int, now: float) -> bool:
@@ -1859,7 +1858,12 @@ class LifeStore:
                 ON CONFLICT(id) DO UPDATE SET
                 source_id=excluded.source_id,title=excluded.title,url=excluded.url,
                 summary=excluded.summary,content=excluded.content,published_at=excluded.published_at,
-                fetched_at=excluded.fetched_at,content_hash=excluded.content_hash,expires_at=excluded.expires_at""",
+                fetched_at=excluded.fetched_at,
+                relevance_score=CASE WHEN news_items.content_hash<>excluded.content_hash THEN 0 ELSE news_items.relevance_score END,
+                relevance_reason=CASE WHEN news_items.content_hash<>excluded.content_hash THEN '' ELSE news_items.relevance_reason END,
+                associated_at=CASE WHEN news_items.content_hash<>excluded.content_hash THEN 0 ELSE news_items.associated_at END,
+                opportunity_id=CASE WHEN news_items.content_hash<>excluded.content_hash THEN '' ELSE news_items.opportunity_id END,
+                content_hash=excluded.content_hash,expires_at=excluded.expires_at""",
                 (item["id"],item["source_id"][:120],item["title"][:500],item["url"][:2000],
                  item.get("summary","")[:3000],item.get("content","")[:16000],float(item.get("published_at") or 0),
                  float(item["fetched_at"]),item["content_hash"][:80],float(item["expires_at"])),
@@ -1958,11 +1962,103 @@ class LifeStore:
             )
             self.conn.commit()
 
+    async def reconcile_search_keys(self,entries:list[tuple[str,str]],*,reset_existing:bool=False)->None:
+        """配置热更新后只保留仍存在的 Key 指纹，原始 Key 从不入库。"""
+        allowed={(str(provider),str(key)) for provider,key in entries if provider and key}
+        async with self._lock:
+            with self._tx() as conn:
+                if reset_existing:
+                    conn.execute("DELETE FROM search_key_runtime")
+                    return
+                rows=conn.execute("SELECT provider_id,key_fingerprint FROM search_key_runtime").fetchall()
+                for row in rows:
+                    if (str(row[0]),str(row[1])) not in allowed:
+                        conn.execute("DELETE FROM search_key_runtime WHERE provider_id=? AND key_fingerprint=?",(row[0],row[1]))
+
+    async def get_search_key_runtime(self,provider_id:str,key_fingerprint:str)->dict[str,Any]:
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT * FROM search_key_runtime WHERE provider_id=? AND key_fingerprint=?",
+                (provider_id,key_fingerprint),
+            ).fetchone()
+            return dict(row) if row else {"provider_id":provider_id,"key_fingerprint":key_fingerprint,
+                "status":"healthy","cooldown_until":0,"failure_count":0,"last_error_class":"",
+                "last_used_at":0,"last_success_at":0}
+
+    async def save_search_key_runtime(self,provider_id:str,key_fingerprint:str,*,status:str,
+                                      cooldown_until:float,failure_count:int,error_class:str,
+                                      used_at:float,success_at:float=0)->None:
+        async with self._lock:
+            previous=self.conn.execute(
+                "SELECT last_success_at FROM search_key_runtime WHERE provider_id=? AND key_fingerprint=?",
+                (provider_id,key_fingerprint),
+            ).fetchone()
+            last_success=float(success_at or (previous[0] if previous else 0))
+            self.conn.execute(
+                """INSERT OR REPLACE INTO search_key_runtime
+                (provider_id,key_fingerprint,status,cooldown_until,failure_count,last_error_class,last_used_at,last_success_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (provider_id[:80],key_fingerprint[:32],status[:24],float(cooldown_until),max(0,int(failure_count)),
+                 error_class[:80],float(used_at),last_success),
+            ); self.conn.commit()
+
+    async def record_search_api_event(self,*,created_at:float,operation:str,provider_id:str,
+                                      provider_type:str,key_fingerprint:str,success:bool,status_code:int,
+                                      latency_ms:float,result_count:int,error_class:str)->None:
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO search_api_events
+                (created_at,operation,provider_id,provider_type,key_fingerprint,success,status_code,
+                 latency_ms,result_count,error_class) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (float(created_at),operation[:40],provider_id[:80],provider_type[:40],key_fingerprint[:32],
+                 int(success),int(status_code),float(latency_ms),max(0,int(result_count)),error_class[:80]),
+            ); self.conn.commit()
+
+    async def search_api_summary(self,since:float)->list[dict[str,Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT provider_type,COUNT(*) calls,SUM(success) successes,
+                SUM(result_count) results,AVG(latency_ms) average_latency_ms,
+                MAX(created_at) last_at FROM search_api_events WHERE created_at>=?
+                GROUP BY provider_type ORDER BY calls DESC""",(float(since),)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def search_success_count(self,operation:str,start:float,end:float)->int:
+        """成功事件一一对应成功的逻辑搜索，失败的 Key 尝试不会占用每日额度。"""
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT COUNT(*) FROM search_api_events
+                WHERE operation=? AND success=1 AND created_at>=? AND created_at<?""",
+                (operation[:40],float(start),float(end)),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def search_attempt_count(self,operation:str,start:float,end:float)->int:
+        """同一次降级链共享 event_at，按逻辑搜索计数而不是按 Key 请求计数。"""
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT COUNT(DISTINCT created_at) FROM search_api_events
+                WHERE operation=? AND created_at>=? AND created_at<?""",
+                (operation[:40],float(start),float(end)),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    async def search_provider_health(self)->list[dict[str,Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT provider_id,key_fingerprint,status,cooldown_until,failure_count,
+                last_error_class,last_used_at,last_success_at FROM search_key_runtime
+                ORDER BY provider_id,key_fingerprint"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     async def cleanup_information(self, now: float) -> None:
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("DELETE FROM news_items WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM exploration_notes WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM search_api_events WHERE created_at<=?",(now-90*86400,))
 
     # 每个自然日只结算一次关系温度，离线补算时按结算日结束时刻判断冷却。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:

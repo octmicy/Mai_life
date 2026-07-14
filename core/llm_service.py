@@ -34,7 +34,6 @@ class LLMService:
             "vision_summary": models.vision_summary_task or models.vision_task,
             "diary": models.diary_task or models.creative_task,
             "date_analysis": models.date_analysis_task or models.fast_task,
-            "skill": models.skill_task or models.fast_task,
             "news": models.news_task or models.fast_task,
             "search": models.search_task or models.reasoning_task,
             "relevance": models.relevance_task or models.reasoning_task,
@@ -57,7 +56,6 @@ class LLMService:
             kinds.add("dream")
             if self.config.memory.diary_enabled:kinds.add("diary")
             if self.config.memory.date_model_analysis_enabled:kinds.add("date_analysis")
-            if self.config.memory.skill_model_analysis_enabled:kinds.add("skill")
         if self.config.information.enabled:
             if self.config.news.enabled:kinds.add("news")
             if self.config.search.enabled:kinds.add("search")
@@ -142,7 +140,11 @@ class LLMService:
         for text in candidates:
             try:return json.loads(text)
             except (json.JSONDecodeError,TypeError):continue
-        self.ctx.logger.warning(f"[MaiLife] 结构化响应解析失败: {raw[:200]}")
+        # 模型可能回显私聊、群聊或外部资料，解析失败日志只记录元数据，不写正文。
+        self.ctx.logger.warning(
+            f"[MaiLife] 结构化响应解析失败 task={self.task_for(task_kind)} "
+            f"type={request_type} chars={len(raw)}"
+        )
         return fallback
 
     async def record_observed(self, *, source: str, task_name: str, request_type: str,

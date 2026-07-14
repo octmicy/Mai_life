@@ -1,4 +1,4 @@
-"""生活记忆：抽象日记、重要日期与证据驱动的技能成长。"""
+"""生活记忆：抽象日记与重要日期。"""
 from __future__ import annotations
 
 import hashlib
@@ -11,26 +11,6 @@ from typing import Any
 _EXPLICIT_DATE_RE=re.compile(r"(?:(?P<year>20\d{2})\s*[年./-]\s*)?(?P<month>1[0-2]|0?[1-9])\s*[月./-]\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*日?")
 _FUZZY_DATE_RE=re.compile(r"(今天|明天|后天|下周[一二三四五六日天]?|下个月|月底|月末|过几天|最近几天)")
 _EVENT_WORDS=("生日","纪念日","考试","面试","约定","见面","截止","开学","毕业","比赛","复诊","旅行","婚礼","提醒")
-_SKILL_RULES=(
-    (("做饭","早餐","午饭","晚饭","烘焙","料理","厨房"),"料理","生活"),
-    (("写作","写小说","写诗","随笔","剧本"),"写作","创作"),
-    (("画画","绘画","分镜","设计"),"视觉创作","创作"),
-    (("编程","代码","插件","调试","开发"),"编程","技术"),
-    (("阅读","看书","读书"),"阅读整理","学习"),
-    (("学习","复习","课程","练习"),"学习整理","学习"),
-    (("运动","跑步","健身","瑜伽"),"运动","健康"),
-    (("出行","旅行","通勤","路线"),"出行规划","生活"),
-)
-
-
-def skill_stage(level: float) -> str:
-    if level<10:return "不太熟"
-    if level<30:return "正在摸索"
-    if level<60:return "逐渐熟悉"
-    if level<85:return "有自己的办法"
-    return "熟练但仍在学习"
-
-
 class MemoryService:
     def __init__(self,store:Any,config:Any,llm:Any,logger:Any)->None:
         self.store=store; self.config=config; self.llm=llm; self.logger=logger
@@ -138,8 +118,6 @@ class MemoryService:
         if cfg.diary_enabled and not await self.store.get_diary(day):
             await self._generate_diary(now,target)
         runtime=await self.store.memory_runtime()
-        if cfg.skills_enabled and str(runtime.get("last_skill_day") or "")!=day:
-            await self._settle_skills(now,target)
         if now.timestamp()-float(runtime.get("last_cleanup_at") or 0)>=86400:
             await self.store.cleanup_date_candidates(
                 now.timestamp()-int(cfg.date_candidate_retention_days)*86400
@@ -188,46 +166,6 @@ class MemoryService:
                 "expires_at":now.timestamp()+18*3600,
             })
 
-    async def _settle_skills(self,now:datetime,target:date)->None:
-        day=target.isoformat(); scenes=await self.store.scenes_for_day(day); cfg=self.config.memory
-        for index,item in enumerate(scenes):
-            evidence=" ".join(str(item.get(key) or "") for key in ("summary","scene","location"))
-            matched=[]
-            for keywords,name,category in _SKILL_RULES:
-                if any(keyword in evidence for keyword in keywords):matched.append((name,category))
-            if not matched and str(item.get("kind") or "") in {"study","work"}:
-                matched=[("学习整理" if item.get("kind")=="study" else "工作整理","学习" if item.get("kind")=="study" else "工作")]
-            for name,category in matched[:2]:
-                key=hashlib.sha1(f"{day}:{index}:{name}:{evidence}".encode()).hexdigest()
-                await self.store.add_skill_evidence(
-                    day,name,category,"schedule",str(item.get("summary") or item.get("scene") or "日程实践"),
-                    key,0.25,float(cfg.skill_daily_gain_max),now.timestamp(),
-                )
-        if cfg.skill_model_analysis_enabled and scenes and self.llm.task_available("skill"):
-            safe_scenes=[{"index":index,"kind":item.get("kind"),"summary":item.get("summary"),
-                          "scene":item.get("scene") or ""} for index,item in enumerate(scenes)]
-            result=await self.llm.generate_json(
-                "以下是麦麦自己生成的生活场景，不含用户聊天。识别真正得到练习的技能证据：\n"+
-                json.dumps(safe_scenes,ensure_ascii=False)+
-                "\n只返回JSON数组，每项包含scene_index、skill_name、category、gain；gain范围0.05到0.5。没有证据就返回空数组。",
-                "你只分类技能练习证据，不能直接设定能力等级。",[],max_tokens=600,
-                task_kind="skill",request_type="skill_evidence_analysis",
-            )
-            for item in result if isinstance(result,list) else []:
-                if not isinstance(item,dict):continue
-                try:index=int(item.get("scene_index")); gain=max(0.05,min(0.5,float(item.get("gain") or 0.15)))
-                except (TypeError,ValueError):continue
-                if not 0<=index<len(scenes):continue
-                name=str(item.get("skill_name") or "").strip()[:120]; category=str(item.get("category") or "其他")[:80]
-                if not name:continue
-                evidence=str(scenes[index].get("summary") or scenes[index].get("scene") or "生活实践")
-                key=hashlib.sha1(f"{day}:model:{index}:{name}:{evidence}".encode()).hexdigest()
-                await self.store.add_skill_evidence(
-                    day,name,category,"model_classified_schedule",evidence,key,gain,
-                    float(cfg.skill_daily_gain_max),now.timestamp(),
-                )
-        await self.store.mark_skill_day(day)
-
     async def _create_date_opportunities(self,now:datetime)->None:
         cfg=self.config.memory
         if not cfg.important_dates_enabled:return
@@ -256,10 +194,7 @@ class MemoryService:
             occurrence=self.occurrence(item,now.date())
             if occurrence and 0<=(occurrence-now.date()).days<=45:
                 upcoming.append({"name":item["event_name"],"date":occurrence.isoformat(),"days":(occurrence-now.date()).days})
-        skills=await self.store.list_skills(5)
-        return {"diary":diary,"upcoming_dates":upcoming[:8],
-                "skills":[{"name":item["skill_name"],"level":round(float(item["level"]),1),
-                           "stage":skill_stage(float(item["level"]))} for item in skills]}
+        return {"diary":diary,"upcoming_dates":upcoming[:8]}
 
     async def schedule_context(self,now:datetime)->dict[str,Any]:
         dates=[]
@@ -269,6 +204,4 @@ class MemoryService:
                 # 全局日程不携带用户 ID 和自定义事件原文，避免共享生活线泄露朋友隐私。
                 kind=next((word for word in _EVENT_WORDS if word in str(item.get("event_name") or "")),"重要安排")
                 dates.append({"kind":kind,"days":(occurrence-now.date()).days})
-        skills=await self.store.list_skills(5)
-        return {"private_date_hints":dates[:8],"skills":[{"name":item["skill_name"],"level":round(float(item["level"]),1),
-                  "stage":skill_stage(float(item["level"]))} for item in skills]}
+        return {"private_date_hints":dates[:8]}

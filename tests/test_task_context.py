@@ -95,7 +95,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         await self.store.close(); self.tmp.cleanup()
 
     async def _private_task(self,index:int,adapter:str)->tuple[MaiLifePlugin,str,str,str]:
-        now=time.time(); user_id=f"u-{index}"; session=f"private-{index}"
+        now=time.time(); user_id=str(100000+index); session=f"private-{index}"
         event_id=f"event-{index}"; opportunity_id=f"op-{index}"; task_id=f"{HOST_TASK_PREFIX}{1000+index}"
         await self.store.sync_users([UserProfile(user_id=user_id,role="owner")])
         await self.store.set_user_stream(user_id,session)
@@ -138,7 +138,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
                     f"{adapter}_message_type":"private"}},"raw_message":[{"type":"text","data":"第二轮"}]},
                     set_reply=False,reply_message_id=str(327758149+index))
                 self.assertEqual(forced["action"],"abort")
-                event=await self.store.proactive_event(event_id); user=await self.store.get_user(f"u-{index}")
+                event=await self.store.proactive_event(event_id); user=await self.store.get_user(str(100000+index))
                 self.assertEqual(event["status"],"sent"); self.assertEqual(user["proactive_count"],1)
 
     async def test_first_reply_keeps_normal_segments_but_blocks_unanchored_followup(self):
@@ -182,7 +182,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_metadata_selects_exact_event_when_host_task_ids_collide(self):
         plugin,session,_first_event,task_id=await self._private_task(32,"napcat")
-        now=time.time(); user_id="u-32"
+        now=time.time(); user_id="100032"
         await self.store.add_opportunity({"id":"op-32-second","framework_id":"f","topic":"第二件事",
             "motive":"想分享","weight":0.8,"privacy":"normal","expires_at":now+300})
         await self.store.consume_opportunity("op-32-second",user_id,now)
@@ -199,7 +199,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         del plugin
         await self.store.mark_pending_sent(session,time.time(),event_id=event_id)
         config=MaiLifeSettings(); restored=MaiLifePlugin(); restored.set_plugin_config(config.model_dump(mode="python"))
-        restored._store=self.store; restored._session_runtime[session]={"user_id":"u-33"}
+        restored._store=self.store; restored._session_runtime[session]={"user_id":"100033"}
         await restored.on_planner(session_id=session,messages=planner_messages(
             task_id,{"mai_life_event_id":event_id}))
         duplicate=await restored.on_replyer_after(
@@ -220,7 +220,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await plugin.on_send_before(message=message,set_reply=False,
                                                       reply_message_id=anchor))["action"],"abort")
 
-    async def test_relay_mention_uses_mapped_task_and_real_quote_for_both_adapters(self):
+    async def test_relay_keeps_plain_segments_and_real_quote_for_both_adapters(self):
         for index,adapter in enumerate(("napcat","snowluma"),start=40):
             now=time.time(); session=f"group-{index}"; relay_id=f"relay-{index}"
             task_id=f"{HOST_TASK_PREFIX}{9000+index}"
@@ -240,8 +240,8 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
             before=await plugin.on_send_before(message=message,set_reply=True,reply_message_id=anchor)
             self.assertTrue(before["modified_kwargs"]["set_reply"])
             mutated=before["modified_kwargs"]["message"]
-            self.assertEqual(mutated["raw_message"][0]["type"],"at")
-            self.assertEqual(mutated["raw_message"][0]["data"]["target_user_id"],"200")
+            self.assertEqual(mutated["raw_message"],[{"type":"text","data":"转述内容"}])
+            self.assertFalse(any(item.get("type")=="at" for item in mutated["raw_message"]))
             await plugin.on_send_after(message=mutated,sent=True,reply_message_id=anchor)
             duplicate=await plugin.on_replyer_after(session_id=session,response="多解释一句",reply_message_id="bot-output")
             self.assertEqual(duplicate["modified_kwargs"]["response"],"")
@@ -249,16 +249,16 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_command_is_rejected_before_database_side_effect(self):
         config=MaiLifeSettings.model_validate({"users":{"profiles":[{
-            "user_id":"admin","role":"owner","enabled":True,
+            "user_id":"10001","role":"owner","enabled":True,
         }]}})
         await self.store.sync_users(config.users.profiles)
         plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
         context=DummyCommandContext(); plugin._set_context(context)
         result=await plugin.cmd_date_add(
-            user_id="admin",group_id="100",stream_id="group-stream",
+            user_id="10001",group_id="100",stream_id="group-stream",
             matched_groups={"event_date":"2026-08-01","event_name":"不应写入"},
         )
-        self.assertEqual(len(result),3); self.assertEqual(await self.store.list_important_dates("admin"),[])
+        self.assertEqual(len(result),3); self.assertEqual(await self.store.list_important_dates("10001"),[])
         self.assertIn("仅对已配置的私聊用户",context.send.calls[0]["text"])
 
 

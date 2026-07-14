@@ -76,17 +76,6 @@ def sender_identity(message: Mapping[str, Any]) -> tuple[str, str]:
     return user_id,name
 
 
-def standard_at_component(user_id: str, display_name: str="") -> dict[str, Any]:
-    """构造 Host 标准 AtComponent 字典。
-
-    NapCat 与 SnowLuma 都在各自出站编码器中把该结构转换为 OneBot ``at`` 段；
-    插件不直接拼装任一适配器的 ``qq`` 私有载荷。
-    """
-    return {"type":"at","data":{"target_user_id":str(user_id).strip(),
-                                     "target_user_nickname":str(display_name or "").strip() or None,
-                                     "target_user_cardname":None}}
-
-
 def component_kind(component: Mapping[str, Any]) -> str:
     """展开 SnowLuma 用 ``dict`` 包装的 file/video 等媒介类型。"""
     kind = str(component.get("type") or "").strip().lower()

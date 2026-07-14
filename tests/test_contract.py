@@ -4,7 +4,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from Mai_life.config import MaiLifeSettings
+from Mai_life.config import MaiLifeSettings,SocialGroupProfile,UserProfile
 from Mai_life.messaging.prompt_builder import PromptBuilder, relationship_stage
 from Mai_life.plugin import MaiLifePlugin
 
@@ -13,9 +13,9 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.6.0")
+        self.assertEqual(config.plugin.config_version,"1.7.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
-        self.assertEqual(config.proactive.daily_max_per_user,2)
+        self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
         self.assertTrue(config.debounce.enabled)
         self.assertTrue(config.recall.enabled)
@@ -25,8 +25,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config.models.vision_task,"vlm")
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
-        self.assertFalse(config.memory.skill_model_analysis_enabled)
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
+        self.assertEqual(config.search_api.providers,[])
+        self.assertFalse(config.debounce.group_enabled)
         self.assertFalse(config.social.enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
         self.assertFalse(config.creation.enabled); self.assertFalse(config.creation.plaintext_storage_acknowledged)
@@ -52,8 +53,9 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_recalled","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
+        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_recalled","/mai_diary","/mai_dates","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
             self.assertIn(expected,names)
+        self.assertNotIn("/mai_skills",names)
         hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
         self.assertIn("chat.receive.before_process",hooks)
         self.assertIn("maisaka.replyer.after_response",hooks)
@@ -109,8 +111,15 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.6.0")
+        self.assertEqual(config.plugin.config_version,"1.7.0")
         self.assertTrue(config.debounce.enabled)
+
+    def test_legacy_negative_user_quota_becomes_explicit_role_default(self):
+        config=MaiLifeSettings.model_validate({"users":{"profiles":[
+            {"user_id":"10001","role":"owner","daily_proactive_max":-1},
+            {"user_id":"10002","role":"friend","daily_proactive_max":-1},
+        ]}})
+        self.assertEqual([item.daily_proactive_max for item in config.users.profiles],[2,1])
 
     def test_invalid_rest_windows_restore_each_field_default(self):
         config=MaiLifeSettings.model_validate({"rest_gate":{
@@ -123,11 +132,19 @@ class ContractTests(unittest.TestCase):
         text=PromptBuilder().replyer(
             {"energy":60,"mood_valence":0,"current_location":"家里","current_activity":"看书"},{"description":"晴"},
             {"current":{"summary":"休息","location":"家里"}},{"temperature":50,"role":"friend"},[],
-            memory={"diary":{},"upcoming_dates":[{"name":"考试","date":"2026-07-20","days":7}],
-                    "skills":[{"name":"编程","stage":"正在摸索"}]},
+            memory={"diary":{},"upcoming_dates":[{"name":"考试","date":"2026-07-20","days":7}]},
         )
         self.assertIn("当前关系无权读取私人日记",text)
-        self.assertIn("考试",text); self.assertIn("正在摸索",text)
+        self.assertIn("考试",text); self.assertNotIn("技能",text)
+
+    def test_identity_fields_only_accept_qq_numbers(self):
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            MaiLifeSettings.model_validate({"users":{"profiles":[{"user_id":"可修改昵称"}]}})
+        with self.assertRaises(ValidationError):
+            MaiLifeSettings.model_validate({"social":{"groups":[{"group_id":"群别名"}]}})
+        self.assertNotIn("display_name",UserProfile.model_fields)
+        self.assertNotIn("alias",SocialGroupProfile.model_fields)
 
     def test_friend_prompt_contains_explicit_boundary(self):
         text=PromptBuilder().replyer(

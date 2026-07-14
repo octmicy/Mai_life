@@ -51,8 +51,8 @@ class ProactiveEngine:
             stream=str(user.get("stream_id") or "")
             if not stream or self._in_window(user["quiet_start"],user["quiet_end"],current):continue
             count=int(user.get("proactive_count",0)) if user.get("proactive_day")==day else 0
-            # v1.1 起额度由用户角色配置解析后写入数据库；旧全局值只作为异常兜底。
-            daily_limit=int(user.get("daily_proactive_max",cfg.daily_max_per_user))
+            # v1.7 起每日额度只由该 QQ 用户档案提供，不再继承全局上限。
+            daily_limit=max(0,min(20,int(user.get("daily_proactive_max") or 0)))
             if daily_limit<=0 or count>=daily_limit:continue
             last_pro=float(user.get("last_proactive_at",0)); last_user=float(user.get("last_user_message_at",0))
             if last_pro and now.timestamp()-last_pro<cfg.min_interval_minutes*60:continue

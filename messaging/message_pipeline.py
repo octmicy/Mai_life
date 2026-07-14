@@ -1,4 +1,4 @@
-"""配置私聊的入站消息收口与媒介识别。"""
+"""私聊与群聊相互隔离的入站消息收口和媒介识别。"""
 from __future__ import annotations
 
 import asyncio
@@ -126,7 +126,7 @@ class _Burst:
 
 
 class MessageDebouncer:
-    """同一会话允许并发 Hook 进入，但最终只有最新调用继续主链。"""
+    """同一物理轮次允许并发 Hook 进入，但最终只有最新调用继续主链。"""
 
     def __init__(self, config: Any, logger: Any) -> None:
         self.config=config; self.logger=logger
@@ -139,13 +139,30 @@ class MessageDebouncer:
             self._closed=True
             for burst in self._bursts.values():burst.event.set()
 
-    def _quiet_wait(self, messages:list[dict[str,Any]]) -> float:
+    @staticmethod
+    def _burst_key(message:dict[str,Any])->tuple[str,bool]:
+        uid,session,_mid,private=message_identity(message)
+        if private:return f"private:{session}",True
+        info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
+        group=info.get("group_info") if isinstance(info.get("group_info"),dict) else {}
+        group_id=str(group.get("group_id") or "")
+        platform=str(message.get("platform") or "qq")
+        # Focus 可能让多个聊天流共享 session；物理群号和发送者 QQ 才是隔离边界。
+        return f"group:{platform}:{group_id or session}:{uid}",False
+
+    def _quiet_wait(self, messages:list[dict[str,Any]],private:bool=True) -> float:
         types={kind for msg in messages for kind in media_types(msg)}
         cfg=self.config.debounce
-        if "forward" in types:return float(cfg.forward_wait_seconds)
+        if private:
+            text_wait=float(cfg.text_wait_seconds); image_wait=float(cfg.image_wait_seconds)
+            forward_wait=float(cfg.forward_wait_seconds)
+        else:
+            text_wait=float(cfg.group_text_wait_seconds); image_wait=float(cfg.group_image_wait_seconds)
+            forward_wait=float(cfg.group_forward_wait_seconds)
+        if "forward" in types:return forward_wait
         image_count=sum(1 for msg in messages for item in _walk_components(msg.get("raw_message") or []) if component_kind(item)=="image")
-        if image_count==1 and not any(plain_text(msg) for msg in messages):return float(cfg.image_wait_seconds)
-        return float(cfg.text_wait_seconds)
+        if image_count==1 and not any(plain_text(msg) for msg in messages):return image_wait
+        return text_wait
 
     @staticmethod
     def _merge(messages:list[dict[str,Any]]) -> dict[str,Any]:
@@ -168,15 +185,17 @@ class MessageDebouncer:
     async def collect(self, message:dict[str,Any]) -> tuple[bool,dict[str,Any],str]:
         """返回 ``(是否继续, 最终消息, 原因)``；旧一代调用会被终止。"""
         cfg=self.config.debounce
-        if not cfg.enabled:return True,message,"disabled"
-        _uid,session,_mid,_private=message_identity(message)
+        _uid,session,_mid,private=message_identity(message)
+        if private and not cfg.enabled:return True,message,"disabled"
+        if not private and not cfg.group_enabled:return True,message,"group_disabled"
         if not session:return True,message,"missing_session"
+        burst_key,_private_check=self._burst_key(message)
         now=time.monotonic()
         async with self._lock:
             if self._closed:return True,message,"closing"
-            burst=self._bursts.get(session)
+            burst=self._bursts.get(burst_key)
             if burst is None:
-                burst=_Burst(started=now); self._bursts[session]=burst
+                burst=_Burst(started=now); self._bursts[burst_key]=burst
             else:
                 burst.event.set(); burst.event=asyncio.Event()
             burst.messages.append(copy.deepcopy(message)); burst.generation+=1
@@ -185,11 +204,12 @@ class MessageDebouncer:
             text=direct_text(message); immediate=bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
         while not immediate:
             async with self._lock:
-                current=self._bursts.get(session)
+                current=self._bursts.get(burst_key)
                 if current is not burst or burst.generation!=generation:return False,message,"superseded"
                 if self._closed:break
-                quiet=self._quiet_wait(burst.messages)
-                remaining=max(0.0,min(quiet,float(cfg.max_wait_seconds)-(time.monotonic()-burst.started)))
+                quiet=self._quiet_wait(burst.messages,private)
+                max_wait=float(cfg.max_wait_seconds if private else cfg.group_max_wait_seconds)
+                remaining=max(0.0,min(quiet,max_wait-(time.monotonic()-burst.started)))
                 event=burst.event
             if remaining<=0:break
             try:await asyncio.wait_for(event.wait(),timeout=remaining)
@@ -197,9 +217,9 @@ class MessageDebouncer:
             async with self._lock:
                 if burst.generation!=generation:return False,message,"superseded"
         async with self._lock:
-            current=self._bursts.get(session)
+            current=self._bursts.get(burst_key)
             if current is not burst or burst.generation!=generation:return False,message,"superseded"
-            self._bursts.pop(session,None)
+            self._bursts.pop(burst_key,None)
             merged=self._merge(burst.messages)
         return True,merged,f"merged:{len(burst.messages)}"
 
@@ -207,22 +227,20 @@ class MessageDebouncer:
         """从尚未收口的突发消息中移除撤回项，并唤醒当前最终调用重新计时。"""
         if not session_id or not message_id:return {}
         async with self._lock:
-            burst=self._bursts.get(session_id)
-            if burst is None:return {}
-            removed={}
-            retained=[]
-            for message in burst.messages:
-                if not removed and str(message.get("message_id") or "")==message_id:
-                    removed=message
-                else:retained.append(message)
-            if not removed:return {}
-            old_event=burst.event; burst.event=asyncio.Event(); old_event.set()
-            if retained:
-                # 不增加 generation：当前最新 Hook 可以携带剩余消息继续主链。
-                burst.messages=retained
-            else:
-                self._bursts.pop(session_id,None)
-            return removed
+            for key,burst in list(self._bursts.items()):
+                removed={}; retained=[]
+                for message in burst.messages:
+                    same_session=str(message.get("session_id") or "")==session_id
+                    if not removed and same_session and str(message.get("message_id") or "")==message_id:removed=message
+                    else:retained.append(message)
+                if not removed:continue
+                old_event=burst.event; burst.event=asyncio.Event(); old_event.set()
+                if retained:
+                    # 不增加 generation：当前最新 Hook 可以携带剩余消息继续主链。
+                    burst.messages=retained
+                else:self._bursts.pop(key,None)
+                return removed
+            return {}
 
     @property
     def active_bursts(self) -> int:return len(self._bursts)

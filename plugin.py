@@ -1,4 +1,4 @@
-"""Mai_life v1.7.0 插件入口。"""
+"""Mai_life v1.7.1 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +25,9 @@ from .life.proactive import ProactiveEngine
 from .life.rest_gate import RestGate
 from .life.schedule_service import ScheduleService,hhmm
 from .messaging.adapter_compat import adapter_name,group_identity,recall_notice,sender_identity
+from .messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
+from .messaging.command_reply import CommandReplyService
+from .messaging.menu_renderer import MaiLifeMenuRenderer
 from .messaging.message_pipeline import MessageDebouncer,classify_intent,direct_text,is_command,media_types,message_identity
 from .messaging.prompt_builder import PromptBuilder,relationship_stage
 from .messaging.recall_service import RecallService,is_recall_query
@@ -51,6 +54,8 @@ class MaiLifePlugin(MaiBotPlugin):
         self._group_observer:Optional[GroupObserver]=None; self._relay:Optional[RelayService]=None
         self._bookshelf:Optional[BookshelfService]=None; self._creation:Optional[CreationService]=None
         self._admin:Optional[AdminService]=None
+        self._command_replies:Optional[CommandReplyService]=None
+        self._menu_renderer=MaiLifeMenuRenderer()
         self._prompts=PromptBuilder(); self._tasks:list[asyncio.Task[Any]]=[]; self._transient:set[asyncio.Task[Any]]=set()
         self._message_tasks:dict[tuple[str,str],set[asyncio.Task[Any]]]={}
         self._personality=""; self._maintenance_lock=asyncio.Lock()
@@ -93,13 +98,14 @@ class MaiLifePlugin(MaiBotPlugin):
         self._bookshelf=BookshelfService(self._store,self.config)
         self._creation=CreationService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         self._admin=AdminService(self._store,self.config)
+        self._command_replies=CommandReplyService(self.ctx,self.ctx.logger)
         await self._store.sync_users(self.config.users.profiles)
         await self._information.prepare()
         await self._refresh_personality(); await self._resolve_all_streams(); await self._llm.refresh_health()
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.7.0 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.7.1 加载完成")
 
     async def on_unload(self)->None:
         self._stopping=True
@@ -111,6 +117,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._session_runtime.clear(); self._group_turns.clear(); self._group_turn_generation=0
         self._reply_confirmations.clear(); self._message_tasks.clear()
         if self._store:await self._store.close()
+        self._command_replies=None
         self.ctx.logger.info("[MaiLife] 麦麦生活已卸载")
 
     async def on_config_update(self,scope:str,config_data:dict[str,Any],version:str)->None:
@@ -1073,13 +1080,49 @@ class MaiLifePlugin(MaiBotPlugin):
         if str(kwargs.get("group_id") or "").strip():return {}
         return await self._configured_command_user(str(kwargs.get("user_id") or ""))
 
+    def _require_command_replies(self)->CommandReplyService:
+        if self._command_replies is None:
+            # 命令发送层也用于最小测试/兼容上下文，logger 不应成为发消息的硬依赖。
+            self._command_replies=CommandReplyService(self.ctx,getattr(self.ctx,"logger",None))
+        return self._command_replies
+
     async def _send_command(self,kwargs:dict[str,Any],text:str)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); user=await self._store.get_user(uid) if self._store and uid else {}
         if kwargs.get("group_id") or not user or not user.get("enabled"):text="该命令仅对已配置的私聊用户开放。"
         try:
-            ok=await self.ctx.send.text(text=text,stream_id=str(kwargs.get("stream_id") or ""))
+            ok=await self._require_command_replies().send_text_with_fallback(
+                text,str(kwargs.get("stream_id") or ""),uid,str(kwargs.get("group_id") or ""),
+                str(kwargs.get("platform") or "qq"),
+            )
             return bool(ok),"命令结果已发送" if ok else "发送返回 False",2
-        except Exception as exc:return False,f"发送失败: {exc}",2
+        except Exception as exc:return False,f"发送失败: {type(exc).__name__}",2
+
+    async def _send_command_menu(self,kwargs:dict[str,Any],notice:str="")->tuple[bool,str,int]:
+        """菜单优先发本地 PNG；渲染、能力或适配器失败时自动退回纯文本。"""
+        uid=str(kwargs.get("user_id") or ""); stream_id=str(kwargs.get("stream_id") or "")
+        platform=str(kwargs.get("platform") or "qq"); text=build_command_usage_text(notice)
+        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.1",notice=notice)
+        if image_bytes:
+            try:
+                sent=await self._require_command_replies().send_image_bytes_with_fallback(
+                    image_bytes,stream_id,uid,str(kwargs.get("group_id") or ""),platform,
+                )
+                if sent:return True,"命令菜单图片已发送",2
+            except Exception as exc:
+                logger=getattr(self.ctx,"logger",None); debug=getattr(logger,"debug",None)
+                if callable(debug):debug(f"[MaiLife] 命令菜单降级为文本 type={type(exc).__name__}")
+        return await self._send_command(kwargs,text)
+
+    @Command(name="/mai",pattern=r"^/mai(?:\s+(?P<content>[\s\S]+))?$",description="查看麦麦生活命令菜单")
+    async def cmd_menu(self,**kwargs:Any)->tuple[bool,str,int]:
+        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
+        payload=" ".join(str(groups.get("content") or "").replace("\x00","").split())
+        if not payload or payload.casefold() in {"help","?","？","帮助"}:
+            return await self._send_command_menu(kwargs)
+        notice=f"未识别子命令“{payload[:36]}”，请使用下列完整命令。"
+        sent=await self._send_command_menu(kwargs,notice)
+        return False,"未知子命令，已显示菜单" if sent[0] else sent[1],2
 
     @Command(name="/mai_status",pattern=r"^/mai_status\b",description="查看麦麦生活与消息管线状态")
     async def cmd_status(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -1262,7 +1305,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/mai_help",pattern=r"^/mai_help\b",description="查看麦麦生活命令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
-        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_recalled 本人最近撤回摘要\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_news 新闻见闻\n/mai_explore 搜索笔记\n/mai_bookshelf 可见书柜\n/mai_read 文本ID\n/mai_create_now 立即创作判断（管理员）\n/mai_relay 群QQ号 内容\n/mai_admin [overview/users/groups/dates/sources/bookshelf/tokens/proactive]\n/mai_tokens Token与搜索API统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
+        return await self._send_command_menu(kwargs)
 
     @Command(name="/mai_regenerate_schedule",pattern=r"^/mai_regenerate_schedule\b",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -1297,7 +1340,7 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v1.7.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        return (f"麦麦生活 v1.7.1\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
@@ -1395,7 +1438,7 @@ class MaiLifePlugin(MaiBotPlugin):
         name="mai_life_management",title="麦麦生活管理",
         description="配置生活、社交、联网与书柜模块；敏感明细请使用管理员命令。",
         content=[
-            {"type":"key_value","entries":{"版本":"1.7.0","管理命令":"/mai_admin","私密 API":"不公开"}},
+            {"type":"key_value","entries":{"版本":"1.7.1","管理命令":"/mai_admin","私密 API":"不公开"}},
             {"type":"list","items":["用户角色与主动额度","QQ群与日期候选","联网服务、书柜与 Token 聚合"]},
         ],
         link_url="/plugin-config?plugin=maibot-community.mai-life",link_label="打开麦麦生活配置",

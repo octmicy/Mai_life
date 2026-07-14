@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.5.1"
+CONFIG_SCHEMA_VERSION = "1.6.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -813,6 +813,46 @@ class DebounceSettings(PluginConfigBase):
     turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 8, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
 
 
+class RecallSettings(PluginConfigBase):
+    """SnowLuma 与 NapCat 共用的撤回通知处理。"""
+
+    __ui_label__: ClassVar[str] = "撤回增强"
+    __ui_order__: ClassVar[int] = 7
+
+    enabled: bool = Field(
+        default=True,
+        description="同时处理私聊和群聊撤回通知。",
+        json_schema_extra=_ui(
+            "启用撤回增强", "只有这一个范围开关；开启后私聊和群聊使用相同取消规则。", 0,
+            label_en="Enable Recall Handling", hint_en="Use the same cancellation rules for private and group recalls.",
+        ),
+    )
+    cache_summary_enabled: bool = Field(
+        default=False,
+        description="短期保存本人私聊撤回消息的有限摘要。",
+        json_schema_extra=_ui(
+            "缓存本人撤回摘要", "默认关闭。开启后只保存已配置用户本人私聊的短文本和媒介类型，不保存任何二进制。", 1,
+            label_en="Cache Own Recall Summary", hint_en="Disabled by default; only configured private senders can query their own short summaries.",
+        ),
+    )
+    summary_ttl_minutes: int = Field(
+        default=10, ge=1, le=60,
+        description="可查询撤回摘要的保留时间。",
+        json_schema_extra=_ui(
+            "撤回摘要保留（分钟）", "只影响可选摘要；回复取消墓碑至少覆盖消息处理周期。", 2,
+            label_en="Recall Summary TTL (min)", hint_en="Retention period for optional private recall summaries.",
+        ),
+    )
+    summary_max_chars: int = Field(
+        default=240, ge=40, le=1000,
+        description="单条撤回文字摘要的最大长度。",
+        json_schema_extra=_ui(
+            "撤回摘要长度", "超出部分会截断，媒介只记录类型。", 3,
+            label_en="Recall Summary Length", hint_en="Maximum characters stored for one recalled private message.",
+        ),
+    )
+
+
 class VisionSettings(PluginConfigBase):
     """疑难图片预摘要设置。"""
 
@@ -1015,9 +1055,14 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=DebounceSettings,
         json_schema_extra=_ui("消息收口防抖", "私聊补话合并和同轮回复防重。", 7, label_en="Message Debounce", hint_en="Merge private follow-ups and prevent repeated replies."),
     )
+    recall: RecallSettings = Field(
+        default_factory=RecallSettings,
+        json_schema_extra=_ui("撤回增强", "撤回通知取消回复与可选本人摘要。", 8,
+                              label_en="Recall Handling", hint_en="Cancel replies for recalled messages and optionally retain own summaries."),
+    )
     vision: VisionSettings = Field(
         default_factory=VisionSettings,
-        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 8, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
+        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 9, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
     )
     models: ModelRoutingSettings = Field(
         default_factory=ModelRoutingSettings,

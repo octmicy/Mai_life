@@ -13,11 +13,13 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.5.1")
+        self.assertEqual(config.plugin.config_version,"1.6.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.proactive.daily_max_per_user,2)
         self.assertFalse(config.rest_gate.enabled)
         self.assertTrue(config.debounce.enabled)
+        self.assertTrue(config.recall.enabled)
+        self.assertFalse(config.recall.cache_summary_enabled)
         self.assertEqual(config.context.prompt_max_chars,4000)
         self.assertEqual(config.models.scene_detail_task,"")
         self.assertEqual(config.models.vision_task,"vlm")
@@ -50,7 +52,7 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
+        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_recalled","/mai_diary","/mai_dates","/mai_skills","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
             self.assertIn(expected,names)
         hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
         self.assertIn("chat.receive.before_process",hooks)
@@ -107,7 +109,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.5.1")
+        self.assertEqual(config.plugin.config_version,"1.6.0")
         self.assertTrue(config.debounce.enabled)
 
     def test_invalid_rest_windows_restore_each_field_default(self):

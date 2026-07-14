@@ -81,6 +81,9 @@ def media_types(message: dict[str,Any]) -> list[str]:
 def classify_intent(text: str, media: list[str]) -> str:
     compact=" ".join(str(text or "").split())
     if _URGENT_RE.search(compact):return "安全或紧急需要"
+    recall_compact="".join(compact.lower().split())
+    if "撤回" in recall_compact and any(term in recall_compact for term in ("什么","啥","内容","看见","看到","记得","刚才","刚刚")):
+        return "询问本人撤回内容"
     if "image" in media or "gif" in media:
         if re.search(r"这(?:张|个)|图里|图片|看得出|是什么|什么意思",compact):return "询问当前图片"
         return "分享图片"
@@ -199,6 +202,27 @@ class MessageDebouncer:
             self._bursts.pop(session,None)
             merged=self._merge(burst.messages)
         return True,merged,f"merged:{len(burst.messages)}"
+
+    async def recall(self,session_id:str,message_id:str)->dict[str,Any]:
+        """从尚未收口的突发消息中移除撤回项，并唤醒当前最终调用重新计时。"""
+        if not session_id or not message_id:return {}
+        async with self._lock:
+            burst=self._bursts.get(session_id)
+            if burst is None:return {}
+            removed={}
+            retained=[]
+            for message in burst.messages:
+                if not removed and str(message.get("message_id") or "")==message_id:
+                    removed=message
+                else:retained.append(message)
+            if not removed:return {}
+            old_event=burst.event; burst.event=asyncio.Event(); old_event.set()
+            if retained:
+                # 不增加 generation：当前最新 Hook 可以携带剩余消息继续主链。
+                burst.messages=retained
+            else:
+                self._bursts.pop(session_id,None)
+            return removed
 
     @property
     def active_bursts(self) -> int:return len(self._bursts)

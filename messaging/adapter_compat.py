@@ -19,11 +19,41 @@ def _additional_config(message: Mapping[str, Any]) -> Mapping[str, Any]:
 def adapter_name(message: Mapping[str, Any]) -> str:
     """从适配器保留的技术字段识别来源，不依赖展示名称。"""
     additional = _additional_config(message)
-    if any(str(key).startswith("napcat_") for key in additional):
-        return "napcat"
+    # SnowLuma 通知会同时写入 napcat_* 兼容字段，必须优先识别自己的原生标记。
     if any(str(key).startswith("snowluma_") for key in additional):
         return "snowluma"
+    if any(str(key).startswith("napcat_") for key in additional):
+        return "napcat"
     return "unknown"
+
+
+def recall_notice(message: Mapping[str, Any]) -> dict[str, str]:
+    """把 SnowLuma/NapCat 的 OneBot 撤回通知归一化为同一结构。"""
+    if not bool(message.get("is_notify")):
+        return {}
+    additional=_additional_config(message)
+    adapter=adapter_name(message)
+    if adapter=="snowluma":
+        notice_type=str(additional.get("snowluma_notice_type") or additional.get("napcat_notice_type") or "").strip()
+        payload=additional.get("snowluma_notice_payload") or additional.get("napcat_notice_payload")
+    else:
+        notice_type=str(additional.get("napcat_notice_type") or "").strip()
+        payload=additional.get("napcat_notice_payload")
+    if notice_type not in {"friend_recall","group_recall"} or not isinstance(payload,Mapping):
+        return {}
+    recalled_message_id=str(payload.get("message_id") or "").strip()
+    if not recalled_message_id:return {}
+    info=message.get("message_info") if isinstance(message.get("message_info"),Mapping) else {}
+    group=info.get("group_info") if isinstance(info.get("group_info"),Mapping) else {}
+    return {
+        "notice_type":notice_type,
+        "recalled_message_id":recalled_message_id,
+        "user_id":str(payload.get("user_id") or "").strip(),
+        "operator_id":str(payload.get("operator_id") or payload.get("user_id") or "").strip(),
+        "group_id":str(payload.get("group_id") or group.get("group_id") or "").strip(),
+        "self_id":str(payload.get("self_id") or additional.get("self_id") or "").strip(),
+        "adapter":adapter,
+    }
 
 
 def group_identity(message: Mapping[str, Any]) -> tuple[str, str]:

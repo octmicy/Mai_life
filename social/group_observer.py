@@ -22,7 +22,7 @@ _SENSITIVE_RE=re.compile(
 @dataclass
 class _GroupBurst:
     generation:int=0
-    snippets:list[str]=field(default_factory=list)
+    entries:list[tuple[str,str]]=field(default_factory=list)
     adapter:str="unknown"
 
 
@@ -62,7 +62,10 @@ class GroupObserver:
         group_id,_group_name=group_identity(message); profile=self._group_profile(group_id)
         if not profile:return {"status":"not_allowlisted"}
         user_id,user_name=sender_identity(message)
-        if user_id:await self.store.record_group_activity(group_id,user_id,user_name,now.timestamp())
+        if user_id:
+            await self.store.record_group_activity(
+                group_id,user_id,user_name,now.timestamp(),str(message.get("message_id") or ""),
+            )
         snippet=self._snippet(message)
         if not snippet:return {"status":"empty"}
         async with self._lock:
@@ -70,14 +73,15 @@ class GroupObserver:
             burst=self._bursts.setdefault(group_id,_GroupBurst())
             burst.generation+=1; generation=burst.generation
             burst.adapter=adapter_name(message)
-            burst.snippets.append(snippet)
+            burst.entries.append((str(message.get("message_id") or ""),snippet))
             limit=int(self.config.social.max_buffer_messages)
-            if len(burst.snippets)>limit:burst.snippets=burst.snippets[-limit:]
+            if len(burst.entries)>limit:burst.entries=burst.entries[-limit:]
         await asyncio.sleep(float(self.config.social.observation_wait_seconds))
         async with self._lock:
             current=self._bursts.get(group_id)
             if current is not burst or burst.generation!=generation:return {"status":"superseded"}
-            self._bursts.pop(group_id,None); snippets=list(burst.snippets); source_adapter=burst.adapter
+            self._bursts.pop(group_id,None); entries=list(burst.entries); source_adapter=burst.adapter
+        snippets=[snippet for _message_id,snippet in entries]
         digest=await self._summarize(snippets)
         if not digest.get("public") or not digest.get("summary"):return {"status":"private_or_empty"}
         stamp=now.timestamp(); key="\n".join(snippets)
@@ -86,10 +90,25 @@ class GroupObserver:
               "topic":str(digest.get("topic") or "群聊里的公开话题")[:240],
               "summary":str(digest["summary"])[:1200],"interest_score":float(digest.get("score") or 0),
               "source_adapter":source_adapter,"created_at":stamp,
-              "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600}
+              "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600,
+              "source_message_ids":[message_id for message_id,_snippet in entries if message_id]}
         if not await self.store.save_group_observation(item):return {"status":"duplicate"}
         queued=await self._queue_private_share(item,now)
         return {"status":"saved","observation_id":observation_id,"private_share_queued":queued}
+
+    async def recall(self,group_id:str,message_id:str,now:datetime)->dict[str,Any]:
+        """从群缓冲和已保存匿名摘要中删除撤回消息的整条衍生链。"""
+        removed_pending=False
+        async with self._lock:
+            burst=self._bursts.get(group_id)
+            if burst is not None:
+                retained=[entry for entry in burst.entries if entry[0]!=message_id]
+                removed_pending=len(retained)!=len(burst.entries)
+                if retained:burst.entries=retained
+                elif removed_pending:self._bursts.pop(group_id,None)
+        removed_saved=await self.store.retract_group_observation_source(group_id,message_id,now.timestamp())
+        removed_activity=await self.store.clear_recalled_group_activity(group_id,message_id)
+        return {"pending":removed_pending,"saved":removed_saved,"activity":removed_activity}
 
     async def _summarize(self,snippets:list[str])->dict[str,Any]:
         joined="\n".join(snippets)[:5000]

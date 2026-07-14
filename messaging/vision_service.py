@@ -99,6 +99,11 @@ class VisionService:
         info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
         additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}
         merged_ids=additional.get("mai_life_merged_message_ids")
+        source_ids=[]
+        if isinstance(merged_ids,list):
+            source_ids=[str(value) for value in merged_ids if str(value).strip()]
+        direct_message_id=str(message.get("message_id") or "").strip()
+        if direct_message_id and direct_message_id not in source_ids:source_ids.append(direct_message_id)
         merged_image=bool(direct and isinstance(merged_ids,list) and len(merged_ids)>1)
         difficult=(len(direct)==1 and not text) or merged_image or "gif" in types or "forward" in types or "reply" in types
         if not difficult:return ""
@@ -125,7 +130,7 @@ class VisionService:
             await self.store.save_image_summary(
                 combined,str(cached.get("summary") or ""),source_type,str(cached.get("ownership_hint") or ""),
                 str(message.get("session_id") or ""),now,float(cached.get("expires_at") or now),
-                now+int(cfg.current_pointer_minutes)*60,
+                now+int(cfg.current_pointer_minutes)*60,source_ids,
             )
             return str(cached.get("summary") or "")
         content:list[dict[str,Any]]=[{"type":"text","text":(
@@ -149,6 +154,6 @@ class VisionService:
         if not summary:return ""
         await self.store.save_image_summary(
             combined,summary,source_type,parsed["ownership_hint"],str(message.get("session_id") or ""),now,
-            now+int(cfg.summary_ttl_hours)*3600,now+int(cfg.current_pointer_minutes)*60,
+            now+int(cfg.summary_ttl_hours)*3600,now+int(cfg.current_pointer_minutes)*60,source_ids,
         )
         return summary

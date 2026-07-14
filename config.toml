@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.5.1"
+config_version = "1.6.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -175,6 +175,16 @@ max_messages = 12
 max_media_bytes = 8388608
 outbound_turn_guard = true
 turn_expire_seconds = 120
+
+
+[recall]
+# 一个总开关同时覆盖私聊和群聊；需要适配器向 Host 转发 OneBot 撤回通知。
+enabled = true
+
+# 默认不保存撤回内容。开启后也只缓存已配置用户本人私聊的短摘要和媒介类型。
+cache_summary_enabled = false
+summary_ttl_minutes = 10
+summary_max_chars = 240
 
 
 [vision]

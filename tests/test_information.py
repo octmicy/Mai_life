@@ -129,7 +129,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         for private in ("小麦","老李","秘密群","内部讨论组"):
             self.assertNotIn(private,value)
 
-    def test_schema_v7(self):self.assertEqual(SCHEMA_VERSION,7)
+    def test_schema_v8(self):self.assertEqual(SCHEMA_VERSION,8)
 
 
 if __name__=="__main__":unittest.main()

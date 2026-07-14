@@ -49,7 +49,7 @@ class HttpClient:
 
     @staticmethod
     def _get_sync(url:str,timeout:float,max_bytes:int,headers:dict[str,str])->HttpResponse:
-        request_headers={"User-Agent":"Mai_life/1.5.1 (+https://github.com/octmicy/Mai_life)",
+        request_headers={"User-Agent":"Mai_life/1.6.0 (+https://github.com/octmicy/Mai_life)",
                          "Accept-Encoding":"identity",**headers}
         request=urllib.request.Request(url,headers=request_headers,method="GET")
         context=ssl.create_default_context()

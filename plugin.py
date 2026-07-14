@@ -1,4 +1,4 @@
-"""Mai_life v1.5.1 插件入口。"""
+"""Mai_life v1.6.0 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +24,10 @@ from .life.memory_service import MemoryService,skill_stage
 from .life.proactive import ProactiveEngine
 from .life.rest_gate import RestGate
 from .life.schedule_service import ScheduleService,hhmm
-from .messaging.adapter_compat import adapter_name
+from .messaging.adapter_compat import adapter_name,group_identity,recall_notice
 from .messaging.message_pipeline import MessageDebouncer,classify_intent,direct_text,is_command,media_types,message_identity
 from .messaging.prompt_builder import PromptBuilder,relationship_stage
+from .messaging.recall_service import RecallService,is_recall_query
 from .messaging.task_context import ActivePluginTask,ActiveTaskRegistry,HOST_TASK_PREFIX,PLUGIN_ID,latest_plugin_task_marker
 from .messaging.vision_service import VisionService
 from .management import AdminService
@@ -43,13 +44,15 @@ class MaiLifePlugin(MaiBotPlugin):
         self._llm:Optional[LLMService]=None; self._state:Optional[LifeStateEngine]=None
         self._schedule:Optional[ScheduleService]=None; self._rest:Optional[RestGate]=None
         self._proactive:Optional[ProactiveEngine]=None; self._debouncer:Optional[MessageDebouncer]=None
-        self._vision:Optional[VisionService]=None; self._continuity:Optional[ContinuityService]=None
+        self._recall:Optional[RecallService]=None; self._vision:Optional[VisionService]=None
+        self._continuity:Optional[ContinuityService]=None
         self._memory:Optional[MemoryService]=None
         self._information:Optional[InformationService]=None
         self._group_observer:Optional[GroupObserver]=None; self._relay:Optional[RelayService]=None
         self._bookshelf:Optional[BookshelfService]=None; self._creation:Optional[CreationService]=None
         self._admin:Optional[AdminService]=None
         self._prompts=PromptBuilder(); self._tasks:list[asyncio.Task[Any]]=[]; self._transient:set[asyncio.Task[Any]]=set()
+        self._message_tasks:dict[tuple[str,str],set[asyncio.Task[Any]]]={}
         self._personality=""; self._maintenance_lock=asyncio.Lock()
         self._session_runtime:dict[str,dict[str,Any]]={}
         self._reply_confirmations:dict[tuple[str,str],dict[str,Any]]={}
@@ -60,7 +63,7 @@ class MaiLifePlugin(MaiBotPlugin):
     def _ready(self)->bool:
         return all((self._store,self._env,self._llm,self._state,self._schedule,self._rest,self._proactive,
                     self._debouncer,self._vision,self._continuity,self._memory,self._information,
-                    self._group_observer,self._relay,self._bookshelf,self._creation,self._admin))
+                    self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall))
 
     async def on_load(self)->None:
         self._stopping=False
@@ -68,6 +71,8 @@ class MaiLifePlugin(MaiBotPlugin):
         await self._active_tasks.reset()
         root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"))
         await self._store.initialize()
+        if not self.config.recall.enabled or not self.config.recall.cache_summary_enabled:
+            await self._store.clear_recall_summaries()
         await self._store.recover_creation_claims(time.time())
         self._llm=LLMService(self.ctx,self.config,self._store)
         self._env=EnvironmentService(self._store,self.config,self.ctx.logger)
@@ -76,6 +81,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._rest=RestGate(self._store,self.config,self._llm,self._state,self.ctx.logger)
         self._proactive=ProactiveEngine(self.ctx,self._store,self.config,self._env,self.ctx.logger)
         self._debouncer=MessageDebouncer(self.config,self.ctx.logger)
+        self._recall=RecallService(self.ctx,self._store,self.config,self.ctx.logger)
         self._vision=VisionService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         self._continuity=ContinuityService(self._store,self.config,self._llm,self.ctx.logger)
         self._memory=MemoryService(self._store,self.config,self._llm,self.ctx.logger)
@@ -91,7 +97,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.5.1 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.6.0 加载完成")
 
     async def on_unload(self)->None:
         self._stopping=True
@@ -99,7 +105,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._group_observer:await self._group_observer.close()
         await self._stop_tasks()
         await self._active_tasks.reset()
-        self._session_runtime.clear(); self._reply_confirmations.clear()
+        if self._recall:self._recall.clear()
+        self._session_runtime.clear(); self._reply_confirmations.clear(); self._message_tasks.clear()
         if self._store:await self._store.close()
         self.ctx.logger.info("[MaiLife] 麦麦生活已卸载")
 
@@ -117,8 +124,11 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._group_observer:await self._group_observer.reset()
         for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
                         self._debouncer,self._vision,self._continuity,self._memory,self._information,
-                        self._group_observer,self._relay,self._bookshelf,self._creation,self._admin):
+                        self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall):
             if service:service.update_config(self.config)
+        if self._store and (not self.config.recall.enabled or not self.config.recall.cache_summary_enabled):
+            await self._store.clear_recall_summaries()
+            if self._recall:self._recall.clear()
         if self._store:await self._store.sync_users(self.config.users.profiles)
         if self._store:await self._store.sync_relationship_entries(self.config.social.relations)
         enabled_ids={str(profile.user_id) for profile in self.config.users.profiles if profile.enabled}
@@ -133,13 +143,26 @@ class MaiLifePlugin(MaiBotPlugin):
                 self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-config")
         self.ctx.logger.info(f"[MaiLife] 配置热更新完成 scope={scope}")
 
-    def _spawn_transient(self,coro:Any,name:str)->None:
+    def _spawn_transient(self,coro:Any,name:str,
+                         message_keys:Iterable[tuple[str,str]]=())->None:
         task=asyncio.create_task(coro,name=name); self._transient.add(task)
+        keys=tuple((str(session),str(message_id)) for session,message_id in message_keys if session and message_id)
+        for key in keys:self._message_tasks.setdefault(key,set()).add(task)
         def finished(done:asyncio.Task[Any])->None:
             self._transient.discard(done)
+            for key in keys:
+                tracked=self._message_tasks.get(key)
+                if tracked:
+                    tracked.discard(done)
+                    if not tracked:self._message_tasks.pop(key,None)
             if not done.cancelled() and (error:=done.exception()) is not None:
                 self._get_logger().warning(f"[MaiLife] 临时任务异常 name={done.get_name()}: {error}")
         task.add_done_callback(finished)
+
+    async def _cancel_message_tasks(self,session_id:str,message_id:str)->None:
+        tasks=list(self._message_tasks.pop((session_id,message_id),set()))
+        for task in tasks:task.cancel()
+        if tasks:await asyncio.gather(*tasks,return_exceptions=True)
 
     def _start_tasks(self)->None:
         if self._tasks:return
@@ -153,6 +176,7 @@ class MaiLifePlugin(MaiBotPlugin):
         tasks=[*self._tasks,*self._transient]; self._tasks=[]; self._transient.clear()
         for task in tasks:task.cancel()
         if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+        self._message_tasks.clear()
 
     async def _daily_generation_loop(self)->None:
         while True:
@@ -364,6 +388,86 @@ class MaiLifePlugin(MaiBotPlugin):
             task_id=str(value.get("task_id") or "")
             if task_id:await self._active_tasks.release_reply(session_id,task_id,str(value.get("anchor") or ""))
 
+    async def _cancel_recalled_confirmations(self,session_id:str,anchors:set[str],message_id:str)->None:
+        """撤回只取消命中的回复轮次，不干扰同会话之后真正的新消息。"""
+        matches=[]
+        for (session,_anchor),value in self._reply_confirmations.items():
+            if session!=session_id:continue
+            candidates={str(value.get("anchor") or ""),str(value.get("turn_anchor") or ""),
+                        str(value.get("wake_message_id") or "")}
+            sources={str(item) for item in value.get("source_message_ids") or []}
+            if message_id in sources or candidates&anchors:matches.append(value)
+        for value in matches:value["cancelled"]=True
+        for value in matches:
+            turn_anchor=str(value.get("turn_anchor") or value.get("anchor") or "")
+            if self._store:
+                await self._store.release_reply_turn(session_id,turn_anchor)
+                wake_id=str(value.get("wake_message_id") or "")
+                if wake_id:await self._store.clear_wake_candidate(session_id,wake_id)
+            task_id=str(value.get("task_id") or "")
+            if task_id:await self._active_tasks.release_reply(session_id,task_id,str(value.get("anchor") or ""))
+
+    async def _is_recalled(self,session_id:str,*anchors:str)->bool:
+        """持久墓碑是 Replyer 与逐段发送之间的最终防线，热重载后同样有效。"""
+        if not self._recall or not self.config.recall.enabled or not session_id:return False
+        checked:set[str]=set()
+        for raw_anchor in anchors:
+            anchor=str(raw_anchor or "").strip()
+            if not anchor or anchor in checked:continue
+            checked.add(anchor)
+            try:
+                if await self._recall.is_turn_recalled(session_id,anchor):return True
+            except Exception as exc:
+                self._get_logger().warning(f"[MaiLife] 撤回墓碑查询失败，发送链失败开放: {exc}")
+                return False
+        return False
+
+    async def _discard_recalled_private_turn(self,session_id:str,user_id:str,turn_anchor:str,
+                                              source_message_ids:Iterable[str])->bool:
+        sources={str(value) for value in source_message_ids if str(value).strip()}
+        if not await self._is_recalled(session_id,turn_anchor,*sources):return False
+        for source in sources:await self._cancel_message_tasks(session_id,source)
+        if self._store:
+            for source_or_anchor in {turn_anchor,*sources}:
+                await self._store.redact_recalled_private_artifacts(user_id,source_or_anchor)
+                await self._store.clear_wake_candidate(session_id,source_or_anchor)
+            await self._store.save_continuity(user_id,"",[],time.time())
+        return True
+
+    async def _handle_recall(self,message:dict[str,Any],notice:dict[str,str])->None:
+        """先建立持久撤回墓碑，再清理仍在运行的本地派生任务。"""
+        if not self._recall or not self._store:return
+        _uid,session,_notice_id,_private=message_identity(message)
+        if not session:return
+        current=time.time(); result=await self._recall.record_notice(session,notice,current)
+        message_id=str(result.get("message_id") or "")
+        anchors={str(value) for value in result.get("anchors") or [] if str(value).strip()}
+        await self._cancel_message_tasks(session,message_id)
+        if self._debouncer:await self._debouncer.recall(session,message_id)
+        await self._cancel_recalled_confirmations(session,anchors,message_id)
+        for source_or_anchor in {message_id,*anchors}:
+            await self._store.clear_wake_candidate(session,source_or_anchor)
+        user_id=str(result.get("user_id") or ""); group_id=str(result.get("group_id") or "")
+        if user_id and not group_id:
+            # 合并补话中的任意来源撤回后，整轮派生状态都应失效，不能只删原始 ID。
+            for source_or_anchor in {message_id,*anchors}:
+                await self._store.redact_recalled_private_artifacts(user_id,source_or_anchor)
+            await self._store.save_continuity(user_id,"",[],current)
+        if group_id and self._group_observer and self._env:
+            await self._group_observer.recall(group_id,message_id,self._env.now())
+        if result.get("needs_summary_recovery"):
+            self._spawn_transient(
+                self._recall.recover_notice_summary(session,notice,current),
+                f"mai-life-recall-summary-{message_id}",
+            )
+        runtime=self._session_runtime.get(session)
+        if runtime and message_id in {str(value) for value in runtime.get("source_message_ids") or []}:
+            runtime["recalled"]=True
+        self.ctx.logger.info(
+            f"[MaiLife] 已处理撤回通知 session={session} message={message_id} "
+            f"type={notice.get('notice_type')} adapter={notice.get('adapter')}"
+        )
+
     @staticmethod
     def _message_additional(message:dict[str,Any])->dict[str,Any]:
         info=message.get("message_info")
@@ -374,10 +478,32 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.before_process",mode=HookMode.BLOCKING,order=HookOrder.EARLY,timeout_ms=30000)
     async def on_receive(self,**kwargs:Any)->dict[str,Any]:
-        if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return {"action":"continue"}
         message=kwargs.get("message") if isinstance(kwargs.get("message"),dict) else {}
-        if not message or message.get("is_notify"):return {"action":"continue"}
+        if not message:return {"action":"continue"}
+        notice=recall_notice(message)
+        if notice and self.config.plugin.enabled:
+            # 通知不进入 Maisaka；总开关只决定是否建立墓碑和取消派生任务。
+            if self.config.recall.enabled and self._ready and not self._stopping:
+                try:await self._handle_recall(message,notice)
+                except Exception as exc:self.ctx.logger.error(f"[MaiLife] 撤回通知处理失败: {exc}")
+            return {"action":"abort"}
+        if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return {"action":"continue"}
+        if message.get("is_notify"):return {"action":"continue"}
         uid,session,mid,private=message_identity(message)
+        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._vision and self._continuity and self._memory and self._recall
+        self._recall.note_inbound(message)
+        try:await self._recall.register_turn(message)
+        except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 撤回轮次注册失败，消息继续处理: {exc}")
+        initial_sources=self._recall.source_message_ids(message)
+        if session:
+            initial_text=direct_text(message); initial_media=media_types(message)
+            self._session_runtime[session]={
+                "user_id":uid,"message_id":mid,"source_message_ids":initial_sources,
+                "intent":classify_intent(initial_text,initial_media),"recall_query":is_recall_query(initial_text),
+                "media":initial_media,"platform":str(message.get("platform") or "qq"),
+                "adapter":adapter_name(message),"chat_type":"private" if private else "group",
+                "updated_at":time.time(),
+            }
         if session:
             # 新的真实平台消息开启新轮次，旧主动任务不得再借会话兜底关联到本轮回复。
             await self._cancel_reply_confirmations(session)
@@ -386,12 +512,23 @@ class MaiLifePlugin(MaiBotPlugin):
         if not private:
             if uid and not is_command(message) and self._group_observer and self.config.social.enabled:
                 # 群聊观察使用独立后台缓冲；无论整理成功与否都不阻塞 Host 原有群聊链。
-                self._spawn_transient(self._group_observer.observe(message,self._env.now()),f"mai-life-group-{mid}")
+                self._spawn_transient(
+                    self._group_observer.observe(message,self._env.now()),f"mai-life-group-{mid}",
+                    message_keys=[(session,source) for source in initial_sources],
+                )
+            if await self._is_recalled(session,mid,*initial_sources):
+                # 撤回处理可能早于群观察任务注册；这里补做一次按来源取消，封住并发窗口。
+                for source in initial_sources:await self._cancel_message_tasks(session,source)
+                group_id,_group_name=group_identity(message)
+                if group_id and self._group_observer:
+                    for source in initial_sources:await self._group_observer.recall(group_id,source,self._env.now())
+                return {"action":"abort"}
             return {"action":"continue"}
-        if not uid or is_command(message):return {"action":"continue"}
-        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._vision and self._continuity and self._memory
+        if not uid or is_command(message):
+            return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
         user=await self._store.get_user(uid)
-        if not user or not user.get("enabled"):return {"action":"continue"}
+        if not user or not user.get("enabled"):
+            return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
         if session and session!=user.get("stream_id"):await self._store.set_user_stream(uid,session)
 
         # 视觉任务与收口等待并行；旧一代消息被合并后会取消自己的无效视觉任务。
@@ -432,19 +569,37 @@ class MaiLifePlugin(MaiBotPlugin):
             except (asyncio.TimeoutError,asyncio.CancelledError):pass
             except Exception as exc:self.ctx.logger.debug(f"[MaiLife] 合并图片摘要降级: {exc}")
         uid,session,mid,_=message_identity(merged); text=user_text; media=user_media
+        source_ids=self._recall.source_message_ids(merged)
+        try:await self._recall.register_turn(merged)
+        except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 合并撤回轮次注册失败，消息继续处理: {exc}")
+        if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
         intent=classify_intent(text,media)
-        self._session_runtime[session]={"user_id":uid,"message_id":mid,"intent":intent,"media":media,
+        self._session_runtime[session]={"user_id":uid,"message_id":mid,"source_message_ids":source_ids,
+                                        "intent":intent,"recall_query":is_recall_query(text),"media":media,
                                         "platform":str(merged.get("platform") or "qq"),"adapter":adapter_name(merged),
                                         "chat_type":"private","updated_at":time.time()}
-        await self._store.record_interaction(uid,text or f"发送了{','.join(media) or '一条消息'}",self._env.now().timestamp(),self._env.now().hour)
-        self._spawn_transient(self._continuity.refresh(uid,intent),f"mai-life-continuity-{uid}")
-        self._spawn_transient(self._memory.observe_message(uid,text,self._env.now()),f"mai-life-date-{uid}")
+        await self._store.record_interaction(
+            uid,text or f"发送了{','.join(media) or '一条消息'}",
+            self._env.now().timestamp(),self._env.now().hour,source_message_id=mid,
+        )
+        task_keys=[(session,source) for source in source_ids]
+        self._spawn_transient(self._continuity.refresh(uid,intent),f"mai-life-continuity-{uid}",message_keys=task_keys)
+        self._spawn_transient(
+            self._memory.observe_message(uid,text,self._env.now(),source_message_id=mid),
+            f"mai-life-date-{uid}",message_keys=task_keys,
+        )
         context=await self._schedule.context(self._env.now())
         gate_allowed,gate_reason=await self._rest.decide(uid,text,self._env.now(),context.get("current"),session_id=session,message_id=mid)
         if not gate_allowed:
-            await self._store.add_rest_backlog(uid,text or f"发送了{','.join(media) or '一条消息'}",self._env.now().timestamp())
+            if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
+            await self._store.add_rest_backlog(
+                uid,text or f"发送了{','.join(media) or '一条消息'}",
+                self._env.now().timestamp(),source_message_id=mid,
+            )
+            await self._discard_recalled_private_turn(session,uid,mid,source_ids)
             self.ctx.logger.info(f"[MaiLife] 休息闸门阻断 user={uid} reason={gate_reason}")
             return {"action":"abort"}
+        if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
         kwargs["message"]=merged
         self.ctx.logger.debug(f"[MaiLife] 消息收口完成 session={session} {reason} media={media}")
         return {"action":"continue","modified_kwargs":kwargs}
@@ -489,6 +644,12 @@ class MaiLifePlugin(MaiBotPlugin):
                                              payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
                                              int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
                                              bookshelf=payload["bookshelf"],image_summaries=payload["images"])
+        if self._recall and self.config.recall.enabled:
+            suffix+=await self._recall.planner_context(session)
+            runtime=self._session_runtime.get(session) or {}
+            if runtime.get("recall_query"):
+                user=await self._user_by_session(session)
+                if user:suffix+=await self._recall.query_prompt_context(session,str(user.get("user_id") or ""))
         if active:suffix+=self._active_tasks.planner_instruction(active)
         if active and active.kind=="relay" and self._relay and self.config.social.enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)
@@ -518,6 +679,12 @@ class MaiLifePlugin(MaiBotPlugin):
                                              payload["environment"],payload["continuity"],payload["intent"],payload["images"],
                                              min(2400,int(self.config.context.prompt_max_chars)),memory=payload["memory"],information=payload["information"],
                                              bookshelf=payload["bookshelf"])
+        if self._recall and self.config.recall.enabled:
+            suffix+=await self._recall.planner_context(session)
+            runtime=self._session_runtime.get(session) or {}
+            if runtime.get("recall_query"):
+                user=await self._user_by_session(session)
+                if user:suffix+=await self._recall.query_prompt_context(session,str(user.get("user_id") or ""))
         if active and active.kind=="relay" and self._relay and self.config.social.enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)
         if not suffix:return {"action":"continue"}
@@ -530,6 +697,19 @@ class MaiLifePlugin(MaiBotPlugin):
         anchor=str(kwargs.get("reply_message_id") or ""); now=time.time()
         active=await self._active_tasks.current(session,now)
         task_id=active.task_id if active else anchor
+        runtime=self._session_runtime.get(session) or {}
+        recall_sources=[str(value) for value in runtime.get("source_message_ids") or [] if str(value).strip()] if not active else []
+        recall_turn_anchor=str(runtime.get("message_id") or "") if not active else ""
+        if response and await self._is_recalled(session,anchor,recall_turn_anchor,*recall_sources):
+            kwargs["response"]=""
+            self._get_logger().info(f"[MaiLife] 已撤回轮次的 Replyer 输出已取消 session={session} anchor={anchor}")
+            return {"action":"continue","modified_kwargs":kwargs}
+        if response and not active and recall_sources and anchor and self._recall:
+            try:
+                await self._recall.register_reply_anchor(
+                    session,anchor,recall_sources,str(runtime.get("user_id") or ""),now,
+                )
+            except Exception as exc:self._get_logger().warning(f"[MaiLife] Replyer 撤回锚点注册失败: {exc}")
         user=await self._user_by_session(session)
         relay_task=await self._relay_for_session(session,task_id) if task_id else {}
         proactive=await self._store.proactive_for_task(session,task_id) if self._store and task_id else {}
@@ -600,7 +780,8 @@ class MaiLifePlugin(MaiBotPlugin):
                                    if now-float(value.get("created_at") or 0)<expiry}
         self._reply_confirmations[(session,anchor)]={
             "anchor":anchor,"turn_anchor":turn_anchor,"task_id":task_id if active else "","created_at":now,
-            "wake_message_id":str((self._session_runtime.get(session) or {}).get("message_id") or "") if user and not active else "",
+            "wake_message_id":str(runtime.get("message_id") or "") if user and not active else "",
+            "recall_turn_anchor":recall_turn_anchor,"source_message_ids":recall_sources,
             "proactive_event_id":str(proactive.get("id") or "") if proactive_pending else "",
             "proactive_opportunity_id":str(proactive.get("opportunity_id") or "") if proactive_pending else "",
         }
@@ -612,9 +793,28 @@ class MaiLifePlugin(MaiBotPlugin):
         if not message:return {"action":"continue"}
         anchor=str(kwargs.get("reply_message_id") or ""); session=str(message.get("session_id") or "")
         pending_confirmation=self._reply_confirmations.get((session,anchor))
+        def recall_anchors()->set[str]:
+            values={anchor}
+            if pending_confirmation:
+                values.update(str(pending_confirmation.get(key) or "") for key in (
+                    "turn_anchor","recall_turn_anchor","wake_message_id",
+                ))
+                values.update(str(value) for value in pending_confirmation.get("source_message_ids") or [])
+            return {value for value in values if value}
+        async def recalled_now()->bool:
+            values=recall_anchors()
+            if not await self._is_recalled(session,*values):return False
+            if self._store:
+                for value in values:await self._store.clear_wake_candidate(session,value)
+            if pending_confirmation:
+                pending_confirmation["cancelled"]=True
+                await self._cancel_recalled_confirmations(session,values,anchor)
+                self._reply_confirmations.pop((session,anchor),None)
+            return True
         def confirmation_cancelled()->bool:
             return bool(pending_confirmation and pending_confirmation.get("cancelled")
                         and self._reply_confirmations.get((session,anchor)) is pending_confirmation)
+        if await recalled_now():return {"action":"abort"}
         if confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
             return {"action":"abort"}
@@ -652,14 +852,14 @@ class MaiLifePlugin(MaiBotPlugin):
             additional["mai_life_reply_anchor"]=anchor
             kwargs["message"]=message; modified=True
         # 上面的数据库查询存在 await；真实入站可能在此期间取消旧轮次，因此在交给适配器前复核一次。
-        if confirmation_cancelled():
+        if await recalled_now() or confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
             return {"action":"abort"}
         if not self._relay or not self.config.plugin.enabled or not self.config.social.enabled:
             return {"action":"continue","modified_kwargs":kwargs} if modified else {"action":"continue"}
         if await self._relay.should_abort_send(message,task_id):return {"action":"abort"}
         mutated,reserved=await self._relay.mutate_before_send(message,task_id)
-        if confirmation_cancelled():
+        if await recalled_now() or confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
             return {"action":"abort"}
         if not reserved:
@@ -775,6 +975,15 @@ class MaiLifePlugin(MaiBotPlugin):
         text=(f"关系角色：{user.get('role','friend')}\n关系温度：{float(user['temperature']):.1f}/100\n"
               f"关系阶段：{relationship_stage(float(user['temperature']))}\n每日主动上限：{user.get('daily_proactive_max',1)}")
         return await self._send_command(kwargs,text)
+
+    @Command(name="/mai_recalled",pattern=r"^/mai_recalled\b",description="查询本人私聊的最近撤回摘要")
+    async def cmd_recalled(self,**kwargs:Any)->tuple[bool,str,int]:
+        user=await self._command_user(kwargs)
+        if not user or not self._recall:
+            return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        session=str(kwargs.get("stream_id") or user.get("stream_id") or "")
+        context=await self._recall.query_context(session,str(user.get("user_id") or ""))
+        return await self._send_command(kwargs,self._recall.format_query_result(context))
 
     @Command(name="/mai_diary",pattern=r"^/mai_diary\b",description="主人或管理员查看最近生活日记")
     async def cmd_diary(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -933,6 +1142,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n配置用户：{len(self.config.users.profiles)}\n"
               f"消息收口：{'开启' if self.config.debounce.enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
+              f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
               f"联网见闻：{'开启' if self.config.information.enabled else '关闭'}（新闻 {'开' if self.config.news.enabled else '关'} / 搜索 {'开' if self.config.search.enabled else '关'}）\n"
               f"社交转述：{'开启' if self.config.social.enabled else '关闭'}（白名单群 {len(self.config.social.groups)}）\n"
@@ -943,7 +1153,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/mai_help",pattern=r"^/mai_help\b",description="查看麦麦生活命令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
-        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_skills 技能成长\n/mai_news 新闻见闻\n/mai_explore 搜索笔记\n/mai_bookshelf 可见书柜\n/mai_read 文本ID\n/mai_create_now 立即创作判断（管理员）\n/mai_relay 群别名 [@群友别名] 内容\n/mai_admin [范围] 管理摘要（管理员）\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
+        return await self._send_command(kwargs,"/mai_status 状态\n/mai_schedule 日程\n/mai_relation 关系\n/mai_recalled 本人最近撤回摘要\n/mai_diary 私人日记\n/mai_dates 重要日期\n/mai_date_add YYYY-MM-DD 名称\n/mai_date_remove ID\n/mai_date_confirm ID [YYYY-MM-DD]\n/mai_skills 技能成长\n/mai_news 新闻见闻\n/mai_explore 搜索笔记\n/mai_bookshelf 可见书柜\n/mai_read 文本ID\n/mai_create_now 立即创作判断（管理员）\n/mai_relay 群别名 [@群友别名] 内容\n/mai_admin [范围] 管理摘要（管理员）\n/mai_tokens Token统计（管理员）\n/mai_config 配置\n/mai_regenerate_schedule 重生成日程\n/mai_rest_test 闸门诊断")
 
     @Command(name="/mai_regenerate_schedule",pattern=r"^/mai_regenerate_schedule\b",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -978,10 +1188,11 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); skills=await self._store.list_skills(100); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v1.5.1\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        return (f"麦麦生活 v1.6.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：{'开启' if self.config.debounce.enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
+                f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}，本人摘要缓存 {'开启' if self.config.recall.cache_summary_enabled else '关闭'}\n"
                 f"视觉摘要：{'可用' if self._llm.task_available('vision_summary') else '降级'}\n可用模型任务：{tasks}\n"
                 f"生活记忆：日记 {len(diaries)}（最近一篇），技能 {len(skills)} 项\n"
                 f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}\n"
@@ -1071,7 +1282,7 @@ class MaiLifePlugin(MaiBotPlugin):
         name="mai_life_management",title="麦麦生活管理",
         description="配置生活、社交、联网与书柜模块；敏感明细请使用管理员命令。",
         content=[
-            {"type":"key_value","entries":{"版本":"1.5.1","管理命令":"/mai_admin","私密 API":"不公开"}},
+            {"type":"key_value","entries":{"版本":"1.6.0","管理命令":"/mai_admin","私密 API":"不公开"}},
             {"type":"list","items":["用户角色与主动额度","日期候选与关系词条","来源、书柜与 Token 聚合"]},
         ],
         link_url="/plugin-config?plugin=maibot-community.mai-life",link_label="打开麦麦生活配置",

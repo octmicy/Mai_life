@@ -66,7 +66,7 @@ class MemoryService:
             except ValueError:current=date(today.year+1,2,28)
         return current
 
-    async def observe_message(self,user_id:str,text:str,now:datetime)->None:
+    async def observe_message(self,user_id:str,text:str,now:datetime,source_message_id:str="")->None:
         cfg=self.config.memory
         if not cfg.enabled or not cfg.important_dates_enabled:return
         clean=" ".join(str(text or "").replace("\x00","").split())[:600]
@@ -89,14 +89,16 @@ class MemoryService:
                     try:parsed=parsed.replace(year=year); break
                     except ValueError:continue
             await self.store.add_important_date(
-                user_id,name,parsed.isoformat(),"annual" if annual else "none","local_rule",now.timestamp()
+                user_id,name,parsed.isoformat(),"annual" if annual else "none","local_rule",now.timestamp(),
+                source_message_id,
             )
         if explicit:return
         fuzzy=_FUZZY_DATE_RE.search(clean)
         if fuzzy:
             name=self._event_name(clean,fuzzy.group(0))
             await self.store.add_date_candidate(
-                user_id,name,fuzzy.group(0),"",0.45,f"提到{name}，时间表达为“{fuzzy.group(0)}”",now.timestamp()
+                user_id,name,fuzzy.group(0),"",0.45,f"提到{name}，时间表达为“{fuzzy.group(0)}”",now.timestamp(),
+                source_message_id,
             )
             return
         if not cfg.date_model_analysis_enabled or not self.llm.task_available("date_analysis"):return
@@ -118,11 +120,13 @@ class MemoryService:
         parsed=self._parse_date(suggested)
         if parsed and confidence>=0.86:
             recurrence="annual" if str(result.get("recurrence"))=="annual" else "none"
-            await self.store.add_important_date(user_id,name,parsed.isoformat(),recurrence,"model_high_confidence",now.timestamp())
+            await self.store.add_important_date(
+                user_id,name,parsed.isoformat(),recurrence,"model_high_confidence",now.timestamp(),source_message_id,
+            )
         else:
             await self.store.add_date_candidate(
                 user_id,name,date_text,parsed.isoformat() if parsed else "",confidence,
-                f"提到{name}，时间仍需确认",now.timestamp(),
+                f"提到{name}，时间仍需确认",now.timestamp(),source_message_id,
             )
 
     async def ensure_daily(self,now:datetime)->None:

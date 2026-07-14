@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class LifeStore:
@@ -171,7 +171,7 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS interaction_events(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
               created_at REAL NOT NULL, kind TEXT NOT NULL, hour INTEGER NOT NULL,
-              content_summary TEXT NOT NULL DEFAULT ''
+              content_summary TEXT NOT NULL DEFAULT '', source_message_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_interaction_user_time ON interaction_events(user_id,created_at);
             CREATE TABLE IF NOT EXISTS proactive_events(
@@ -183,7 +183,8 @@ class LifeStore:
             CREATE INDEX IF NOT EXISTS idx_proactive_pending ON proactive_events(stream_id,status,expires_at);
             CREATE TABLE IF NOT EXISTS rest_backlogs(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
-              created_at REAL NOT NULL, summary TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0
+              created_at REAL NOT NULL, summary TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0,
+              source_message_id TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS weather_cache(
               id INTEGER PRIMARY KEY CHECK(id=1), fetched_at REAL NOT NULL,
@@ -202,7 +203,8 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS image_summaries(
               image_hash TEXT PRIMARY KEY, summary TEXT NOT NULL, source_type TEXT NOT NULL,
               ownership_hint TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
-              created_at REAL NOT NULL, expires_at REAL NOT NULL, current_until REAL NOT NULL DEFAULT 0
+              created_at REAL NOT NULL, expires_at REAL NOT NULL, current_until REAL NOT NULL DEFAULT 0,
+              source_message_ids TEXT NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS idx_image_session_current ON image_summaries(session_id,current_until);
             CREATE TABLE IF NOT EXISTS llm_usage_events(
@@ -218,6 +220,24 @@ class LifeStore:
               created_at REAL NOT NULL, expires_at REAL NOT NULL,
               PRIMARY KEY(session_id,anchor_message_id)
             );
+            CREATE TABLE IF NOT EXISTS message_turn_sources(
+              session_id TEXT NOT NULL, turn_anchor TEXT NOT NULL, source_message_id TEXT NOT NULL,
+              user_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, expires_at REAL NOT NULL,
+              PRIMARY KEY(session_id,turn_anchor,source_message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_turn_source
+              ON message_turn_sources(session_id,source_message_id,expires_at);
+            CREATE TABLE IF NOT EXISTS recall_events(
+              session_id TEXT NOT NULL, recalled_message_id TEXT NOT NULL,
+              user_id TEXT NOT NULL DEFAULT '', operator_id TEXT NOT NULL DEFAULT '',
+              group_id TEXT NOT NULL DEFAULT '', notice_type TEXT NOT NULL,
+              source_adapter TEXT NOT NULL DEFAULT 'unknown', summary TEXT NOT NULL DEFAULT '',
+              summary_expires_at REAL NOT NULL DEFAULT 0,
+              media_types TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL, expires_at REAL NOT NULL,
+              PRIMARY KEY(session_id,recalled_message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_recall_event_expiry
+              ON recall_events(session_id,expires_at);
             CREATE TABLE IF NOT EXISTS diary_entries(
               day TEXT PRIMARY KEY, created_at REAL NOT NULL, title TEXT NOT NULL,
               content TEXT NOT NULL, mood_summary TEXT NOT NULL,
@@ -227,7 +247,8 @@ class LifeStore:
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
               event_name TEXT NOT NULL, event_date TEXT NOT NULL,
               recurrence TEXT NOT NULL DEFAULT 'none', source TEXT NOT NULL DEFAULT 'conversation',
-              created_at REAL NOT NULL, updated_at REAL NOT NULL
+              created_at REAL NOT NULL, updated_at REAL NOT NULL,
+              source_message_id TEXT NOT NULL DEFAULT ''
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_important_date_unique
               ON important_dates(user_id,event_name,event_date,recurrence);
@@ -237,7 +258,7 @@ class LifeStore:
               event_name TEXT NOT NULL, date_text TEXT NOT NULL,
               suggested_date TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0,
               source_summary TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
-              status TEXT NOT NULL DEFAULT 'pending'
+              status TEXT NOT NULL DEFAULT 'pending', source_message_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_date_candidate_user ON date_candidates(user_id,status,created_at);
             CREATE TABLE IF NOT EXISTS skills(
@@ -288,7 +309,7 @@ class LifeStore:
               id TEXT PRIMARY KEY, group_id TEXT NOT NULL, group_alias TEXT NOT NULL,
               topic TEXT NOT NULL, summary TEXT NOT NULL, interest_score REAL NOT NULL DEFAULT 0,
               source_adapter TEXT NOT NULL DEFAULT 'unknown', created_at REAL NOT NULL,
-              expires_at REAL NOT NULL
+              expires_at REAL NOT NULL, source_message_ids TEXT NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS idx_group_observation_time
               ON group_observations(group_id,created_at);
@@ -300,6 +321,7 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS group_user_activity(
               group_id TEXT NOT NULL, user_id TEXT NOT NULL,
               display_name TEXT NOT NULL DEFAULT '', last_active_at REAL NOT NULL,
+              source_message_id TEXT NOT NULL DEFAULT '',
               PRIMARY KEY(group_id,user_id)
             );
             CREATE TABLE IF NOT EXISTS relay_candidates(
@@ -364,6 +386,14 @@ class LifeStore:
         self._ensure_column("relay_candidates", "opportunity_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("proactive_events", "host_task_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("relay_candidates", "host_task_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("interaction_events", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("rest_backlogs", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("image_summaries", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column("important_dates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("date_candidates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("group_observations", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column("recall_events", "summary_expires_at", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column("group_user_activity", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proactive_host_task ON proactive_events(host_task_id,status)"
         )
@@ -627,13 +657,15 @@ class LifeStore:
             self.conn.execute("UPDATE users SET stream_id=? WHERE user_id=?",(stream_id,user_id)); self.conn.commit()
 
     # 同时记录活跃时段，并识别用户是否回应了近期主动消息。
-    async def record_interaction(self, user_id: str, text: str, now: float, hour: int) -> None:
+    async def record_interaction(self, user_id: str, text: str, now: float, hour: int,
+                                 source_message_id: str="") -> None:
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("UPDATE users SET last_user_message_at=? WHERE user_id=?",(now,user_id))
                 conn.execute(
-                    "INSERT INTO interaction_events(user_id,created_at,kind,hour,content_summary) VALUES(?,?,?,?,?)",
-                    (user_id,now,"message",hour,text[:240]),
+                    """INSERT INTO interaction_events
+                    (user_id,created_at,kind,hour,content_summary,source_message_id) VALUES(?,?,?,?,?,?)""",
+                    (user_id,now,"message",hour,text[:240],source_message_id[:240]),
                 )
                 pending=conn.execute(
                     "SELECT id,sent_at FROM proactive_events WHERE user_id=? AND status='sent' AND sent_at>? ORDER BY sent_at DESC LIMIT 1",
@@ -646,8 +678,9 @@ class LifeStore:
                     ).fetchone()
                     if not exists:
                         conn.execute(
-                            "INSERT INTO interaction_events(user_id,created_at,kind,hour,content_summary) VALUES(?,?,?,?,?)",
-                            (user_id,now,"proactive_response",hour,"回应了主动消息"),
+                            """INSERT INTO interaction_events
+                            (user_id,created_at,kind,hour,content_summary,source_message_id) VALUES(?,?,?,?,?,?)""",
+                            (user_id,now,"proactive_response",hour,"回应了主动消息",source_message_id[:240]),
                         )
 
     async def active_hours(self, user_id: str, since: float) -> dict[int,int]:
@@ -667,9 +700,14 @@ class LifeStore:
             ).fetchall()
             return [str(row[0]) for row in reversed(rows) if str(row[0]).strip()]
 
-    async def add_rest_backlog(self, user_id: str, summary: str, now: float) -> None:
+    async def add_rest_backlog(self, user_id: str, summary: str, now: float,
+                               source_message_id: str="") -> None:
         async with self._lock:
-            self.conn.execute("INSERT INTO rest_backlogs(user_id,created_at,summary) VALUES(?,?,?)",(user_id,now,summary[:240])); self.conn.commit()
+            self.conn.execute(
+                """INSERT INTO rest_backlogs
+                (user_id,created_at,summary,source_message_id) VALUES(?,?,?,?)""",
+                (user_id,now,summary[:240],source_message_id[:240]),
+            ); self.conn.commit()
 
     async def consume_rest_backlogs(self, user_id: str) -> list[str]:
         async with self._lock:
@@ -847,13 +885,15 @@ class LifeStore:
             self.conn.commit()
 
     async def save_image_summary(self, image_hash: str, summary: str, source_type: str, ownership_hint: str,
-                                 session_id: str, now: float, expires_at: float, current_until: float) -> None:
+                                 session_id: str, now: float, expires_at: float, current_until: float,
+                                 source_message_ids: list[str]|None=None) -> None:
         async with self._lock:
             self.conn.execute(
                 """INSERT OR REPLACE INTO image_summaries
-                (image_hash,summary,source_type,ownership_hint,session_id,created_at,expires_at,current_until)
-                VALUES(?,?,?,?,?,?,?,?)""",
-                (image_hash,summary[:1000],source_type[:40],ownership_hint[:240],session_id,now,expires_at,current_until),
+                (image_hash,summary,source_type,ownership_hint,session_id,created_at,expires_at,current_until,source_message_ids)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (image_hash,summary[:1000],source_type[:40],ownership_hint[:240],session_id,now,expires_at,current_until,
+                 json.dumps([str(item)[:240] for item in (source_message_ids or []) if str(item).strip()],ensure_ascii=False)),
             )
             self.conn.commit()
 
@@ -872,6 +912,188 @@ class LifeStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def register_message_turn(self, session_id: str, turn_anchor: str, source_message_ids: list[str],
+                                    user_id: str, now: float, expires_at: float) -> None:
+        """持久化合并消息与最终回复锚点，热重载后仍能识别撤回轮次。"""
+        sources=[]
+        for value in source_message_ids:
+            normalized=str(value or "").strip()[:240]
+            if normalized and normalized not in sources:sources.append(normalized)
+        if not session_id or not turn_anchor or not sources:return
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM message_turn_sources WHERE expires_at<=?",(now,))
+                conn.executemany(
+                    """INSERT OR REPLACE INTO message_turn_sources
+                    (session_id,turn_anchor,source_message_id,user_id,created_at,expires_at)
+                    VALUES(?,?,?,?,?,?)""",
+                    [(session_id[:240],turn_anchor[:240],source,user_id[:80],now,expires_at) for source in sources],
+                )
+
+    async def record_recall_event(self, *, session_id: str, recalled_message_id: str, user_id: str,
+                                  operator_id: str, group_id: str, notice_type: str,
+                                  source_adapter: str, summary: str, media: list[str],
+                                  now: float, expires_at: float, summary_expires_at: float=0) -> None:
+        if not session_id or not recalled_message_id:return
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO recall_events
+                (session_id,recalled_message_id,user_id,operator_id,group_id,notice_type,source_adapter,
+                 summary,summary_expires_at,media_types,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id,recalled_message_id) DO UPDATE SET
+                user_id=excluded.user_id,operator_id=excluded.operator_id,group_id=excluded.group_id,
+                notice_type=excluded.notice_type,source_adapter=excluded.source_adapter,
+                summary=CASE WHEN excluded.summary<>'' OR excluded.media_types<>'[]' THEN excluded.summary ELSE recall_events.summary END,
+                summary_expires_at=CASE WHEN excluded.summary<>'' OR excluded.media_types<>'[]' THEN excluded.summary_expires_at ELSE recall_events.summary_expires_at END,
+                media_types=CASE WHEN excluded.media_types<>'[]' THEN excluded.media_types ELSE recall_events.media_types END,
+                created_at=excluded.created_at,expires_at=MAX(recall_events.expires_at,excluded.expires_at)""",
+                (session_id[:240],recalled_message_id[:240],user_id[:80],operator_id[:80],group_id[:80],
+                 notice_type[:40],source_adapter[:32],summary[:1000],summary_expires_at,
+                 json.dumps(media,ensure_ascii=False),now,expires_at),
+            )
+            self.conn.commit()
+
+    async def is_recalled_turn(self, session_id: str, turn_anchor: str, now: float) -> bool:
+        """直接锚点或其任一合并来源被撤回时，整轮都视为已取消。"""
+        if not session_id or not turn_anchor:return False
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT 1 FROM recall_events r
+                WHERE r.session_id=? AND r.expires_at>? AND (
+                  r.recalled_message_id=? OR EXISTS(
+                    SELECT 1 FROM message_turn_sources t
+                    WHERE t.session_id=r.session_id AND t.turn_anchor=?
+                    AND t.source_message_id=r.recalled_message_id AND t.expires_at>?
+                  )
+                ) LIMIT 1""",
+                (session_id,now,turn_anchor,turn_anchor,now),
+            ).fetchone()
+            return row is not None
+
+    async def turn_anchors_for_source(self, session_id: str, source_message_id: str, now: float) -> list[str]:
+        if not session_id or not source_message_id:return []
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT DISTINCT turn_anchor FROM message_turn_sources
+                WHERE session_id=? AND source_message_id=? AND expires_at>?""",
+                (session_id,source_message_id,now),
+            ).fetchall()
+            anchors=[str(row[0]) for row in rows if str(row[0]).strip()]
+            if source_message_id not in anchors:anchors.append(source_message_id)
+            return anchors
+
+    async def recent_recall_context(self, session_id: str, now: float, limit: int=5) -> list[dict[str,Any]]:
+        if not session_id:return []
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT recalled_message_id,notice_type,created_at FROM recall_events
+                WHERE session_id=? AND expires_at>? ORDER BY created_at DESC LIMIT ?""",
+                (session_id,now,max(1,min(20,int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def latest_recall_summary(self, session_id: str, user_id: str, now: float) -> dict[str,Any]:
+        if not session_id or not user_id:return {}
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT recalled_message_id,summary,media_types,created_at FROM recall_events
+                WHERE session_id=? AND user_id=? AND group_id='' AND (summary<>'' OR media_types<>'[]')
+                AND summary_expires_at>?
+                ORDER BY created_at DESC LIMIT 1""",
+                (session_id,user_id,now),
+            ).fetchone()
+            if not row:return {}
+            result=dict(row)
+            try:result["media_types"]=json.loads(result.get("media_types") or "[]")
+            except (TypeError,json.JSONDecodeError):result["media_types"]=[]
+            return result
+
+    async def clear_recall_summaries(self) -> None:
+        """关闭摘要缓存后立即清空正文与媒介元数据，但保留发送取消墓碑。"""
+        async with self._lock:
+            self.conn.execute(
+                "UPDATE recall_events SET summary='',media_types='[]',summary_expires_at=0 "
+                "WHERE summary<>'' OR media_types<>'[]' OR summary_expires_at<>0"
+            )
+            self.conn.commit()
+
+    async def redact_recalled_private_artifacts(self, user_id: str, message_id: str) -> None:
+        """撤回后移除由该私聊消息衍生的短期状态，避免后续 Prompt 再次引用。"""
+        if not user_id or not message_id:return
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM interaction_events WHERE user_id=? AND source_message_id=?",(user_id,message_id))
+                latest=conn.execute(
+                    "SELECT COALESCE(MAX(created_at),0) FROM interaction_events WHERE user_id=? AND kind='message'",
+                    (user_id,),
+                ).fetchone()
+                conn.execute("UPDATE users SET last_user_message_at=? WHERE user_id=?",(float(latest[0] or 0),user_id))
+                conn.execute("DELETE FROM rest_backlogs WHERE user_id=? AND source_message_id=?",(user_id,message_id))
+                conn.execute("DELETE FROM date_candidates WHERE user_id=? AND source_message_id=? AND status='pending'",(user_id,message_id))
+                date_rows=conn.execute(
+                    "SELECT id FROM important_dates WHERE user_id=? AND source_message_id=?",(user_id,message_id)
+                ).fetchall()
+                for row in date_rows:
+                    date_id=int(row[0])
+                    conn.execute("DELETE FROM date_trigger_events WHERE date_id=?",(date_id,))
+                    opportunity_rows=conn.execute(
+                        "SELECT id FROM proactive_opportunities WHERE framework_id=?",
+                        (f"important-date:{date_id}",),
+                    ).fetchall()
+                    for opportunity in opportunity_rows:
+                        conn.execute(
+                            "UPDATE proactive_events SET status='cancelled' WHERE opportunity_id=? AND status='pending'",
+                            (opportunity[0],),
+                        )
+                    conn.execute("DELETE FROM proactive_opportunities WHERE framework_id=?",
+                                 (f"important-date:{date_id}",))
+                conn.execute("DELETE FROM important_dates WHERE user_id=? AND source_message_id=?",(user_id,message_id))
+                image_rows=conn.execute(
+                    "SELECT image_hash,source_message_ids FROM image_summaries"
+                ).fetchall()
+                remove_hashes=[]
+                for row in image_rows:
+                    try:sources=json.loads(row[1] or "[]")
+                    except (TypeError,json.JSONDecodeError):sources=[]
+                    if message_id in {str(item) for item in sources}:remove_hashes.append(str(row[0]))
+                if remove_hashes:
+                    conn.executemany("DELETE FROM image_summaries WHERE image_hash=?",[(value,) for value in remove_hashes])
+
+    async def retract_group_observation_source(self, group_id: str, message_id: str, now: float) -> int:
+        """群消息撤回后删除包含该来源的匿名摘要，并取消尚未发送的群转私候选。"""
+        if not group_id or not message_id:return 0
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT id,source_message_ids FROM group_observations WHERE group_id=? AND expires_at>?",
+                (group_id,now),
+            ).fetchall()
+            observation_ids=[]
+            for row in rows:
+                try:sources=json.loads(row[1] or "[]")
+                except (TypeError,json.JSONDecodeError):sources=[]
+                if message_id in {str(item) for item in sources}:observation_ids.append(str(row[0]))
+            if not observation_ids:return 0
+            with self._tx() as conn:
+                for observation_id in observation_ids:
+                    relays=conn.execute(
+                        """SELECT id,opportunity_id FROM relay_candidates
+                        WHERE source_observation_id=? AND kind='group_to_private'""",(observation_id,)
+                    ).fetchall()
+                    for relay in relays:
+                        opportunity_id=str(relay[1] or "")
+                        conn.execute(
+                            """UPDATE relay_candidates SET status='cancelled'
+                            WHERE id=? AND status IN ('queued','pending','sending')""",(relay[0],)
+                        )
+                        if opportunity_id:
+                            conn.execute(
+                                "UPDATE proactive_events SET status='cancelled' WHERE opportunity_id=? AND status='pending'",
+                                (opportunity_id,),
+                            )
+                            conn.execute("DELETE FROM proactive_opportunities WHERE id=?",(opportunity_id,))
+                    conn.execute("DELETE FROM group_observations WHERE id=?",(observation_id,))
+            return len(observation_ids)
+
     async def sync_relationship_entries(self, profiles: list[Any]) -> None:
         """把 WebUI 关系词条同步到 SQLite，热更新时不会留下已删除别名。"""
         async with self._lock:
@@ -889,16 +1111,31 @@ class LifeStore:
                         (group_alias,alias,user_id,str(getattr(profile,"display_name","") or "")[:120],now),
                     )
 
-    async def record_group_activity(self, group_id: str, user_id: str, display_name: str, now: float) -> None:
+    async def record_group_activity(self, group_id: str, user_id: str, display_name: str, now: float,
+                                    source_message_id: str="") -> None:
         if not group_id or not user_id:return
         async with self._lock:
             self.conn.execute(
-                """INSERT INTO group_user_activity(group_id,user_id,display_name,last_active_at)
-                VALUES(?,?,?,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
-                display_name=excluded.display_name,last_active_at=excluded.last_active_at""",
-                (group_id,user_id,display_name[:120],now),
+                """INSERT INTO group_user_activity(group_id,user_id,display_name,last_active_at,source_message_id)
+                VALUES(?,?,?,?,?) ON CONFLICT(group_id,user_id) DO UPDATE SET
+                display_name=CASE WHEN excluded.last_active_at>=group_user_activity.last_active_at
+                                  THEN excluded.display_name ELSE group_user_activity.display_name END,
+                source_message_id=CASE WHEN excluded.last_active_at>=group_user_activity.last_active_at
+                                       THEN excluded.source_message_id ELSE group_user_activity.source_message_id END,
+                last_active_at=MAX(group_user_activity.last_active_at,excluded.last_active_at)""",
+                (group_id,user_id,display_name[:120],now,source_message_id[:240]),
             )
             self.conn.commit()
+
+    async def clear_recalled_group_activity(self, group_id: str, message_id: str) -> int:
+        """仅清除仍由该撤回消息占据的最新活跃指针；未知状态不会触发群转私。"""
+        if not group_id or not message_id:return 0
+        async with self._lock:
+            cursor=self.conn.execute(
+                """UPDATE group_user_activity SET display_name='',last_active_at=0,source_message_id=''
+                WHERE group_id=? AND source_message_id=?""",(group_id,message_id),
+            )
+            self.conn.commit(); return int(cursor.rowcount)
 
     async def get_group_activity(self, group_id: str, user_id: str) -> dict[str, Any]:
         async with self._lock:
@@ -912,11 +1149,12 @@ class LifeStore:
         async with self._lock:
             cursor=self.conn.execute(
                 """INSERT OR IGNORE INTO group_observations
-                (id,group_id,group_alias,topic,summary,interest_score,source_adapter,created_at,expires_at)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (id,group_id,group_alias,topic,summary,interest_score,source_adapter,created_at,expires_at,source_message_ids)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (item["id"],item["group_id"],item["group_alias"],item["topic"][:240],item["summary"][:1200],
                  max(0,min(1,float(item.get("interest_score") or 0))),item.get("source_adapter","unknown")[:32],
-                 float(item["created_at"]),float(item["expires_at"])),
+                 float(item["created_at"]),float(item["expires_at"]),
+                 json.dumps([str(value)[:240] for value in item.get("source_message_ids") or [] if str(value).strip()],ensure_ascii=False)),
             )
             self.conn.commit(); return cursor.rowcount==1
 
@@ -1314,6 +1552,12 @@ class LifeStore:
                 conn.execute("DELETE FROM image_summaries WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
+                conn.execute("DELETE FROM message_turn_sources WHERE expires_at<=?",(now,))
+                conn.execute(
+                    "UPDATE recall_events SET summary='',media_types='[]',summary_expires_at=0 "
+                    "WHERE summary_expires_at>0 AND summary_expires_at<=?",(now,)
+                )
+                conn.execute("DELETE FROM recall_events WHERE expires_at<=?",(now,))
                 conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,))
                 conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
                 conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
@@ -1425,15 +1669,16 @@ class LifeStore:
             return [dict(row) for row in rows]
 
     async def add_important_date(self, user_id: str, event_name: str, event_date: str,
-                                 recurrence: str, source: str, now: float) -> int:
+                                 recurrence: str, source: str, now: float,
+                                 source_message_id: str="") -> int:
         clean_recurrence=recurrence if recurrence in {"none","annual"} else "none"
         async with self._lock:
             with self._tx() as conn:
                 conn.execute(
                     """INSERT OR IGNORE INTO important_dates
-                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?)""",
-                    (user_id,event_name[:120],event_date,clean_recurrence,source[:40],now,now),
+                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at,source_message_id)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                    (user_id,event_name[:120],event_date,clean_recurrence,source[:40],now,now,source_message_id[:240]),
                 )
                 row=conn.execute(
                     """SELECT id FROM important_dates
@@ -1469,7 +1714,7 @@ class LifeStore:
 
     async def add_date_candidate(self, user_id: str, event_name: str, date_text: str,
                                  suggested_date: str, confidence: float, source_summary: str,
-                                 now: float) -> int:
+                                 now: float, source_message_id: str="") -> int:
         async with self._lock:
             existing=self.conn.execute(
                 """SELECT id FROM date_candidates WHERE user_id=? AND event_name=? AND date_text=?
@@ -1479,10 +1724,10 @@ class LifeStore:
             if existing:return int(existing[0])
             cursor=self.conn.execute(
                 """INSERT INTO date_candidates
-                (user_id,event_name,date_text,suggested_date,confidence,source_summary,created_at,status)
-                VALUES(?,?,?,?,?,?,?,'pending')""",
+                (user_id,event_name,date_text,suggested_date,confidence,source_summary,created_at,status,source_message_id)
+                VALUES(?,?,?,?,?,?,?,'pending',?)""",
                 (user_id,event_name[:120],date_text[:120],suggested_date[:10],max(0,min(1,float(confidence))),
-                 source_summary[:300],now),
+                 source_summary[:300],now,source_message_id[:240]),
             )
             self.conn.commit(); return int(cursor.lastrowid)
 

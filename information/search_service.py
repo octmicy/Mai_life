@@ -153,6 +153,7 @@ class SearchService:
         return SearchResult(title_text or "未命名结果",url_text,snippet_text,generated)
 
     def _parse_standard(self,provider_type:str,payload:Any)->SearchResponse:
+        """把博查、Tavily 和 You.com 的不同字段归一化为统一搜索结果。"""
         if not isinstance(payload,dict):return SearchResponse([])
         if provider_type=="bocha":
             raw=_nested(payload,"data.webPages.value","data.web_pages.value","webPages.value","results")
@@ -185,6 +186,7 @@ class SearchService:
         return "\n".join(parts)
 
     def _parse_openai(self,provider_type:str,payload:Any,model:str)->SearchResponse:
+        """解析 Responses/Chat 中转文本、引用和 Token；无 URL 时保留 Provider 生成标记。"""
         if not isinstance(payload,dict):return SearchResponse([])
         texts=[]; citations=[]
         if provider_type=="openai_responses":
@@ -252,6 +254,7 @@ class SearchService:
         )
 
     async def _request_provider(self,provider:Any,key:str,query:str,freshness:str)->SearchResponse:
+        """按 Provider 协议构造单次请求；调用方负责 Key 状态、重试和跨服务降级。"""
         kind=str(provider.provider_type); timeout=float(self.config.search_api.timeout_seconds)
         count=int(self.config.search_api.max_results)
         if kind=="bocha":
@@ -324,6 +327,7 @@ class SearchService:
             self.logger.debug(f"[MaiLife] 自定义联网模型 Token 统计失败 provider={response.provider_id}")
 
     async def search(self,query:str,*,operation:str="search",freshness:str="",event_at:float=0)->SearchResponse:
+        """按服务和 Key 顺序搜索，区分 Key 故障与服务故障并限制总外部请求数。"""
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
         now=time.time(); event_time=float(event_at or now)
@@ -350,6 +354,7 @@ class SearchService:
                     latency=(time.perf_counter()-started)*1000
                     parsed=SearchResponse(parsed.results,provider_id,kind,parsed.generated_text,parsed.cited,
                                           parsed.model,parsed.prompt_tokens,parsed.completion_tokens,parsed.total_tokens)
+                    # 空结果不惩罚 Key，但结束当前服务并尝试下一个服务，避免同服务重复计费。
                     if not parsed.results:
                         await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",cooldown_until=0,
                             failure_count=0,error_class="empty_result",used_at=now,success_at=float(runtime.get("last_success_at") or 0))
@@ -368,6 +373,7 @@ class SearchService:
                     latency=(time.perf_counter()-started)*1000; status_code=exc.status_code
                     quota=self._quota_error(exc); error_class="quota" if quota else exc.error_class
                     failures=int(runtime.get("failure_count") or 0)+1
+                    # 鉴权/额度问题可切备用 Key；网络和协议故障直接切服务，避免耗尽整组 Key。
                     if error_class=="auth":
                         key_status="disabled"; cooldown_until=0; try_next_key=True
                     elif error_class in {"rate_limit","quota"}:

@@ -81,6 +81,7 @@ class AdminService:
         return result
 
     async def _sources(self)->dict[str,Any]:
+        """组合配置与持久化健康状态，只输出 Key 指纹而不返回原始凭据。"""
         runtime={(str(item["provider_id"]),str(item["key_fingerprint"])):item
                  for item in await self.store.search_provider_health()}
         providers=[]
@@ -108,7 +109,7 @@ class AdminService:
     async def _overview(self,now:Any)->dict[str,Any]:
         counts=await self.store.management_overview_counts(); usage=await self._tokens(now)
         tokens=usage["model_usage"]
-        return {"scope":"overview","version":"1.7.1","users":counts.get("users",0),
+        return {"scope":"overview","version":"1.7.2","users":counts.get("users",0),
                 "owners":counts.get("owners",0),"pending_dates":counts.get("pending_dates",0),
                 "bookshelf_documents":counts.get("bookshelf_documents",0),
                 "private_documents":counts.get("private_documents",0),
@@ -120,6 +121,7 @@ class AdminService:
                 "network_enabled":bool(self.config.information.enabled)}
 
     async def format_text(self,scope:str,now:Any,limit:int=12)->str:
+        """将不同管理范围格式化为可复制文本，并保持敏感字段已经脱敏。"""
         data=await self.snapshot(scope,now,limit); scope=data["scope"]
         if scope=="overview":
             return ("Mai_life 管理概览\n"

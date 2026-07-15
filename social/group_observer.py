@@ -115,6 +115,7 @@ class GroupObserver:
         return {"pending":removed_pending,"saved":removed_saved,"activity":removed_activity}
 
     async def _summarize(self,snippets:list[str])->dict[str,Any]:
+        """在本地敏感过滤后生成匿名公共话题；模型输出还会再次经过相同边界。"""
         joined="\n".join(snippets)[:5000]
         fallback=self._local_digest(snippets)
         # 明显敏感片段在任何模型调用前就本地拒绝，避免把隐私送往外部 Provider。
@@ -166,6 +167,7 @@ class GroupObserver:
         return {"public":True,"score":min(1,score),"topic":topic,"summary":summary}
 
     async def _queue_private_share(self,observation:dict[str,Any],now:datetime)->bool:
+        """只为有真实离群证据且额度允许的一个 QQ 用户创建群转私候选。"""
         threshold=float(self.config.social.interesting_threshold)
         if float(observation.get("interest_score") or 0)<threshold:return False
         day_start=now.replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
@@ -187,6 +189,7 @@ class GroupObserver:
             if stats["last_at"] and now.timestamp()-stats["last_at"]<int(self.config.social.group_share_min_interval_minutes)*60:continue
             candidates.append((float(user.get("temperature") or 0),last_active,user))
         if not candidates:return False
+        # 同一群话题只选择一位最合适的用户，避免把相同内容复制到多个私聊。
         candidates.sort(key=lambda item:(item[0],-item[1]),reverse=True); user=candidates[0][2]
         uid=str(user["user_id"]); base=f"social:{observation['id']}:{uid}"
         opportunity_id=hashlib.sha1(base.encode()).hexdigest()[:24]; expires_at=now.timestamp()+7200

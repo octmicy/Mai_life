@@ -27,6 +27,7 @@ class InspirationService:
         return text[:limit]
 
     async def collect(self,now:Any)->int:
+        """聚合近期梦境、日记、生活场景和可选外部阅读，使用稳定来源 ID 去重。"""
         count=0; cutoff=now.timestamp()-int(self.config.creation.inspiration_lookback_days)*86400
         dream=await self.store.latest_dream()
         if dream and float(dream.get("created_at") or 0)>=cutoff:
@@ -57,6 +58,7 @@ class InspirationService:
         })
 
     async def _collect_external(self,now:Any)->int:
+        """限频调用授权插件 API，只提取有限文字并将外部来源固定为私人灵感。"""
         cfg=self.config.creation; api_name=str(cfg.external_reading_api_name or "").strip()
         if not cfg.external_reading_enabled or not api_name or not cfg.plaintext_storage_acknowledged:return 0
         if now.timestamp()-self._last_external_attempt<int(cfg.patrol_interval_minutes)*60:return 0

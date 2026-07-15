@@ -54,6 +54,7 @@ class VisionService:
         return images
 
     def _gif_frames(self,data:bytes)->list[tuple[str,str]]:
+        """等距抽取有限 GIF 帧；Pillow 缺失或解码失败时保留原 GIF 交给 VLM。"""
         try:
             from PIL import Image,ImageOps
         except Exception:return [("gif",base64.b64encode(data).decode())]
@@ -88,6 +89,7 @@ class VisionService:
         return {"summary":raw.strip(),"intent":"","ownership_hint":""}
 
     async def summarize_if_needed(self,message:dict[str,Any])->str:
+        """只预处理疑难图片组合，缓存短摘要且不持久化任何原始二进制。"""
         cfg=self.config.vision
         if not cfg.enabled or not self.llm.task_available("vision_summary"):return ""
         max_bytes=int(self.config.debounce.max_media_bytes)
@@ -105,6 +107,7 @@ class VisionService:
         direct_message_id=str(message.get("message_id") or "").strip()
         if direct_message_id and direct_message_id not in source_ids:source_ids.append(direct_message_id)
         merged_image=bool(direct and isinstance(merged_ids,list) and len(merged_ids)>1)
+        # 普通图文继续走 MaiBot 原生多模态；这里只补单图无说明、引用、转发、GIF 和合并图。
         difficult=(len(direct)==1 and not text) or merged_image or "gif" in types or "forward" in types or "reply" in types
         if not difficult:return ""
         if "reply" in types:
@@ -114,6 +117,7 @@ class VisionService:
         elif "gif" in types:source_type="gif"
         direct=direct[:int(cfg.max_images)]
         if not direct:return ""
+        # 二进制仅存在于本次局部 payload，落库键由内容哈希组合而成。
         payload=[]; hashes=[]; remaining_bytes=max_bytes
         for item in direct:
             data=_image_bytes(item,max_bytes)
@@ -125,6 +129,7 @@ class VisionService:
             else:payload.append((_format(data),base64.b64encode(data).decode()))
         if not payload:return ""
         combined=hashlib.sha256("|".join(hashes).encode()).hexdigest()
+        # 命中缓存时只刷新当前图片指针，不重复消耗视觉模型。
         now=time.time(); cached=await self.store.get_image_summary(combined,now)
         if cached:
             await self.store.save_image_summary(

@@ -108,6 +108,7 @@ class RecallService:
         return {}
 
     async def _recover_summary(self,session_id:str,message_id:str)->tuple[str,list[str],str]:
+        """优先读取内存短缓存，必要时限时向 Host 恢复无二进制的原消息。"""
         cached=self._inbound.get((session_id,message_id))
         if cached and cached.private:
             return cached.summary,list(cached.media),cached.user_id
@@ -145,6 +146,7 @@ class RecallService:
             summary=""; media=[]; authorized=False
         expires_at=current+self._retention_seconds()
         summary_expires_at=(current+int(self.config.recall.summary_ttl_minutes)*60) if summary or media else 0
+        # 墓碑必须先于任何异步摘要恢复落库，发送 Hook 才能立即阻断尚未发出的内容。
         await self.store.record_recall_event(
             session_id=session_id,recalled_message_id=message_id,user_id=user_id,
             operator_id=str(notice.get("operator_id") or ""),group_id=group_id,

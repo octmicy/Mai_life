@@ -56,6 +56,7 @@ def _validated_url(url:str)->str:
 
 
 def _validate_public_url_sync(url:str)->str:
+    """解析域名并拒绝任何非公网地址；重定向目标也必须重新通过相同检查。"""
     value=_validated_url(url); host=str(urlparse(value).hostname or "").strip("[]").casefold()
     if host in {"localhost","localhost.localdomain"} or host.endswith(".localhost"):
         raise HttpRequestError("拒绝访问本机地址",error_class="unsafe_url")
@@ -100,6 +101,7 @@ class HttpClient:
     async def request(self,method:str,url:str,*,body:bytes|None=None,timeout:float=8,
                       max_bytes:int=2_000_000,headers:dict[str,str]|None=None,
                       public_only:bool=False)->HttpResponse:
+        """在线程中执行阻塞 urllib 请求，避免占用 MaiBot 的异步消息循环。"""
         target=self.validate_url(url)
         return await asyncio.to_thread(
             self._request_sync,str(method or "GET").upper(),target,body,float(timeout),
@@ -109,11 +111,13 @@ class HttpClient:
     @staticmethod
     def _request_sync(method:str,url:str,body:bytes|None,timeout:float,max_bytes:int,
                       headers:dict[str,str],public_only:bool)->HttpResponse:
+        """执行一次有大小上限的请求，并将网络/HTTP 失败归一化为不含 Key 的异常。"""
         target=_validate_public_url_sync(url) if public_only else _validated_url(url)
-        request_headers={"User-Agent":"Mai_life/1.7.1 (+https://github.com/octmicy/Mai_life)",
+        request_headers={"User-Agent":"Mai_life/1.7.2 (+https://github.com/octmicy/Mai_life)",
                          "Accept-Encoding":"identity",**headers}
         request=urllib.request.Request(target,data=body,headers=request_headers,method=method)
         context=ssl.create_default_context()
+        # 正文抓取启用安全重定向处理，防止公网 URL 通过 30x 跳转到内网资源。
         opener=(urllib.request.build_opener(
             urllib.request.ProxyHandler(),urllib.request.HTTPSHandler(context=context),_PublicRedirectHandler(),
         ) if public_only else urllib.request.build_opener(
@@ -121,6 +125,7 @@ class HttpClient:
         ))
         try:
             with opener.open(request,timeout=max(1,timeout)) as response:
+                # 多读一个字节用于可靠判断是否越过上限，避免把超大页面完整载入内存。
                 response_body=response.read(max(1,max_bytes)+1)
                 if len(response_body)>max_bytes:
                     raise HttpRequestError("响应超过大小限制",error_class="too_large",

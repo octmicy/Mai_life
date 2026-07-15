@@ -48,6 +48,7 @@ class LifeStore:
 
     # quick_check 失败时先保留损坏文件，再创建全新数据库。
     def _open_checked(self) -> None:
+        """打开 SQLite 并执行完整性检查；损坏文件保留副本后再建立空库。"""
         conn: Optional[sqlite3.Connection] = None
         try:
             conn = sqlite3.connect(self.path, check_same_thread=False)
@@ -94,6 +95,7 @@ class LifeStore:
 
     # Schema 使用显式版本号，为后续迁移保留稳定入口。
     def _create_schema(self) -> None:
+        """幂等创建当前 Schema，并在建表完成后执行旧版本的增量迁移。"""
         version = 0
         existing = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"
@@ -113,9 +115,11 @@ class LifeStore:
                 shutil.move(str(self.path), str(backup))
                 self._conn = sqlite3.connect(self.path, check_same_thread=False)
                 self._conn.row_factory = sqlite3.Row
+        # 表按生活时间线、用户消息、长期记忆、社交与联网运行态分组；建表本身可重复执行。
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            -- 全局生活时间线、睡眠、梦境、日程和主动契机。
             CREATE TABLE IF NOT EXISTS global_state(
               id INTEGER PRIMARY KEY CHECK(id=1), energy REAL NOT NULL, hunger REAL NOT NULL,
               mood_valence REAL NOT NULL, mood_arousal REAL NOT NULL,
@@ -159,6 +163,7 @@ class LifeStore:
               consumed_at REAL NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_opportunity_active ON proactive_opportunities(expires_at,consumed_at);
+            -- 用户关系、互动、主动发送、休息积压和环境缓存。
             CREATE TABLE IF NOT EXISTS users(
               user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, proactive_enabled INTEGER NOT NULL,
               display_name TEXT NOT NULL, temperature REAL NOT NULL,
@@ -208,6 +213,7 @@ class LifeStore:
               source_message_ids TEXT NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS idx_image_session_current ON image_summaries(session_id,current_until);
+            -- 模型统计、回复防重和撤回关联使用短期运行记录。
             CREATE TABLE IF NOT EXISTS llm_usage_events(
               id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
               source TEXT NOT NULL, task_name TEXT NOT NULL, model_name TEXT NOT NULL,
@@ -239,6 +245,7 @@ class LifeStore:
             );
             CREATE INDEX IF NOT EXISTS idx_recall_event_expiry
               ON recall_events(session_id,expires_at);
+            -- 日记、重要日期和联网见闻只保存结构化摘要，不复制完整聊天历史。
             CREATE TABLE IF NOT EXISTS diary_entries(
               day TEXT PRIMARY KEY, created_at REAL NOT NULL, title TEXT NOT NULL,
               content TEXT NOT NULL, mood_summary TEXT NOT NULL,
@@ -294,6 +301,7 @@ class LifeStore:
               next_retry_at REAL NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
               etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT ''
             );
+            -- 群聊观察和跨会话转述使用 QQ 号定位，名称字段仅用于展示。
             CREATE TABLE IF NOT EXISTS group_observations(
               id TEXT PRIMARY KEY, group_id TEXT NOT NULL, group_alias TEXT NOT NULL,
               topic TEXT NOT NULL, summary TEXT NOT NULL, interest_score REAL NOT NULL DEFAULT 0,
@@ -330,6 +338,7 @@ class LifeStore:
               id INTEGER PRIMARY KEY AUTOINCREMENT, relay_id TEXT NOT NULL,
               status TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
             );
+            -- 书柜采用文档、不可变修订和运行记录三层结构，便于失败恢复与权限过滤。
             CREATE TABLE IF NOT EXISTS bookshelf_documents(
               id TEXT PRIMARY KEY, doc_type TEXT NOT NULL, work_type TEXT NOT NULL DEFAULT '',
               title TEXT NOT NULL, privacy TEXT NOT NULL, status TEXT NOT NULL,
@@ -365,6 +374,7 @@ class LifeStore:
               source_digest TEXT NOT NULL, created_at REAL NOT NULL,
               UNIQUE(source_api,external_id)
             );
+            -- 搜索 Key 只保存不可逆指纹和健康状态，调用事件与模型 Token 分开统计。
             CREATE TABLE IF NOT EXISTS search_key_runtime(
               provider_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'healthy', cooldown_until REAL NOT NULL DEFAULT 0,
@@ -644,6 +654,7 @@ class LifeStore:
             self.conn.commit()
 
     async def sync_users(self, profiles: Iterable[Any]) -> None:
+        """将 WebUI 用户列表同步到运行库；QQ 号与角色配置是身份判断的唯一来源。"""
         async with self._lock:
             with self._tx() as conn:
                 seen=[]
@@ -692,6 +703,7 @@ class LifeStore:
     # 同时记录活跃时段，并识别用户是否回应了近期主动消息。
     async def record_interaction(self, user_id: str, text: str, now: float, hour: int,
                                  source_message_id: str="") -> None:
+        """记录截断后的互动摘要，并原子更新用户活跃时间和主动回复标记。"""
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("UPDATE users SET last_user_message_at=? WHERE user_id=?",(now,user_id))
@@ -813,6 +825,7 @@ class LifeStore:
 
     # 只有 send_service.after_send 确认平台发送成功后，才增加实际主动额度。
     async def mark_pending_sent(self, stream_id: str, now: float, day: str = "", *, event_id: str = "") -> bool:
+        """提交已成功发送的主动候选；精确 event_id 优先于旧版会话兜底。"""
         async with self._lock:
             # 普通被动回复没有 pending 记录，只读查询不会创建 SQLite journal。
             if event_id:
@@ -967,6 +980,7 @@ class LifeStore:
                                   operator_id: str, group_id: str, notice_type: str,
                                   source_adapter: str, summary: str, media: list[str],
                                   now: float, expires_at: float, summary_expires_at: float=0) -> None:
+        """写入撤回墓碑和可选短摘要；同一消息重复通知时以最新安全字段覆盖。"""
         if not session_id or not recalled_message_id:return
         async with self._lock:
             self.conn.execute(
@@ -1216,6 +1230,7 @@ class LifeStore:
             return [dict(row) for row in rows]
 
     async def create_relay_candidate(self, item: dict[str, Any]) -> bool:
+        """创建转述候选，并在同一事务内把相同目标的旧候选标记为已取代。"""
         async with self._lock:
             with self._tx() as conn:
                 if item["kind"]=="explicit":
@@ -1422,6 +1437,7 @@ class LifeStore:
 
     async def add_bookshelf_revision(self, document_id: str, stage: str, content: str, model_task: str,
                                      now: float, *, set_current: bool=True, status: str="") -> int:
+        """追加不可变书柜修订，并可原子推进文档当前版本和流水线状态。"""
         async with self._lock:
             with self._tx() as conn:
                 row=conn.execute(
@@ -1656,6 +1672,7 @@ class LifeStore:
 
     async def save_diary(self, day: str, title: str, content: str, mood_summary: str,
                          source_digest: str, created_at: float) -> None:
+        """保存私人日记，并同步维护书柜中的同一日记文档及其修订。"""
         async with self._lock:
             with self._tx() as conn:
                 conn.execute(
@@ -1712,6 +1729,7 @@ class LifeStore:
     async def add_important_date(self, user_id: str, event_name: str, event_date: str,
                                  recurrence: str, source: str, now: float,
                                  source_message_id: str="") -> int:
+        """按用户、名称、日期和周期幂等保存明确的重要日期。"""
         clean_recurrence=recurrence if recurrence in {"none","annual"} else "none"
         async with self._lock:
             with self._tx() as conn:
@@ -1756,6 +1774,7 @@ class LifeStore:
     async def add_date_candidate(self, user_id: str, event_name: str, date_text: str,
                                  suggested_date: str, confidence: float, source_summary: str,
                                  now: float, source_message_id: str="") -> int:
+        """保存仍需当前 QQ 用户确认的模糊日期候选及其有限来源摘要。"""
         async with self._lock:
             existing=self.conn.execute(
                 """SELECT id FROM date_candidates WHERE user_id=? AND event_name=? AND date_text=?
@@ -1849,6 +1868,7 @@ class LifeStore:
             self.conn.commit()
 
     async def upsert_news_item(self, item: dict[str, Any]) -> bool:
+        """写入新闻；正文哈希变化时清除旧关联分数，强制重新进行自我关联。"""
         async with self._lock:
             existing=self.conn.execute("SELECT content_hash FROM news_items WHERE id=?",(item["id"],)).fetchone()
             self.conn.execute(
@@ -1946,6 +1966,7 @@ class LifeStore:
     async def save_information_source_runtime(self, source_key: str, *, now: float, success: bool,
                                               next_retry_at: float, error: str="", etag: str="",
                                               last_modified: str="") -> None:
+        """保存来源退避状态，同时保留最近成功时间和可复用的 HTTP 缓存头。"""
         async with self._lock:
             previous=self.conn.execute(
                 "SELECT * FROM information_source_runtime WHERE source_key=?",(source_key,)
@@ -2062,6 +2083,7 @@ class LifeStore:
 
     # 每个自然日只结算一次关系温度，离线补算时按结算日结束时刻判断冷却。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:
+        """按日结算互动增量和长期不活跃衰减，并保证重复补算不会再次修改温度。"""
         del now
         async with self._lock:
             with self._tx() as conn:

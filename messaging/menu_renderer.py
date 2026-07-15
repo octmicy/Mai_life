@@ -37,6 +37,7 @@ class MaiLifeMenuRenderer:
 
     @staticmethod
     def _find_font_paths(explicit:str="")->tuple[str,str]:
+        """依次查找插件字体及 Windows/Linux 常见中文字体，不依赖固定操作系统。"""
         root=Path(__file__).resolve().parents[1]
         regular_candidates=[
             Path(explicit) if explicit else Path(),root/"assets"/"font.ttf",
@@ -138,6 +139,7 @@ class MaiLifeMenuRenderer:
 
     def _draw_section(self,image:Any,box:tuple[int,int,int,int],section:CommandSection,
                       layout:list[Any],fonts:dict[str,Any],accent:str)->None:
+        """按预计算行高绘制一个命令分组，保证文字不会在绘制阶段改变卡片尺寸。"""
         self._shadowed_round_rect(
             image,box,18,self._rgba(self._PALETTE["card"]),self._rgba(self._PALETTE["card_border"]),
             shadow_alpha=22,blur=10,
@@ -158,7 +160,8 @@ class MaiLifeMenuRenderer:
             if index<len(section.items)-1:
                 draw.line((x1+24,y-6,x2-24,y-6),fill=self._PALETTE["line"],width=1)
 
-    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.7.1",notice:str="")->bytes:
+    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.7.2",notice:str="")->bytes:
+        """测量双栏布局并生成 PNG；任何 Pillow/字体异常都返回空字节触发文本降级。"""
         if not self.available:return b""
         clean_notice=" ".join(str(notice or "").replace("\x00","").split())[:120]
         cache_key=(str(title),str(version),clean_notice,tuple(sections))
@@ -172,12 +175,14 @@ class MaiLifeMenuRenderer:
                 "subtitle":self._font(21),"section":self._font(25,bold=True),
                 "command":self._font(21,bold=True),"description":self._font(18),"footer":self._font(17),
             }
+            # 先完整测量两列高度，再创建画布，避免长命令把页脚挤出图片。
             margin=86; gap=22; column_width=(self.WIDTH-2*margin-gap)//2
             section_values=[self._measure_section(section,column_width,fonts) for section in sections]
             columns=[list(range(0,len(sections),2)),list(range(1,len(sections),2))]
             column_heights=[sum(section_values[index][0] for index in column)+gap*max(0,len(column)-1) for column in columns]
             content_top=318 if clean_notice else 282
             height=max(930,content_top+max(column_heights,default=0)+92)
+            # 外层窗口、卡片与文字分层绘制，阴影只作用于各自透明图层。
             image=self._background(self.WIDTH,height)
             self._shadowed_round_rect(
                 image,(42,38,self.WIDTH-42,height-38),28,self._rgba(self._PALETTE["panel"]),

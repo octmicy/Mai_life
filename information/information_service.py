@@ -57,6 +57,7 @@ class InformationService:
         return str(result.get("summary") or fallback)[:6000] if isinstance(result,dict) else fallback
 
     async def _associate_pending_news(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any])->int:
+        """批量整理最多五条新闻，只做一次自我关联并共享同一主动契机。"""
         items=await self.store.pending_news_items(now.timestamp(),5)
         if not items:return 0
         digest=await self._digest_news_batch(items)
@@ -85,6 +86,7 @@ class InformationService:
         return len(items)
 
     async def _associate(self,payload:dict[str,Any],personality:str,state:dict[str,Any],schedule:dict[str,Any])->dict[str,Any]:
+        """先用本地兴趣规则建立保守基线，再由可选模型判断是否与麦麦自身有关。"""
         if not self.config.information.association_enabled:return {"score":0.0,"reason":"自我关联已关闭","topic":"","motive":""}
         text=(str(payload.get("title") or "")+" "+str(payload.get("summary") or "")).casefold()
         interests=[str(item).strip() for item in self.config.search.interest_keywords if str(item).strip()]
@@ -129,6 +131,7 @@ class InformationService:
         return [term for term in terms if term]
 
     async def _plan_query(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->dict[str,str]:
+        """在移除 QQ 号、昵称、群名及网址后规划一个有限长度的探索查询。"""
         interests=[str(item).strip() for item in self.config.search.interest_keywords if str(item).strip()]
         fallback_topic=interests[now.toordinal()%len(interests)] if interests else "近期科技与文化"
         fallback={"topic":fallback_topic,"query":fallback_topic,"reason":"从配置的人格兴趣中选择一个方向"}
@@ -151,6 +154,7 @@ class InformationService:
                 "reason":str(result.get("reason") or fallback["reason"])[:300]}
 
     async def explore_due(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->bool:
+        """在空闲日程和每日额度允许时完成一次搜索、摘要、关联和笔记归档。"""
         cfg=self.config.search
         if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return False
         current=schedule.get("current") or {}

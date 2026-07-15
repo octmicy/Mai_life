@@ -123,7 +123,7 @@ class ActiveTaskRegistry:
             return replace(item) if item else None
 
     async def note_inbound(self, session_id: str, now: float) -> ActivePluginTask | None:
-        """End attribution before a real inbound message starts a new conversation turn."""
+        """真实入站消息开始新轮次前，结束该会话旧主动任务的运行时归因。"""
         if not session_id:
             return None
         async with self._lock:
@@ -145,6 +145,7 @@ class ActiveTaskRegistry:
         record: Mapping[str, Any],
         now: float,
     ) -> ActivePluginTask | None:
+        """只激活能与持久层候选精确对应的 Host 任务，并恢复短期已发送墓碑。"""
         if not session_id or marker.plugin_id != PLUGIN_ID or not marker.task_id.startswith(HOST_TASK_PREFIX):
             return None
         created_at = float(record.get("created_at") or 0)
@@ -173,7 +174,7 @@ class ActiveTaskRegistry:
                 existing.sent = existing.sent or status == "sent"
                 existing.retain_until = max(existing.retain_until, retain_until)
                 return replace(existing)
-            # An inbound message supersedes every older pending task still present in Planner history.
+            # 新入站消息会使 Planner 历史里更早的 pending 任务失效，禁止旧任务重新获得发送权。
             if created_at <= self._last_inbound_at.get(session_id, 0.0):
                 return None
             item = ActivePluginTask(
@@ -217,7 +218,7 @@ class ActiveTaskRegistry:
             item.reply_reserved = False
 
     async def reserve_send(self, session_id: str, task_id: str, anchor: str, now: float) -> bool:
-        """Allow all segments of one accepted Replyer result, but only one direct tool send."""
+        """允许同一 Replyer 结果的正常分段，但无 Replyer 锚点的直接发送只能占用一次。"""
         async with self._lock:
             self._prune_locked(now)
             item = self._active.get(session_id)
@@ -241,6 +242,7 @@ class ActiveTaskRegistry:
         sent: bool,
         now: float,
     ) -> ActivePluginTask | None:
+        """提交平台发送结果；失败释放本次预留，成功则保留墓碑阻止后续重复回复。"""
         async with self._lock:
             self._prune_locked(now)
             item = self._active.get(session_id)

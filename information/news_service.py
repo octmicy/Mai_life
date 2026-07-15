@@ -24,6 +24,7 @@ class NewsService:
         return start.timestamp(),(start+timedelta(days=1)).timestamp()
 
     async def refresh_due(self,now:Any,schedule:dict[str,Any])->int:
+        """在允许的空闲日程轮换兴趣词，执行一次逻辑新闻搜索并保存去重结果。"""
         cfg=self.config.news
         if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return 0
         current=schedule.get("current") or {}
@@ -58,6 +59,7 @@ class NewsService:
         return changed
 
     async def _read_articles(self,results:list[SearchResult])->dict[int,str]:
+        """并发读取最多三篇公网正文；任一页面失败只降级为搜索摘要。"""
         limit=min(len(results),int(self.config.news.full_text_count),3)
         if limit<=0:return {}
         semaphore=asyncio.Semaphore(int(self.config.news.max_concurrency))

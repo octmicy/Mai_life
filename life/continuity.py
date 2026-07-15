@@ -13,6 +13,7 @@ class ContinuityService:
     def update_config(self,config:Any)->None:self.config=config
 
     async def refresh(self,user_id:str,current_intent:str)->None:
+        """限频整理未完话题；模型不可用时保留旧话题并只更新本地意图。"""
         if not self.config.context.continuity_enabled:return
         now=time.time(); interval=int(self.config.context.continuity_interval_minutes)*60
         if now-self._last_runs.get(user_id,0)<interval:return

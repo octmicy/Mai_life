@@ -34,6 +34,7 @@ class CreationService:
             return await self._tick_locked(now,personality,state,schedule,force=force)
 
     async def _tick_locked(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],*,force:bool=False)->dict[str,Any]:
+        """在锁内完成硬过滤、每日额度检查和灵感抢占，保证单实例不会重复创作。"""
         cfg=self.config.creation
         if not cfg.enabled:return {"status":"disabled"}
         if not cfg.plaintext_storage_acknowledged:return {"status":"plaintext_not_acknowledged"}
@@ -48,6 +49,7 @@ class CreationService:
         await self.inspirations.collect(now)
         pending=await self.store.pending_creation_inspirations(now.timestamp(),10)
         if not pending:return {"status":"no_inspiration"}
+        # claim 是数据库条件更新；即使其他入口并发巡检，也只有一个任务能取得该灵感。
         inspiration=pending[0]
         if not await self.store.claim_creation_inspiration(str(inspiration["id"])):
             return {"status":"inspiration_already_claimed"}
@@ -69,11 +71,13 @@ class CreationService:
 
     async def _create(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],
                       inspiration:dict[str,Any])->dict[str,Any]:
+        """依次持久化提纲、草稿、审校和终稿，并在取消或异常时留下可恢复状态。"""
         work_type=self._work_type(str(inspiration["id"])); label=_WORK_TYPES[work_type]
         document_id="work-"+uuid.uuid4().hex[:20]; run_id="run-"+uuid.uuid4().hex[:20]
         fallback_outline={"title":f"一则未命名的{label}","premise":"从最近生活留下的一点感觉出发",
                           "sections":["起点","变化","余韵"],"privacy":"private" if inspiration["privacy_ceiling"]=="private" else "public"}
         outline=await self._outline(personality,state,schedule,inspiration,work_type,fallback_outline)
+        # 模型只能收紧隐私级别，不能把私人灵感提升为公开作品。
         privacy="private"
         if inspiration["privacy_ceiling"]=="public" and self.config.creation.public_works_enabled and outline.get("privacy")=="public":
             privacy="public"
@@ -87,6 +91,7 @@ class CreationService:
             await self.store.mark_creation_inspiration(str(inspiration["id"]),"failed")
             return {"status":"document_conflict"}
         await self.store.start_creation_run(run_id,str(inspiration["id"]),document_id,now.timestamp())
+        # 每个阶段先写入不可变修订，再推进文档状态，便于定位中断发生在哪一步。
         try:
             await self.store.add_bookshelf_revision(document_id,"outline",json.dumps(outline,ensure_ascii=False),
                                                      self.llm.task_for("creation_outline"),now.timestamp(),status="outline")

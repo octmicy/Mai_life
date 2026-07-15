@@ -87,7 +87,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.7.1")
+        self.assertEqual(manifest["version"],"1.7.2")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -95,8 +95,8 @@ class CommandCatalogTests(unittest.TestCase):
         renderer=MaiLifeMenuRenderer()
         if not renderer.available or not renderer.regular_font_path:
             self.skipTest("当前环境没有 Pillow 或可用中文字体")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.1")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.1")
+        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.2")
+        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.2")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:

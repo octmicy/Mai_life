@@ -230,7 +230,7 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result),3); self.assertEqual(result[2],2)
         self.assertIn("不会保存你撤回的内容",self.ctx.send.messages[-1]["text"])
         await plugin.cmd_recalled(user_id="1",stream_id="group-100",group_id="100")
-        self.assertIn("仅对已配置的私聊用户开放",self.ctx.send.messages[-1]["text"])
+        self.assertIn("私聊用户或私聊管理员",self.ctx.send.messages[-1]["text"])
 
     async def test_one_switch_handles_private_and_group_notices(self):
         await self.store.sync_users([UserProfile(user_id="1")])

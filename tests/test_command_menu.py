@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from Mai_life.config import MaiLifeSettings
 from Mai_life.messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
 from Mai_life.messaging.command_reply import CommandReplyService
 from Mai_life.messaging.menu_renderer import MaiLifeMenuRenderer
@@ -126,7 +127,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.8.0")
+        self.assertEqual(manifest["version"],"1.8.1")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -134,8 +135,8 @@ class CommandCatalogTests(unittest.TestCase):
         renderer=MaiLifeMenuRenderer()
         if not renderer.available or not renderer.regular_font_path:
             self.skipTest("当前环境没有 Pillow 或可用中文字体")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.0")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.0")
+        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.1")
+        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.1")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:
@@ -187,6 +188,32 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result,(True,"命令菜单图片已发送",2))
         self.assertEqual(len(ctx.send.images),1); self.assertEqual(ctx.send.texts,[])
         self.assertEqual(base64.b64decode(ctx.send.images[0][0]),b"menu-png")
+
+    async def test_admin_without_user_profile_can_use_private_management_commands(self):
+        config=MaiLifeSettings.model_validate({"plugin":{"admin_user_ids":["90001"]}})
+        ctx=DummyContext(image_result=False); plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin.set_plugin_config(config.model_dump(mode="python"))
+        plugin._store=DummyStore(); plugin._menu_renderer=EmptyRenderer()
+        common={"user_id":"90001","group_id":"","stream_id":"admin-private","platform":"qq"}
+
+        menu=await plugin.cmd_menu(**common,matched_groups={})
+        admin=await plugin.cmd_admin(**common,matched_groups={"scope":"概览"})
+        relation=await plugin.cmd_relation(**common)
+
+        self.assertTrue(menu[0]); self.assertTrue(admin[0]); self.assertTrue(relation[0])
+        self.assertIn("麦麦生活 · 指令中心",ctx.send.texts[0]["text"])
+        self.assertEqual(ctx.send.texts[1]["text"],"管理服务尚未初始化。")
+        self.assertIn("管理员身份已生效",ctx.send.texts[2]["text"])
+        self.assertNotIn("私聊用户或私聊管理员",ctx.send.texts[2]["text"])
+
+        await plugin.cmd_menu(
+            user_id="90001",group_id="12345",stream_id="group-stream",platform="qq",matched_groups={},
+        )
+        await plugin.cmd_menu(
+            user_id="80001",group_id="",stream_id="other-private",platform="qq",matched_groups={},
+        )
+        self.assertIn("私聊用户或私聊管理员",ctx.send.texts[-2]["text"])
+        self.assertIn("私聊用户或私聊管理员",ctx.send.texts[-1]["text"])
 
 
 if __name__=="__main__":unittest.main()

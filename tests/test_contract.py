@@ -13,7 +13,7 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.8.0")
+        self.assertEqual(config.plugin.config_version,"1.8.1")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
@@ -112,7 +112,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.8.0")
+        self.assertEqual(config.plugin.config_version,"1.8.1")
         self.assertTrue(config.debounce.enabled)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):

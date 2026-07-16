@@ -259,7 +259,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
             matched_groups={"event_date":"2026-08-01","event_name":"不应写入"},
         )
         self.assertEqual(len(result),3); self.assertEqual(await self.store.list_important_dates("10001"),[])
-        self.assertIn("仅对已配置的私聊用户",context.send.calls[0]["text"])
+        self.assertIn("私聊用户或私聊管理员",context.send.calls[0]["text"])
 
 
 if __name__=="__main__":unittest.main()

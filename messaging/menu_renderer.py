@@ -160,7 +160,7 @@ class MaiLifeMenuRenderer:
             if index<len(section.items)-1:
                 draw.line((x1+24,y-6,x2-24,y-6),fill=self._PALETTE["line"],width=1)
 
-    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.8.0",notice:str="")->bytes:
+    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.8.1",notice:str="")->bytes:
         """测量双栏布局并生成 PNG；任何 Pillow/字体异常都返回空字节触发文本降级。"""
         if not self.available:return b""
         clean_notice=" ".join(str(notice or "").replace("\x00","").split())[:120]
@@ -214,7 +214,7 @@ class MaiLifeMenuRenderer:
             footer_y=height-74
             draw.line((margin,footer_y-12,self.WIDTH-margin,footer_y-12),fill="#D6DDEF",width=1)
             draw.text((margin,footer_y),"MAI LIFE  /  COMMAND INDEX",font=fonts["footer"],fill=self._PALETTE["body"])
-            footer="仅配置私聊用户可用"
+            footer="私聊用户与管理员可用"
             footer_width=self._text_width(fonts["footer"],footer)
             draw.text((self.WIDTH-margin-footer_width,footer_y),footer,font=fonts["footer"],fill=self._PALETTE["muted"])
             buffer=io.BytesIO(); image.convert("RGB").save(buffer,format="PNG",optimize=True)

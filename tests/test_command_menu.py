@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import unittest
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,33 @@ from typing import Any
 from Mai_life.messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
 from Mai_life.messaging.command_reply import CommandReplyService
 from Mai_life.messaging.menu_renderer import MaiLifeMenuRenderer
-from Mai_life.plugin import MaiLifePlugin
+from Mai_life.plugin import ADMIN_SCOPE_ALIASES,MaiLifePlugin
+
+
+COMMAND_CASES:dict[str,tuple[str,str]]={
+    "/麦麦":("/麦麦","/mai"),
+    "/麦麦状态":("/麦麦状态","/mai_status"),
+    "/麦麦日程":("/麦麦日程","/mai_schedule"),
+    "/麦麦关系":("/麦麦关系","/mai_relation"),
+    "/麦麦撤回":("/麦麦撤回","/mai_recalled"),
+    "/麦麦日记":("/麦麦日记","/mai_diary"),
+    "/麦麦日期":("/麦麦日期","/mai_dates"),
+    "/麦麦添加日期":("/麦麦添加日期 2026-08-01 生日","/mai_date_add 2026-08-01 生日"),
+    "/麦麦删除日期":("/麦麦删除日期 1","/mai_date_remove 1"),
+    "/麦麦确认日期":("/麦麦确认日期 1 2026-08-01","/mai_date_confirm 1 2026-08-01"),
+    "/麦麦新闻":("/麦麦新闻","/mai_news"),
+    "/麦麦探索":("/麦麦探索","/mai_explore"),
+    "/麦麦书柜":("/麦麦书柜","/mai_bookshelf"),
+    "/麦麦阅读":("/麦麦阅读 doc-1","/mai_read doc-1"),
+    "/麦麦立即创作":("/麦麦立即创作","/mai_create_now"),
+    "/麦麦转述":("/麦麦转述 123456 测试内容","/mai_relay 123456 测试内容"),
+    "/麦麦统计":("/麦麦统计","/mai_tokens"),
+    "/麦麦管理":("/麦麦管理 来源","/mai_admin sources"),
+    "/麦麦配置":("/麦麦配置","/mai_config"),
+    "/麦麦帮助":("/麦麦帮助","/mai_help"),
+    "/麦麦重生日程":("/麦麦重生日程","/mai_regenerate_schedule"),
+    "/麦麦休息测试":("/麦麦休息测试","/mai_rest_test"),
+}
 
 
 class DummyLogger:
@@ -80,14 +107,26 @@ class CommandCatalogTests(unittest.TestCase):
         catalog={item.command.split()[0] for section in COMMAND_SECTIONS for item in section.items}
         components=MaiLifePlugin().get_components()
         registered={str(item.get("name") or "") for item in components if item.get("type")=="COMMAND"}
-        self.assertEqual(catalog|{"/mai","/mai_help"},registered)
+        self.assertEqual(catalog|{"/麦麦","/麦麦帮助"},registered)
         text=build_command_usage_text()
         for command in catalog:self.assertIn(command,text)
+        self.assertNotIn("/mai",text)
         self.assertNotIn("```",text); self.assertNotIn("**",text); self.assertNotIn("| ---",text)
+
+    def test_chinese_commands_are_public_and_english_forms_remain_compatible(self):
+        components={str(item.get("name") or ""):item for item in MaiLifePlugin().get_components()
+                    if item.get("type")=="COMMAND"}
+        self.assertEqual(set(components),set(COMMAND_CASES))
+        for name,(chinese_sample,legacy_sample) in COMMAND_CASES.items():
+            pattern=str((components[name].get("metadata") or {}).get("command_pattern") or "")
+            self.assertIsNotNone(re.fullmatch(pattern,chinese_sample),name)
+            self.assertIsNotNone(re.fullmatch(pattern,legacy_sample),name)
+        self.assertEqual(ADMIN_SCOPE_ALIASES["群聊"],"groups")
+        self.assertEqual(ADMIN_SCOPE_ALIASES["统计"],"tokens")
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.7.2")
+        self.assertEqual(manifest["version"],"1.8.0")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -95,8 +134,8 @@ class CommandCatalogTests(unittest.TestCase):
         renderer=MaiLifeMenuRenderer()
         if not renderer.available or not renderer.regular_font_path:
             self.skipTest("当前环境没有 Pillow 或可用中文字体")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.2")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.7.2")
+        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.0")
+        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.0")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:

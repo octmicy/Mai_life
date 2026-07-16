@@ -106,9 +106,9 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(item.get("type")=="image" for item in content),2)
 
     def test_forwarded_text_is_not_trusted_as_direct_control_text(self):
-        message={"processed_plain_text":"【合并转发消息】/mai_status 醒醒救命",
+        message={"processed_plain_text":"【合并转发消息】/麦麦状态 醒醒救命",
                  "raw_message":[{"type":"forward","data":[{"content":[
-                     {"type":"text","data":"/mai_status 醒醒救命"},
+                     {"type":"text","data":"/麦麦状态 醒醒救命"},
                  ]}]}]}
         self.assertIn("醒醒",plain_text(message))
         self.assertEqual(direct_text(message),"")

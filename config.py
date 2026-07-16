@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.7.2"
+CONFIG_SCHEMA_VERSION = "1.8.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -288,8 +288,8 @@ class SocialGroupProfile(PluginConfigBase):
     )
     relay_target_enabled: bool = Field(
         default=False, description="是否允许管理员向该群发起显式转述。",
-        json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /mai_relay 群QQ号 内容触发该群 Planner。", 3,
-                              label_en="Allow Relay Target", hint_en="Allow owner/admin /mai_relay triggers for this group."),
+        json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /麦麦转述 群QQ号 内容触发该群 Planner。", 3,
+                              label_en="Allow Relay Target", hint_en="Allow owner/admin to trigger this group's Planner with the Chinese relay command."),
     )
 
     @field_validator("group_id", mode="before")

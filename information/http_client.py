@@ -113,7 +113,7 @@ class HttpClient:
                       headers:dict[str,str],public_only:bool)->HttpResponse:
         """执行一次有大小上限的请求，并将网络/HTTP 失败归一化为不含 Key 的异常。"""
         target=_validate_public_url_sync(url) if public_only else _validated_url(url)
-        request_headers={"User-Agent":"Mai_life/1.8.0 (+https://github.com/octmicy/Mai_life)",
+        request_headers={"User-Agent":"Mai_life/1.8.1 (+https://github.com/octmicy/Mai_life)",
                          "Accept-Encoding":"identity",**headers}
         request=urllib.request.Request(target,data=body,headers=request_headers,method=method)
         context=ssl.create_default_context()

@@ -1,4 +1,4 @@
-"""Mai_life v1.8.0 插件入口。"""
+"""Mai_life v1.8.1 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +41,7 @@ ADMIN_SCOPE_ALIASES:dict[str,str]={
     "概览":"overview","用户":"users","群聊":"groups","日期":"dates",
     "来源":"sources","书柜":"bookshelf","统计":"tokens","主动":"proactive",
 }
+PRIVATE_COMMAND_ACCESS_DENIED="该指令仅对已配置并启用的私聊用户或私聊管理员开放。"
 
 
 class MaiLifePlugin(MaiBotPlugin):
@@ -119,7 +120,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.8.0 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.8.1 加载完成")
 
     async def on_unload(self)->None:
         """先阻止新工作进入，再取消并等待所有任务，最后关闭 SQLite。"""
@@ -1120,9 +1121,24 @@ class MaiLifePlugin(MaiBotPlugin):
         return user if user and user.get("enabled") else {}
 
     async def _command_user(self,kwargs:dict[str,Any])->dict[str,Any]:
-        """命令业务执行前统一确认来源是配置用户的私聊，避免群聊产生隐藏副作用。"""
+        """返回当前私聊的启用用户档案；仅有管理员身份时不会伪造关系档案。"""
         if str(kwargs.get("group_id") or "").strip():return {}
         return await self._configured_command_user(str(kwargs.get("user_id") or ""))
+
+    async def _command_access(self,kwargs:dict[str,Any])->bool:
+        """允许启用用户或显式管理员从私聊执行指令，群聊始终拒绝。"""
+        if str(kwargs.get("group_id") or "").strip():return False
+        user_id=str(kwargs.get("user_id") or "").strip()
+        if not user_id:return False
+        # 管理员是独立权限身份，不应被迫再创建一份私聊关系档案。
+        user=await self._configured_command_user(user_id)
+        return bool(user or self._is_admin(user_id))
+
+    def _profile_required_notice(self,user_id:str)->str:
+        """为依赖个人档案的指令给出明确提示，避免误报管理员未生效。"""
+        if self._is_admin(user_id):
+            return "管理员身份已生效；该指令依赖个人关系或用户记录，请在“私聊用户”中添加当前 QQ 并启用用户档案。"
+        return "该指令仅对已配置并启用用户档案的私聊用户开放。"
 
     def _require_command_replies(self)->CommandReplyService:
         if self._command_replies is None:
@@ -1131,8 +1147,8 @@ class MaiLifePlugin(MaiBotPlugin):
         return self._command_replies
 
     async def _send_command(self,kwargs:dict[str,Any],text:str)->tuple[bool,str,int]:
-        uid=str(kwargs.get("user_id") or ""); user=await self._store.get_user(uid) if self._store and uid else {}
-        if kwargs.get("group_id") or not user or not user.get("enabled"):text="该命令仅对已配置的私聊用户开放。"
+        uid=str(kwargs.get("user_id") or "")
+        if not await self._command_access(kwargs):text=PRIVATE_COMMAND_ACCESS_DENIED
         try:
             ok=await self._require_command_replies().send_text_with_fallback(
                 text,str(kwargs.get("stream_id") or ""),uid,str(kwargs.get("group_id") or ""),
@@ -1145,7 +1161,7 @@ class MaiLifePlugin(MaiBotPlugin):
         """菜单优先发本地 PNG；渲染、能力或适配器失败时自动退回纯文本。"""
         uid=str(kwargs.get("user_id") or ""); stream_id=str(kwargs.get("stream_id") or "")
         platform=str(kwargs.get("platform") or "qq"); text=build_command_usage_text(notice)
-        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.0",notice=notice)
+        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.1",notice=notice)
         if image_bytes:
             try:
                 sent=await self._require_command_replies().send_image_bytes_with_fallback(
@@ -1159,7 +1175,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @Command(name="/麦麦",pattern=r"^(?:/麦麦|/mai)(?:\s+(?P<content>[\s\S]+))?$",description="查看麦麦生活指令菜单")
     async def cmd_menu(self,**kwargs:Any)->tuple[bool,str,int]:
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         payload=" ".join(str(groups.get("content") or "").replace("\x00","").split())
         if not payload or payload.casefold() in {"help","?","？","帮助"}:
@@ -1170,27 +1186,29 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @Command(name="/麦麦状态",pattern=r"^(?:/麦麦状态|/mai_status)(?=\s|$)",description="查看麦麦生活与消息管线状态")
     async def cmd_status(self,**kwargs:Any)->tuple[bool,str,int]:
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command(kwargs,await self._status_report())
 
     @Command(name="/麦麦日程",pattern=r"^(?:/麦麦日程|/mai_schedule)(?=\s|$)",description="查看今日框架与当前场景")
     async def cmd_schedule(self,**kwargs:Any)->tuple[bool,str,int]:
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command(kwargs,await self._schedule_report())
 
     @Command(name="/麦麦关系",pattern=r"^(?:/麦麦关系|/mai_relation)(?=\s|$)",description="查看当前用户关系")
     async def cmd_relation(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
         user=await self._command_user(kwargs)
-        if not user:return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not user:return await self._send_command(kwargs,self._profile_required_notice(uid))
         text=(f"关系角色：{user.get('role','friend')}\n关系温度：{float(user['temperature']):.1f}/100\n"
               f"关系阶段：{relationship_stage(float(user['temperature']))}\n每日主动上限：{user.get('daily_proactive_max',1)}")
         return await self._send_command(kwargs,text)
 
     @Command(name="/麦麦撤回",pattern=r"^(?:/麦麦撤回|/mai_recalled)(?=\s|$)",description="查询本人私聊的最近撤回摘要")
     async def cmd_recalled(self,**kwargs:Any)->tuple[bool,str,int]:
+        uid=str(kwargs.get("user_id") or "")
         user=await self._command_user(kwargs)
-        if not user or not self._recall:
-            return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not user:return await self._send_command(kwargs,self._profile_required_notice(uid))
+        if not self._recall:return await self._send_command(kwargs,"撤回服务尚未初始化。")
         session=str(kwargs.get("stream_id") or user.get("stream_id") or "")
         context=await self._recall.query_context(session,str(user.get("user_id") or ""))
         return await self._send_command(kwargs,self._recall.format_query_result(context))
@@ -1198,7 +1216,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦日记",pattern=r"^(?:/麦麦日记|/mai_diary)(?=\s|$)",description="主人或管理员查看最近生活日记")
     async def cmd_diary(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看私人日记。")
         entries=await self._store.list_diaries(3) if self._store else []
         if not entries:return await self._send_command(kwargs,"还没有生成生活日记。")
@@ -1209,7 +1227,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦日期",pattern=r"^(?:/麦麦日期|/mai_dates)(?=\s|$)",description="查看当前用户的重要日期和待确认项")
     async def cmd_dates(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         dates=await self._store.list_important_dates(uid) if self._store else []
         candidates=await self._store.list_date_candidates(uid) if self._store else []
         lines=["你的重要日期"]
@@ -1223,7 +1241,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦添加日期",pattern=r"^(?:/麦麦添加日期|/mai_date_add)\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
     async def cmd_date_add(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         raw_date=str(groups.get("event_date") or ""); name=str(groups.get("event_name") or "").strip()[:120]
         try:parsed=date.fromisoformat(raw_date)
         except ValueError:return await self._send_command(kwargs,"日期格式无效，请使用 YYYY-MM-DD。")
@@ -1234,14 +1252,14 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦删除日期",pattern=r"^(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
     async def cmd_date_remove(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         removed=await self._store.remove_important_date(int(groups.get("date_id") or 0),uid) if self._store else False
         return await self._send_command(kwargs,"已删除该日期。" if removed else "没有找到属于你的该日期。")
 
     @Command(name="/麦麦确认日期",pattern=r"^(?:/麦麦确认日期|/mai_date_confirm)\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
     async def cmd_date_confirm(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         candidate_id=int(groups.get("candidate_id") or 0); candidates=await self._store.list_date_candidates(uid) if self._store else []
         candidate=next((item for item in candidates if int(item["id"])==candidate_id),None)
         raw_date=str(groups.get("event_date") or (candidate or {}).get("suggested_date") or "")
@@ -1253,7 +1271,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦新闻",pattern=r"^(?:/麦麦新闻|/mai_news)(?=\s|$)",description="主人或管理员查看近期新闻见闻")
     async def cmd_news(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看完整新闻见闻。")
         items=await self._store.recent_news_items(self._env.now().timestamp(),5) if self._store and self._env else []
         if not items:return await self._send_command(kwargs,"近期没有读取到新闻见闻，或新闻功能尚未启用。")
@@ -1263,7 +1281,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦探索",pattern=r"^(?:/麦麦探索|/mai_explore)(?=\s|$)",description="主人或管理员查看主动搜索笔记")
     async def cmd_explore(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         if not await self._is_owner_or_admin(uid):return await self._send_command(kwargs,"只有主人或管理员可以查看完整探索笔记。")
         notes=await self._store.recent_exploration_notes(self._env.now().timestamp(),5) if self._store and self._env else []
         if not notes:return await self._send_command(kwargs,"近期没有主动搜索笔记，或搜索功能尚未启用。")
@@ -1273,8 +1291,11 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦书柜",pattern=r"^(?:/麦麦书柜|/mai_bookshelf)(?=\s|$)",description="查看当前关系有权访问的书柜")
     async def cmd_bookshelf(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); user=await self._command_user(kwargs)
-        if not user or not self._bookshelf:return await self._send_command(kwargs,"书柜尚未初始化。")
-        rows=await self._bookshelf.list_for_user(user,20,is_admin=self._is_admin(uid))
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
+        if not self._bookshelf:return await self._send_command(kwargs,"书柜尚未初始化。")
+        # 管理员无需关系档案即可管理书柜；空档案不会被误判为主人关系。
+        viewer=user or {"user_id":uid,"enabled":True,"role":"admin"}
+        rows=await self._bookshelf.list_for_user(viewer,20,is_admin=self._is_admin(uid))
         if not rows:return await self._send_command(kwargs,"当前关系可见的书柜还是空的。")
         lines=["麦麦书柜"]
         for item in rows:
@@ -1287,7 +1308,9 @@ class MaiLifePlugin(MaiBotPlugin):
         uid=str(kwargs.get("user_id") or ""); user=await self._command_user(kwargs)
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         document_id=str(groups.get("document_id") or "")
-        item=await self._bookshelf.read_for_user(document_id,user,is_admin=self._is_admin(uid)) if self._bookshelf and user else {}
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
+        viewer=user or {"user_id":uid,"enabled":True,"role":"admin"}
+        item=await self._bookshelf.read_for_user(document_id,viewer,is_admin=self._is_admin(uid)) if self._bookshelf else {}
         if not item:return await self._send_command(kwargs,"没有找到该文本，或当前关系无权读取。")
         text=f"{item['title']}｜{item['privacy']}\n\n{str(item.get('content') or '')[:12000]}"
         return await self._send_command(kwargs,text)
@@ -1295,8 +1318,8 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦立即创作",pattern=r"^(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
     async def cmd_create_now(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有已配置的私聊管理员可以手动执行创作判断。")
+        if not await self._command_access(kwargs) or not self._is_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以手动执行创作判断。")
         if not self._creation or not self._env or not self._store or not self._schedule:
             return await self._send_command(kwargs,"创作服务尚未初始化。")
         now=self._env.now(); result=await self._creation.tick(
@@ -1307,8 +1330,8 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦转述",pattern=r"^(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
     async def cmd_relay(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not await self._is_owner_or_admin(uid):
-            return await self._send_command(kwargs,"该命令只允许已配置的主人或管理员在私聊中使用。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"该指令只允许主人或管理员在私聊中使用。")
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         group_id=str(groups.get("group_id") or "").strip(); content=str(groups.get("relay_content") or "").strip()
         result=await self._relay.trigger_explicit(group_id,content) if self._relay else {
@@ -1319,15 +1342,15 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦统计",pattern=r"^(?:/麦麦统计|/mai_tokens)(?=\s|$)",description="管理员查看今日插件 Token 统计")
     async def cmd_tokens(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有已配置的私聊管理员可以查看 Token 统计。")
+        if not await self._command_access(kwargs) or not self._is_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看 Token 统计。")
         return await self._send_command(kwargs,await self._token_report())
 
     @Command(name="/麦麦管理",pattern=r"^(?:/麦麦管理|/mai_admin)(?:\s+(?P<scope>概览|用户|群聊|日期|来源|书柜|统计|主动|overview|users|groups|dates|sources|bookshelf|tokens|proactive))?\s*$",description="管理员查看聚合管理摘要")
     async def cmd_admin(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有已配置的私聊管理员可以查看管理摘要。")
+        if not await self._command_access(kwargs) or not self._is_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看管理摘要。")
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         # 菜单只展示中文范围，旧英文范围仍在这里归一化后兼容处理。
         raw_scope=str(groups.get("scope") or "概览").strip()
@@ -1337,7 +1360,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @Command(name="/麦麦配置",pattern=r"^(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦麦生活配置摘要")
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n配置用户：{len(self.config.users.profiles)}\n"
               f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
@@ -1350,14 +1373,14 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @Command(name="/麦麦帮助",pattern=r"^(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦麦生活指令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
-        if not await self._command_user(kwargs):return await self._send_command(kwargs,"该命令仅对已配置的私聊用户开放。")
+        if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command_menu(kwargs)
 
     @Command(name="/麦麦重生日程",pattern=r"^(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有已配置的私聊管理员可以重新生成日程。")
+        if not await self._command_access(kwargs) or not self._is_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以重新生成日程。")
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
         assert self._env and self._schedule and self._memory and self._store
         now=self._env.now(); weather=await self._store.get_weather() or {"description":"天气未知"}
@@ -1368,8 +1391,8 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦休息测试",pattern=r"^(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
     async def cmd_rest_test(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_user(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有已配置的私聊管理员可以查看休息闸门诊断。")
+        if not await self._command_access(kwargs) or not self._is_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看休息闸门诊断。")
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
         assert self._env and self._schedule and self._store
         now=self._env.now(); context=await self._schedule.context(now); runtime=await self._store.get_sleep_runtime()
@@ -1387,7 +1410,7 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v1.8.0\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        return (f"麦麦生活 v1.8.1\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
@@ -1485,7 +1508,7 @@ class MaiLifePlugin(MaiBotPlugin):
         name="mai_life_management",title="麦麦生活管理",
         description="配置生活、社交、联网与书柜模块；敏感明细请使用管理员命令。",
         content=[
-            {"type":"key_value","entries":{"版本":"1.8.0","管理指令":"/麦麦管理","私密 API":"不公开"}},
+            {"type":"key_value","entries":{"版本":"1.8.1","管理指令":"/麦麦管理","私密 API":"不公开"}},
             {"type":"list","items":["用户角色与主动额度","QQ群与日期候选","联网服务、书柜与 Token 聚合"]},
         ],
         link_url="/plugin-config?plugin=maibot-community.mai-life",link_label="打开麦麦生活配置",

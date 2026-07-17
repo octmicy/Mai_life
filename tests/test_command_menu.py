@@ -11,6 +11,7 @@ from typing import Any
 from Mai_life.config import MaiLifeSettings
 from Mai_life.messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
 from Mai_life.messaging.command_reply import CommandReplyService
+from Mai_life.messaging.command_result_renderer import MaiLifeCommandResultRenderer,RenderedCommandPage
 from Mai_life.messaging.menu_renderer import MaiLifeMenuRenderer
 from Mai_life.plugin import ADMIN_SCOPE_ALIASES,MaiLifePlugin
 
@@ -71,19 +72,21 @@ class DummyChat:
 
 
 class DummySend:
-    def __init__(self,image_result:bool=True)->None:
-        self.image_result=image_result; self.images:list[tuple[str,str]]=[]; self.texts:list[dict[str,str]]=[]
+    def __init__(self,image_result:bool=True,image_results:list[bool]|None=None)->None:
+        self.image_result=image_result; self.image_results=list(image_results or [])
+        self.images:list[tuple[str,str]]=[]; self.texts:list[dict[str,str]]=[]
 
     async def image(self,image_data:str,stream_id:str)->bool:
-        self.images.append((image_data,stream_id)); return self.image_result
+        self.images.append((image_data,stream_id))
+        return self.image_results.pop(0) if self.image_results else self.image_result
 
     async def text(self,**kwargs:str)->bool:
         self.texts.append(dict(kwargs)); return True
 
 
 class DummyContext:
-    def __init__(self,image_result:bool=True)->None:
-        self.logger=DummyLogger(); self.chat=DummyChat(); self.send=DummySend(image_result)
+    def __init__(self,image_result:bool=True,image_results:list[bool]|None=None)->None:
+        self.logger=DummyLogger(); self.chat=DummyChat(); self.send=DummySend(image_result,image_results)
 
 
 class DummyStore:
@@ -101,6 +104,21 @@ class StaticRenderer:
     def render(self,*args:Any,**kwargs:Any)->bytes:
         del args,kwargs
         return b"menu-png"
+
+
+class EmptyResultRenderer:
+    def render(self,*args:Any,**kwargs:Any)->tuple[RenderedCommandPage,...]:
+        del args,kwargs
+        return ()
+
+
+class StaticResultRenderer:
+    def __init__(self,page_count:int=1)->None:self.page_count=page_count
+
+    def render(self,text:str,**kwargs:Any)->tuple[RenderedCommandPage,...]:
+        del kwargs
+        return tuple(RenderedCommandPage(f"result-{index}".encode(),f"{text}｜第 {index + 1} 页")
+                     for index in range(self.page_count))
 
 
 class CommandCatalogTests(unittest.TestCase):
@@ -127,7 +145,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.8.1")
+        self.assertEqual(manifest["version"],"1.9.0")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -135,8 +153,13 @@ class CommandCatalogTests(unittest.TestCase):
         renderer=MaiLifeMenuRenderer()
         if not renderer.available or not renderer.regular_font_path:
             self.skipTest("当前环境没有 Pillow 或可用中文字体")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.1")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.8.1")
+        bundled_font=Path(__file__).parents[1]/"assets"/"font.ttf"
+        system_youyuan=Path("C:/Windows/Fonts/SIMYOU.TTF")
+        if system_youyuan.is_file() and not bundled_font.is_file():
+            self.assertEqual(Path(renderer.regular_font_path).name.casefold(),"simyou.ttf")
+            self.assertEqual(Path(renderer.bold_font_path).name.casefold(),"simyou.ttf")
+        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.0")
+        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.0")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:
@@ -144,6 +167,20 @@ class CommandCatalogTests(unittest.TestCase):
             self.assertGreaterEqual(image.height,900)
             extrema=image.convert("RGB").resize((64,64)).getextrema()
             self.assertTrue(all(high-low>20 for low,high in extrema))
+
+    def test_result_renderer_paginates_long_text_and_caches_png_pages(self):
+        renderer=MaiLifeCommandResultRenderer()
+        if not renderer.available or not renderer.regular_font_path:
+            self.skipTest("当前环境没有 Pillow 或可用中文字体")
+        text="\n".join(f"第 {index + 1} 行｜"+("较长的状态说明"*10) for index in range(50))
+        first=renderer.render(text); second=renderer.render(text)
+        self.assertIs(first,second); self.assertGreater(len(first),1)
+        for page in first:
+            self.assertGreater(len(page.image_bytes),10_000); self.assertTrue(page.plain_text)
+            from PIL import Image
+            with Image.open(io.BytesIO(page.image_bytes)) as image:
+                self.assertEqual(image.format,"PNG"); self.assertEqual(image.width,renderer.WIDTH)
+                self.assertGreaterEqual(image.height,650)
 
 
 class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
@@ -167,7 +204,7 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_menu_commands_return_sdk_triples_and_text_fallback(self):
         ctx=DummyContext(image_result=False); plugin=MaiLifePlugin(); plugin._set_context(ctx)
-        plugin._store=DummyStore(); plugin._menu_renderer=EmptyRenderer()
+        plugin._store=DummyStore(); plugin._menu_renderer=EmptyRenderer(); plugin._result_renderer=EmptyResultRenderer()
         common={"user_id":"10001","group_id":"","stream_id":"stale","platform":"qq"}
         menu=await plugin.cmd_menu(**common,matched_groups={})
         help_result=await plugin.cmd_help(**common)
@@ -193,7 +230,7 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
         config=MaiLifeSettings.model_validate({"plugin":{"admin_user_ids":["90001"]}})
         ctx=DummyContext(image_result=False); plugin=MaiLifePlugin(); plugin._set_context(ctx)
         plugin.set_plugin_config(config.model_dump(mode="python"))
-        plugin._store=DummyStore(); plugin._menu_renderer=EmptyRenderer()
+        plugin._store=DummyStore(); plugin._menu_renderer=EmptyRenderer(); plugin._result_renderer=EmptyResultRenderer()
         common={"user_id":"90001","group_id":"","stream_id":"admin-private","platform":"qq"}
 
         menu=await plugin.cmd_menu(**common,matched_groups={})
@@ -214,6 +251,37 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("私聊用户或私聊管理员",ctx.send.texts[-2]["text"])
         self.assertIn("私聊用户或私聊管理员",ctx.send.texts[-1]["text"])
+
+    async def test_regular_command_output_prefers_rendered_images(self):
+        ctx=DummyContext(); plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin._store=DummyStore(); plugin._result_renderer=StaticResultRenderer(page_count=2)
+        result=await plugin.cmd_status(
+            user_id="10001",group_id="",stream_id="stale",platform="qq",
+        )
+        self.assertEqual(result,(True,"指令结果图片已发送（2 页）",2))
+        self.assertEqual([base64.b64decode(item[0]) for item in ctx.send.images],[b"result-0",b"result-1"])
+        self.assertEqual(ctx.send.texts,[])
+
+    async def test_result_image_failure_falls_back_to_original_text(self):
+        ctx=DummyContext(image_result=False); plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin._store=DummyStore(); plugin._result_renderer=StaticResultRenderer()
+        result=await plugin.cmd_status(
+            user_id="10001",group_id="",stream_id="stale",platform="qq",
+        )
+        self.assertEqual(result,(True,"指令结果已发送（文本降级）",2))
+        self.assertIn("麦麦生活尚未初始化",ctx.send.texts[-1]["text"])
+
+    async def test_partial_page_failure_only_falls_back_to_remaining_text(self):
+        # 第一页成功；第二页的实时 stream 与原始 stream 两次图片发送均失败。
+        ctx=DummyContext(image_result=False,image_results=[True,False,False])
+        plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin._store=DummyStore(); plugin._result_renderer=StaticResultRenderer(page_count=2)
+        result=await plugin.cmd_status(
+            user_id="10001",group_id="",stream_id="stale",platform="qq",
+        )
+        self.assertEqual(result,(True,"指令结果已发送（后续页面降级为文本）",2))
+        self.assertIn("第 2 页",ctx.send.texts[-1]["text"])
+        self.assertNotIn("第 1 页",ctx.send.texts[-1]["text"])
 
 
 if __name__=="__main__":unittest.main()

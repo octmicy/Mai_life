@@ -13,13 +13,14 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.8.1")
+        self.assertEqual(config.plugin.config_version,"1.9.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
         self.assertTrue(config.debounce.enabled)
         self.assertTrue(config.recall.enabled)
         self.assertFalse(config.recall.cache_summary_enabled)
+        self.assertTrue(config.search_api.tool_enabled)
         self.assertEqual(config.context.prompt_max_chars,4000)
         self.assertEqual(config.models.scene_detail_task,"")
         self.assertEqual(config.models.vision_task,"vlm")
@@ -53,7 +54,7 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/麦麦","/麦麦帮助","/麦麦状态","/麦麦日程","/麦麦关系","/麦麦撤回","/麦麦日记","/麦麦日期","/麦麦新闻","/麦麦探索","/麦麦转述","/麦麦书柜","/麦麦阅读","/麦麦立即创作","/麦麦管理","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
+        for expected in {"/麦麦","/麦麦帮助","/麦麦状态","/麦麦日程","/麦麦关系","/麦麦撤回","/麦麦日记","/麦麦日期","/麦麦新闻","/麦麦探索","/麦麦转述","/麦麦书柜","/麦麦阅读","/麦麦立即创作","/麦麦管理","mai_life_web_search","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
             self.assertIn(expected,names)
         self.assertFalse(any(name.startswith("/mai") for name in names))
         self.assertNotIn("/麦麦技能",names)
@@ -62,6 +63,10 @@ class ContractTests(unittest.TestCase):
         self.assertIn("maisaka.replyer.after_response",hooks)
         self.assertIn("send_service.after_send",hooks)
         self.assertIn("send_service.before_send",hooks)
+        search_tool=next(item for item in components if item.get("name")=="mai_life_web_search")
+        self.assertEqual(search_tool.get("type"),"TOOL")
+        tool_parameters=(search_tool.get("metadata") or {}).get("parameters") or []
+        self.assertEqual({item.get("name") for item in tool_parameters},{"query","result_limit","freshness"})
         self.assertGreaterEqual(len(components),20)
         private_api=next(item for item in components if item.get("name")=="admin_snapshot")
         self.assertFalse((private_api.get("metadata") or {}).get("public"))
@@ -112,7 +117,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.8.1")
+        self.assertEqual(config.plugin.config_version,"1.9.0")
         self.assertTrue(config.debounce.enabled)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):

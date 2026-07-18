@@ -1347,11 +1347,16 @@ class LifeStore:
                              (relay_id,status,"after_send",now))
 
     async def set_relay_status(self, relay_id: str, status: str, now: float, detail: str="") -> None:
+        """只从非终态迁移；已 sent/superseded/failed/expired/cancelled 的候选不会被覆盖。"""
         async with self._lock:
             with self._tx() as conn:
-                conn.execute("UPDATE relay_candidates SET status=? WHERE id=?",(status[:24],relay_id))
-                conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
-                             (relay_id,status[:24],detail[:300],now))
+                cursor=conn.execute(
+                    "UPDATE relay_candidates SET status=? WHERE id=? AND status IN ('pending','sending','queued')",
+                    (status[:24],relay_id),
+                )
+                if cursor.rowcount:
+                    conn.execute("INSERT INTO relay_events(relay_id,status,detail,created_at) VALUES(?,?,?,?)",
+                                 (relay_id,status[:24],detail[:300],now))
 
     async def social_share_stats(self, user_id: str, since: float) -> dict[str, Any]:
         async with self._lock:

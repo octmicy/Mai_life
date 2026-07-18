@@ -159,7 +159,7 @@ class InformationService:
 
     @staticmethod
     def _safe_query(value:str,forbidden_terms:list[str]|None=None)->str:
-        text=re.sub(r"https?://\S+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|@\S+|\b\d{5,12}\b"," ",str(value or ""))
+        text=re.sub(r"https?://\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\S+|(?<!\d)\d{5,12}(?!\d)"," ",str(value or ""))
         for term in sorted({str(item).strip() for item in forbidden_terms or [] if len(str(item).strip())>=2},key=len,reverse=True):
             text=re.sub(re.escape(term)," ",text,flags=re.I)
         return " ".join(text.replace("\x00","").split())[:100]

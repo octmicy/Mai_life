@@ -117,6 +117,8 @@ class RelayService:
         # 主动轮优先按 Host task_id 取候选，避免同一群的旧转述污染新任务。
         item=(await self.store.relay_for_task(session_id,host_task_id) if host_task_id
               else await self.store.pending_relay_context(session_id,time.time()))
+        if item and str(item.get("status") or "") not in ("pending","sending"):
+            item={}  # 已 sent/expired 等终态不再注入背景，避免重复提示与泄漏
         if not item:return ""
         return (
             "\n【授权的跨会话转述候选】\n"

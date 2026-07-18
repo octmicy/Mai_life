@@ -297,4 +297,36 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status,"cancelled")
 
 
+class RecallPlannerNeutralizeTests(unittest.TestCase):
+    """撤回循环修复：on_planner 改写最后一条用户消息，避免 Planner 反复 reply 被取消。"""
+
+    def test_neutralize_replaces_only_last_user_message(self):
+        messages=[
+            {"role":"system","content":"系统提示"},
+            {"role":"user","content":"早上好"},
+            {"role":"assistant","content":"早"},
+            {"role":"user","content":"晚上好"},
+        ]
+        result=MaiLifePlugin._neutralize_recalled_latest_user(messages)
+        self.assertEqual(result[-1]["content"],"[该消息已被用户撤回，本轮无需回复，请直接结束思考]")
+        self.assertEqual(result[1]["content"],"早上好")
+        self.assertEqual(result[0]["content"],"系统提示")
+
+    def test_neutralize_no_user_message_returns_unchanged_copy(self):
+        messages=[{"role":"system","content":"s"},{"role":"assistant","content":"a"}]
+        result=MaiLifePlugin._neutralize_recalled_latest_user(messages)
+        self.assertEqual([m["content"] for m in result],["s","a"])
+
+    def test_neutralize_skips_non_str_user_content(self):
+        messages=[{"role":"user","content":[{"type":"text","text":"hi"}]}]
+        result=MaiLifePlugin._neutralize_recalled_latest_user(messages)
+        self.assertEqual(result[0]["content"],[{"type":"text","text":"hi"}])
+
+    def test_neutralize_does_not_mutate_input(self):
+        messages=[{"role":"user","content":"晚上好"}]
+        result=MaiLifePlugin._neutralize_recalled_latest_user(messages)
+        self.assertEqual(messages[0]["content"],"晚上好")
+        self.assertIn("撤回",result[0]["content"])
+
+
 if __name__=="__main__":unittest.main()

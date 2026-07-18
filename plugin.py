@@ -782,6 +782,16 @@ class MaiLifePlugin(MaiBotPlugin):
         result.insert(0,{"role":"system","content":suffix.strip()})
         return result
 
+    @staticmethod
+    def _neutralize_recalled_latest_user(messages:Any)->list[dict[str,Any]]:
+        """把最后一条用户消息改写为撤回提示，让 Planner 不再尝试回复已被撤回的入站消息。"""
+        result=[dict(item) for item in messages if isinstance(item,dict)] if isinstance(messages,list) else []
+        for item in reversed(result):
+            if str(item.get("role") or "").lower()=="user" and isinstance(item.get("content"),str):
+                item["content"]="[该消息已被用户撤回，本轮无需回复，请直接结束思考]"
+                break
+        return result
+
     @HookHandler("maisaka.planner.before_request",mode=HookMode.BLOCKING)
     async def on_planner(self,**kwargs:Any)->dict[str,Any]:
         """识别插件主动任务，并向目标私聊 Planner 追加生活、撤回和转述边界。"""
@@ -802,6 +812,14 @@ class MaiLifePlugin(MaiBotPlugin):
             if runtime.get("recall_query"):
                 user=await self._user_by_session(session)
                 if user:suffix+=await self._recall.query_prompt_context(session,str(user.get("user_id") or ""))
+            # 本轮要回复的入站消息已被撤回：改写最后一条用户消息并要求 Planner 直接结束，
+            # 避免 Replyer 输出被取消后 Host 把空回复当成失败而进入“思考-取消-再思考”循环。
+            latest_mid=str(runtime.get("message_id") or "")
+            latest_recalled=bool(runtime.get("recalled")) or (bool(latest_mid) and await self._is_recalled(session,latest_mid))
+            if latest_recalled and not active and not group_passive:
+                kwargs["messages"]=self._neutralize_recalled_latest_user(kwargs.get("messages"))
+                suffix+=("\n【撤回处理】用户已撤回本轮要回复的最后一条消息。该消息视为不存在，"
+                         "不要调用 reply 或任何发送类工具，直接结束本轮思考即可。\n")
         if active:suffix+=self._active_tasks.planner_instruction(active)
         if active and active.kind=="relay" and self._relay and self.config.social.enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)

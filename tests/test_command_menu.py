@@ -145,7 +145,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.9.0")
+        self.assertEqual(manifest["version"],"1.9.1")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -158,8 +158,8 @@ class CommandCatalogTests(unittest.TestCase):
         if system_youyuan.is_file() and not bundled_font.is_file():
             self.assertEqual(Path(renderer.regular_font_path).name.casefold(),"simyou.ttf")
             self.assertEqual(Path(renderer.bold_font_path).name.casefold(),"simyou.ttf")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.0")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.0")
+        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.1")
+        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.1")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:

@@ -172,7 +172,7 @@ class MaiLifeMenuRenderer:
             if index<len(section.items)-1:
                 draw.line((x1+24,y-6,x2-24,y-6),fill=self._PALETTE["line"],width=1)
 
-    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.9.0",notice:str="")->bytes:
+    def render(self,title:str,sections:Sequence[CommandSection],*,version:str="1.9.1",notice:str="")->bytes:
         """测量双栏布局并生成 PNG；任何 Pillow/字体异常都返回空字节触发文本降级。"""
         if not self.available:return b""
         clean_notice=" ".join(str(notice or "").replace("\x00","").split())[:120]

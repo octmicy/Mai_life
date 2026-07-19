@@ -95,8 +95,10 @@ class VisionService:
         max_bytes=int(self.config.debounce.max_media_bytes)
         if media_bytes(message)>max_bytes:return ""
         types=media_types(message); text=plain_text(message)
+        # 表情包（emoji）同样携带 binary_data_base64，但 MaiBot 原生多模态不会把表情喂给 Replyer，
+        # 因此把 emoji 与 image 一并纳入疑难图片候选。
         direct=[item for item in _walk_components(message.get("raw_message") or [])
-                if component_kind(item)=="image" and _image_bytes(item,max_bytes)]
+                if component_kind(item) in ("image","emoji") and _image_bytes(item,max_bytes)]
         source_type="direct"
         info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
         additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}

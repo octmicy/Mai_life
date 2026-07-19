@@ -66,7 +66,7 @@ def media_types(message: dict[str,Any]) -> list[str]:
         kind=component_kind(item)
         if kind in {"image","voice","video","reply","forward","file","emoji"} and kind not in found:found.append(kind)
         if kind=="text":display_parts.append(component_text(item))
-        if kind=="image":
+        if kind in ("image","emoji"):
             fmt=str(item.get("format") or item.get("image_format") or "").lower()
             data=str(item.get("binary_data_base64") or item.get("base64") or item.get("base64_data") or "")
             if fmt=="gif" or data.startswith("R0lGOD"):

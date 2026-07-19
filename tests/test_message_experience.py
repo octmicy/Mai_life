@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import tempfile
 import time
@@ -26,7 +27,7 @@ class DummyMessageCapability:
 
 
 class DummyContext:
-    def __init__(self):self.message=DummyMessageCapability()
+    def __init__(self):self.message=DummyMessageCapability(); self.logger=DummyLogger()
 
 
 class FakeVisionLLM:
@@ -94,6 +95,69 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plain_text(message),"")
         summary=await service.summarize_if_needed(message)
         self.assertIn("插件代码",summary)
+
+    async def test_qq_emoji_gif_reaches_vlm_planner_and_replyer(self):
+        """使用 Host Hook 的真实字段路径验证二进制，而不是只识别 ``emoji`` 标签。"""
+        try:
+            from PIL import Image
+        except ImportError:self.skipTest("Pillow is optional")
+        import io
+        from types import SimpleNamespace
+
+        first=Image.new("RGB",(4,4),(255,0,0)); last=Image.new("RGB",(4,4),(0,0,255))
+        gif=io.BytesIO()
+        first.save(gif,format="GIF",save_all=True,append_images=[last],duration=80,loop=0)
+
+        config=MaiLifeSettings(); config.debounce.enabled=False
+        config.users.profiles=[UserProfile(user_id="1",enabled=True)]
+        await self.store.sync_users(config.users.profiles)
+        logger=DummyLogger(); llm=FakeVisionLLM(); ctx=DummyContext()
+        vision=VisionService(ctx,self.store,config,llm,logger)
+
+        class FakeRecall:
+            def note_inbound(self,message):del message
+            def source_message_ids(self,message):return [str(message.get("message_id") or "")]
+            async def register_turn(self,message):del message
+            async def is_turn_recalled(self,*args):del args; return False
+            async def planner_context(self,session_id):del session_id; return ""
+
+        plugin=MaiLifePlugin(); plugin._set_context(ctx); plugin.set_plugin_config(config.model_dump(mode="python"))
+        plugin._store=self.store; plugin._env=EnvironmentService(self.store,config,logger)
+        plugin._llm=llm; plugin._state=object(); plugin._schedule=SimpleNamespace(
+            context=AsyncMock(return_value={"current":None,"next":None,"scene":None}))
+        plugin._rest=SimpleNamespace(decide=AsyncMock(return_value=(True,"awake")))
+        plugin._proactive=object(); plugin._debouncer=MessageDebouncer(config,logger)
+        plugin._recall=FakeRecall(); plugin._vision=vision
+        plugin._continuity=SimpleNamespace(refresh=AsyncMock(return_value=None))
+        plugin._memory=SimpleNamespace(observe_message=AsyncMock(return_value=None),
+                                       context_for_user=AsyncMock(return_value={}))
+        plugin._information=SimpleNamespace(context=AsyncMock(return_value={}))
+        plugin._group_observer=object(); plugin._relay=object()
+        plugin._bookshelf=SimpleNamespace(context_for_user=AsyncMock(return_value={}))
+        plugin._creation=object(); plugin._admin=object()
+
+        message={"message_id":"qq-gif","session_id":"s1","platform":"qq",
+                 "processed_plain_text":"[表情包]","message_info":{
+                     "user_info":{"user_id":"1","user_nickname":"测试用户"},
+                     "group_info":{},"additional_config":{"napcat_message_type":"private"}},
+                 "raw_message":[{"type":"emoji","data":"[表情包]","hash":"qq-gif-hash",
+                                 "binary_data_base64":base64.b64encode(gif.getvalue()).decode()}]}
+        received=await plugin.on_receive(hook_name="chat.receive.before_process",message=message)
+        self.assertIn("modified_kwargs",received,received)
+        self.assertIs(received["modified_kwargs"]["message"],message)
+        image_parts=[part for part in llm.last_prompt[-1]["content"] if part.get("type")=="image"]
+        self.assertEqual(len(image_parts),2)
+        self.assertTrue(all(part.get("image_format")=="jpeg" for part in image_parts))
+
+        planner=await plugin.on_planner(
+            session_id="s1",messages=[{"role":"system","content":"base"},{"role":"user","content":"[表情包]"}],
+        )
+        planner_text="\n".join(str(item.get("content") or "")
+                                for item in planner["modified_kwargs"]["messages"])
+        replyer=await plugin.on_replyer(session_id="s1",reply_message_id="qq-gif",extra_prompt="base")
+        self.assertIn("一张桌面截图",planner_text)
+        self.assertIn("一张桌面截图",replyer["modified_kwargs"]["extra_prompt"])
+        await asyncio.sleep(0)
 
     def test_adapter_image_placeholders_use_single_image_wait(self):
         config=MaiLifeSettings(); debouncer=MessageDebouncer(config,DummyLogger())

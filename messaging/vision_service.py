@@ -63,7 +63,11 @@ class VisionService:
             with Image.open(io.BytesIO(data)) as image:
                 count=max(1,int(getattr(image,"n_frames",1)))
                 max_frames=int(self.config.vision.gif_max_frames)
-                indices=sorted({round(index*(count-1)/max(1,max_frames-1)) for index in range(min(count,max_frames))})
+                sample_count=min(count,max_frames)
+                indices=sorted({
+                    round(index*(count-1)/max(1,sample_count-1))
+                    for index in range(sample_count)
+                })
                 for index in indices:
                     image.seek(index); frame=ImageOps.exif_transpose(image.convert("RGBA"))
                     background=Image.new("RGBA",frame.size,(255,255,255,255)); background.alpha_composite(frame)

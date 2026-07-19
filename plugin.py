@@ -1,4 +1,4 @@
-"""Mai_life v1.9.1 插件入口。"""
+"""Mai_life v1.9.2 插件入口。"""
 from __future__ import annotations
 
 import asyncio
@@ -122,7 +122,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.9.1 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.9.2 加载完成")
 
     async def on_unload(self)->None:
         """先阻止新工作进入，再取消并等待所有任务，最后关闭 SQLite。"""
@@ -1230,7 +1230,7 @@ class MaiLifePlugin(MaiBotPlugin):
         """菜单优先发本地 PNG；渲染、能力或适配器失败时自动退回纯文本。"""
         uid=str(kwargs.get("user_id") or ""); stream_id=str(kwargs.get("stream_id") or "")
         platform=str(kwargs.get("platform") or "qq"); text=build_command_usage_text(notice)
-        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.1",notice=notice)
+        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.2",notice=notice)
         if image_bytes:
             try:
                 sent=await self._require_command_replies().send_image_bytes_with_fallback(
@@ -1479,7 +1479,7 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v1.9.1\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        return (f"麦麦生活 v1.9.2\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
@@ -1577,7 +1577,7 @@ class MaiLifePlugin(MaiBotPlugin):
         name="mai_life_management",title="麦麦生活管理",
         description="配置生活、社交、联网与书柜模块；敏感明细请使用管理员命令。",
         content=[
-            {"type":"key_value","entries":{"版本":"1.9.1","管理指令":"/麦麦管理","私密 API":"不公开"}},
+            {"type":"key_value","entries":{"版本":"1.9.2","管理指令":"/麦麦管理","私密 API":"不公开"}},
             {"type":"list","items":["用户角色与主动额度","QQ群与日期候选","联网服务、书柜与 Token 聚合"]},
         ],
         link_url="/plugin-config?plugin=maibot-community.mai-life",link_label="打开麦麦生活配置",

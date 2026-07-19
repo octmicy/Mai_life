@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.9.1"
+CONFIG_SCHEMA_VERSION = "1.9.2"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 

@@ -154,7 +154,7 @@ class VisionService:
         prompt=[{"role":"system","content":"你是克制的图片转述器，只输出合法JSON。"},{"role":"user","content":content}]
         try:
             raw=await asyncio.wait_for(
-                self.llm.generate(prompt,max_tokens=420,temperature=0.2,task_kind="vision_summary",request_type="vision_summary"),
+                self.llm.generate(prompt,max_tokens=8096,temperature=0.2,task_kind="vision_summary",request_type="vision_summary"),
                 timeout=float(cfg.timeout_seconds),
             )
         except asyncio.TimeoutError:

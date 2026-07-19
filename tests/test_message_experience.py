@@ -71,6 +71,18 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows),1)
         self.assertNotIn("binary",rows[0])
 
+    async def test_emoji_gif_is_summarized_like_difficult_image(self):
+        # 表情包（emoji）GIF 同样携带 binary_data_base64，应被视觉服务识别为难图并生成摘要。
+        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
+        raw=b"GIF89a"+b"emoji-gif-payload"
+        message={"message_id":"m4","session_id":"s1","processed_plain_text":"[表情包]","message_info":{
+            "additional_config":{"napcat_message_type":"private"}},"raw_message":[{
+            "type":"emoji","hash":"eh1","binary_data_base64":base64.b64encode(raw).decode(),
+        }]}
+        self.assertIn("gif",media_types(message))
+        summary=await service.summarize_if_needed(message)
+        self.assertIn("插件代码",summary)
+
     def test_adapter_image_placeholders_use_single_image_wait(self):
         config=MaiLifeSettings(); debouncer=MessageDebouncer(config,DummyLogger())
         for marker in ({"napcat_message_type":"private"},{"snowluma_message_type":"private"}):

@@ -36,7 +36,7 @@ def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
     """在线程中执行同步 HTTP 请求，避免阻塞插件事件循环。"""
     request = Request(
         f"{url}?{urlencode(params)}",
-        headers={"User-Agent": "MaiLife/1.9.1"},
+        headers={"User-Agent": "MaiLife/1.9.2"},
     )
     with urlopen(request, timeout=8) as response:
         return json.loads(response.read().decode("utf-8"))

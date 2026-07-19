@@ -140,7 +140,7 @@ class HttpClient:
         if public_only:
             return HttpClient._request_public_sync(method,url,body,timeout,max_bytes,headers)
         target=_validated_url(url)
-        request_headers={"User-Agent":"Mai_life/1.9.1 (+https://github.com/octmicy/Mai_life)",
+        request_headers={"User-Agent":"Mai_life/1.9.2 (+https://github.com/octmicy/Mai_life)",
                          "Accept-Encoding":"identity",**headers}
         request=urllib.request.Request(target,data=body,headers=request_headers,method=method)
         context=ssl.create_default_context()
@@ -178,7 +178,7 @@ class HttpClient:
     def _request_public_sync(method:str,url:str,body:bytes|None,timeout:float,max_bytes:int,
                              headers:dict[str,str])->HttpResponse:
         """public_only 路径：解析一次并固定公网 IP 连接，逐跳复验重定向，阻断 DNS rebinding。"""
-        request_headers={"User-Agent":"Mai_life/1.9.1 (+https://github.com/octmicy/Mai_life)",
+        request_headers={"User-Agent":"Mai_life/1.9.2 (+https://github.com/octmicy/Mai_life)",
                          "Accept-Encoding":"identity",**headers}
         context=ssl.create_default_context()
         target,pinned=_validate_public_url_sync(url)

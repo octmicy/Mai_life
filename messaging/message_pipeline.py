@@ -15,7 +15,7 @@ from .adapter_compat import component_kind, component_text, walk_components
 _URGENT_RE=re.compile(r"急事|紧急|救命|出事了|危险|报警|叫醒|醒醒|快醒|撑不住|自杀|轻生",re.I)
 _QUIET_RE=re.compile(r"别回|不要回|不用回|继续睡|别醒|别打扰|不用理我",re.I)
 _MEDIA_PLACEHOLDER_RE=re.compile(
-    r"\[(?:image|图片|emoji|voice|语音|video|视频|file|文件|reply|forward|unsupported)\]",
+    r"\[(?:image|图片|emoji|表情包|表情|voice|语音|video|视频|file|文件|reply|forward|unsupported)\]",
     re.I,
 )
 _PLACEHOLDER_MEDIA={

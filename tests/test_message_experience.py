@@ -83,6 +83,18 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         summary=await service.summarize_if_needed(message)
         self.assertIn("插件代码",summary)
 
+    async def test_static_emoji_alone_is_summarized(self):
+        # 单条静态表情（无真实文字，仅 [表情包] 占位）也应被识别为难图并生成摘要。
+        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
+        raw=b"\x89PNG"+b"static-emoji-payload"
+        message={"message_id":"m5","session_id":"s1","processed_plain_text":"[表情包]","message_info":{
+            "additional_config":{"napcat_message_type":"private"}},"raw_message":[{
+            "type":"emoji","hash":"eh2","binary_data_base64":base64.b64encode(raw).decode(),
+        }]}
+        self.assertEqual(plain_text(message),"")
+        summary=await service.summarize_if_needed(message)
+        self.assertIn("插件代码",summary)
+
     def test_adapter_image_placeholders_use_single_image_wait(self):
         config=MaiLifeSettings(); debouncer=MessageDebouncer(config,DummyLogger())
         for marker in ({"napcat_message_type":"private"},{"snowluma_message_type":"private"}):

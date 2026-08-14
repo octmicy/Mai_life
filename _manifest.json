@@ -1,0 +1,51 @@
+{
+    "manifest_version":  2,
+    "id":  "maibot-community.mai-life",
+    "name":  "麦麦生活",
+    "version":  "1.9.2",
+    "description":  "让麦麦拥有持续生活、消息体验、低频联网见闻以及自己的书柜与创作",
+    "author":  {
+                   "name":  "octmicy",
+                   "url":  "https://github.com/octmicy/Mai_life"
+               },
+    "license":  "MIT",
+    "host_application":  {
+                             "min_version":  "1.0.12",
+                             "max_version":  "1.99.99"
+                         },
+    "sdk":  {
+                "min_version":  "2.7.0",
+                "max_version":  "2.99.99"
+            },
+    "dependencies":  [
+
+                     ],
+    "plugin_type":  "tool",
+    "capabilities":  [
+                         "send.text",
+                         "send.image",
+                         "chat.get_all_streams",
+                         "chat.get_stream_by_user_id",
+                         "chat.get_private_streams",
+                         "chat.get_stream_by_group_id",
+                         "chat.get_group_streams",
+                         "chat.open_session",
+                         "llm.generate",
+                         "llm.get_available_models",
+                         "message.get_by_id",
+                         "api.call",
+                         "maisaka.proactive.trigger",
+                         "config.get"
+                     ],
+    "i18n":  {
+                 "default_locale":  "zh-CN",
+                 "supported_locales":  [
+                                           "zh-CN"
+                                       ]
+             },
+    "urls":  {
+                 "repository":  "https://github.com/octmicy/Mai_life",
+                 "homepage":  "https://github.com/octmicy/Mai_life",
+                 "documentation":  "https://docs.mai-mai.org"
+             }
+}

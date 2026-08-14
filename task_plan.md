@@ -10,7 +10,7 @@
 - [x] 建立独立 Git 仓库并提交基线。
 - [x] 运行基线测试：175 个全部通过。
 - [x] 完成设计文档与实施计划。
-- [ ] Task 1：搜索模型与 Bing/DuckDuckGo 解析器。
+- [x] Task 1：搜索模型与 Bing/DuckDuckGo 解析器。
 - [ ] Task 2：Playwright 搜索客户端。
 - [ ] Task 3：配置与 SearchService 集成。
 - [ ] Task 4：依赖、文档、版本与真实验证。

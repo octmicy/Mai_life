@@ -13,7 +13,7 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.9.2")
+        self.assertEqual(config.plugin.config_version,"1.10.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
@@ -27,7 +27,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
-        self.assertEqual(config.search_api.providers,[])
+        self.assertEqual(len(config.search_api.providers),1); self.assertEqual(config.search_api.providers[0].provider_type,"playwright")
         self.assertFalse(config.debounce.group_enabled)
         self.assertFalse(config.social.enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
@@ -117,7 +117,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.9.2")
+        self.assertEqual(config.plugin.config_version,"1.10.0")
         self.assertTrue(config.debounce.enabled)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):

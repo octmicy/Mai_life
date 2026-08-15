@@ -1,16 +1,18 @@
 """统一联网搜索服务链、Key 轮换和协议归一化。"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import re
 import time
-from dataclasses import dataclass
 from datetime import datetime,timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import parse_qsl,urlencode,urlsplit,urlunsplit
 
 from .http_client import HttpClient,HttpRequestError
+from .playwright_search import PlaywrightSearchClient
+from .search_parsing import error_from_payload,parse_openai,parse_standard,redact_key_echo
+from .search_models import SearchBackendError,SearchResponse,SearchResult
 
 
 _ENDPOINTS={
@@ -18,49 +20,40 @@ _ENDPOINTS={
     "tavily":"https://api.tavily.com/search",
     "you":"https://ydc-index.io/v1/search",
 }
-_URL_RE=re.compile(r"https?://[^\s<>\]\[()\"']+",re.I)
 
 
-@dataclass(frozen=True)
-class SearchResult:
-    title:str
-    url:str
-    snippet:str
-    provider_generated:bool=False
-
-
-@dataclass(frozen=True)
-class SearchResponse:
-    results:list[SearchResult]
-    provider_id:str=""
-    provider_type:str=""
-    generated_text:str=""
-    cited:bool=False
-    model:str=""
-    prompt_tokens:int=0
-    completion_tokens:int=0
-    total_tokens:int=0
-
-
-def _nested(value:Any,*paths:str)->Any:
-    for path in paths:
-        current=value
-        for part in path.split("."):
-            if not isinstance(current,dict):current=None; break
-            current=current.get(part)
-        if current is not None:return current
-    return None
 
 
 class SearchService:
     """列表顺序决定服务降级顺序，同一服务内按 Key 顺序恢复主 Key 优先。"""
 
-    def __init__(self,config:Any,http:HttpClient,store:Any,logger:Any)->None:
+    def __init__(self,config:Any,http:HttpClient,store:Any,logger:Any,
+                 *,playwright_client:Any|None=None)->None:
         self.config=config; self.http=http; self.store=store; self.logger=logger
         self._prepared=False; self._reset_runtime=False; self.last_error_class=""
+        self._playwright_client=playwright_client; self._playwright_clients:dict[str,Any]={}
 
     def update_config(self,config:Any)->None:
         self.config=config; self._prepared=False; self._reset_runtime=True
+        self._schedule_playwright_close()
+
+    async def close(self)->None:
+        """释放浏览器搜索资源；数据库由插件统一关闭。"""
+        clients=list(self._playwright_clients.values())
+        if self._playwright_client is not None:clients.append(self._playwright_client)
+        self._playwright_clients.clear()
+        for client in clients:await client.close()
+
+    def _schedule_playwright_close(self)->None:
+        """配置热更新时异步释放旧浏览器；同步接口保持 SDK 兼容。"""
+        clients=list(self._playwright_clients.values()); self._playwright_clients.clear()
+        if not clients:return
+        async def close_all()->None:
+            for client in clients:await client.close()
+        try:asyncio.get_running_loop().create_task(close_all())
+        except RuntimeError:
+            # 不在事件循环内时无法释放异步资源；下次加载/卸载会显式暴露未关闭状态。
+            self.logger.warning("[MaiLife] Playwright 配置更新时不在事件循环内，浏览器将在插件卸载前保留")
 
     @staticmethod
     def key_fingerprint(key:str)->str:
@@ -68,7 +61,8 @@ class SearchService:
 
     @staticmethod
     def _provider_id(index:int,provider:Any)->str:
-        signature=f"{provider.provider_type}:{provider.endpoint}:{provider.model}"
+        signature=(f"{provider.provider_type}:{provider.endpoint}:{provider.model}:"
+                   f"{provider.browser_engine}:{provider.headless}")
         return f"p{index+1}-{provider.provider_type}-{hashlib.sha256(signature.encode()).hexdigest()[:8]}"
 
     def providers(self)->list[tuple[str,Any]]:
@@ -78,6 +72,9 @@ class SearchService:
         if self._prepared:return
         entries=[]
         for provider_id,provider in self.providers():
+            if provider.provider_type=="playwright":
+                entries.append((provider_id,"browser"))
+                continue
             for key in provider.api_keys:entries.append((provider_id,self.key_fingerprint(key)))
         await self.store.reconcile_search_keys(entries,reset_existing=self._reset_runtime)
         for provider_id,fingerprint in entries:
@@ -96,8 +93,15 @@ class SearchService:
         """在规划搜索词前做本地检查，避免无可用 Key 时反复消耗模型 Token。"""
         await self.prepare(); current=float(now or time.time())
         for provider_id,provider in self.providers():
-            if not provider.enabled or not provider.api_keys:continue
+            if not provider.enabled:continue
             kind=str(provider.provider_type)
+            if kind=="playwright":
+                runtime=await self.store.get_search_key_runtime(provider_id,"browser")
+                status=str(runtime.get("status") or "healthy")
+                cooldown=float(runtime.get("cooldown_until") or 0)
+                if status!="disabled" and cooldown<=current:return True
+                continue
+            if not provider.api_keys:continue
             if kind.startswith("openai_") and (not str(provider.endpoint).strip() or not str(provider.model).strip()):
                 continue
             for key in provider.api_keys:
@@ -124,139 +128,6 @@ class SearchService:
         parts=urlsplit(endpoint); query=dict(parse_qsl(parts.query,keep_blank_values=True))
         query.update({key:str(value) for key,value in params.items()})
         return urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),parts.fragment))
-
-    @staticmethod
-    def _error_from_payload(payload:Any)->str:
-        if not isinstance(payload,dict):return ""
-        code=str(payload.get("code") or payload.get("status") or "").casefold()
-        error=payload.get("error")
-        success=payload.get("success")
-        # 显式成功（success=True 或 code 为明确成功值且无 error 字段）时直接返回，
-        # 避免 message 中误含 "quota"/"balance"/"credit" 等词被当成错误。
-        # 注意 code="" 属于歧义，不在此早返回，需继续走关键字分类以兼容只靠 message 报错的 Provider。
-        if error is None and success is not False and code in {"0","200","ok","success"}:
-            return ""
-        if isinstance(error,dict):message=str(error.get("message") or error.get("type") or "")
-        else:message=str(error or payload.get("message") or payload.get("msg") or "")
-        text=(code+" "+message).casefold()
-        if not text.strip():return ""
-        if any(term in text for term in ("insufficient_quota","quota","credit","balance","exhausted","额度","余额")):return "quota"
-        if any(term in text for term in ("unauthorized","authentication","invalid api key","invalid_api_key","鉴权","密钥无效")):return "auth"
-        if any(term in text for term in ("rate limit","rate_limit","too many","限流")):return "rate_limit"
-        if success is False or code not in {"","0","200","ok","success"}:return "provider_error"
-        return ""
-
-    @staticmethod
-    def _clean_result(title:Any,url:Any,snippet:Any,generated:bool=False)->SearchResult|None:
-        title_text=" ".join(str(title or "").split())[:500]
-        snippet_text=" ".join(str(snippet or "").split())[:3000]
-        url_text=str(url or "").strip()[:2000]
-        if url_text:
-            try:HttpClient.validate_url(url_text)
-            except HttpRequestError:url_text=""
-        if not title_text and not snippet_text:return None
-        return SearchResult(title_text or "未命名结果",url_text,snippet_text,generated)
-
-    def _parse_standard(self,provider_type:str,payload:Any)->SearchResponse:
-        """把博查、Tavily 和 You.com 的不同字段归一化为统一搜索结果。"""
-        if not isinstance(payload,dict):return SearchResponse([])
-        if provider_type=="bocha":
-            raw=_nested(payload,"data.webPages.value","data.web_pages.value","webPages.value","results")
-            fields=("name","url","summary")
-        elif provider_type=="tavily":
-            raw=payload.get("results"); fields=("title","url","content")
-        else:
-            raw=_nested(payload,"hits","results","data.hits"); fields=("title","url","description")
-        results=[]
-        for item in raw if isinstance(raw,list) else []:
-            if not isinstance(item,dict):continue
-            snippet=(item.get(fields[2]) or item.get("snippet") or item.get("snippets")
-                     or item.get("summary") or item.get("content") or "")
-            if isinstance(snippet,list):snippet=" ".join(str(value) for value in snippet)
-            result=self._clean_result(item.get(fields[0]) or item.get("name"),item.get(fields[1]),snippet)
-            if result:results.append(result)
-        limit=int(self.config.search_api.max_results)
-        return SearchResponse(results[:limit],cited=any(item.url for item in results[:limit]))
-
-    @staticmethod
-    def _content_text(value:Any)->str:
-        if isinstance(value,str):return value
-        if not isinstance(value,list):return ""
-        parts=[]
-        for item in value:
-            if isinstance(item,str):parts.append(item)
-            elif isinstance(item,dict):
-                text=item.get("text") or item.get("content")
-                if isinstance(text,str):parts.append(text)
-        return "\n".join(parts)
-
-    def _parse_openai(self,provider_type:str,payload:Any,model:str)->SearchResponse:
-        """解析 Responses/Chat 中转文本、引用和 Token；无 URL 时保留 Provider 生成标记。"""
-        if not isinstance(payload,dict):return SearchResponse([])
-        texts=[]; citations=[]
-        if provider_type=="openai_responses":
-            if isinstance(payload.get("output_text"),str):texts.append(payload["output_text"])
-            for output in payload.get("output") if isinstance(payload.get("output"),list) else []:
-                if not isinstance(output,dict):continue
-                for content in output.get("content") if isinstance(output.get("content"),list) else []:
-                    if not isinstance(content,dict):continue
-                    text=content.get("text")
-                    if isinstance(text,str):texts.append(text)
-                    for annotation in content.get("annotations") if isinstance(content.get("annotations"),list) else []:
-                        if isinstance(annotation,dict):citations.append(annotation)
-        else:
-            choices=payload.get("choices") if isinstance(payload.get("choices"),list) else []
-            message=(choices[0].get("message") if choices and isinstance(choices[0],dict) else {})
-            if isinstance(message,dict):
-                text=self._content_text(message.get("content"))
-                if text:texts.append(text)
-                for key in ("citations","sources","web_search_results"):
-                    value=message.get(key)
-                    if isinstance(value,list):citations.extend(value)
-        for key in ("citations","sources","web_search_results"):
-            value=payload.get(key)
-            if isinstance(value,list):citations.extend(value)
-        generated="\n".join(part.strip() for part in texts if part.strip())[:12000]
-        results=[]; seen=set()
-        for citation in citations:
-            if isinstance(citation,str):url=citation; title="外部引用"
-            elif isinstance(citation,dict):
-                nested=citation.get("url_citation") if isinstance(citation.get("url_citation"),dict) else citation
-                url=str(nested.get("url") or nested.get("link") or ""); title=str(nested.get("title") or nested.get("name") or "外部引用")
-            else:continue
-            if url in seen:continue
-            result=self._clean_result(title,url,generated[:1200],True)
-            if result and result.url:results.append(result); seen.add(result.url)
-        for url in _URL_RE.findall(generated):
-            clean=url.rstrip(".,;:!?，。；：！？")
-            if clean in seen:continue
-            result=self._clean_result("模型返回的外部引用",clean,generated[:1200],True)
-            if result and result.url:results.append(result); seen.add(result.url)
-        if not results and generated:
-            results=[SearchResult(f"{model} 联网结果", "", generated[:3000], True)]
-        usage=payload.get("usage") if isinstance(payload.get("usage"),dict) else {}
-        prompt=int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        completion=int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-        total=int(usage.get("total_tokens") or prompt+completion)
-        limit=int(self.config.search_api.max_results)
-        return SearchResponse(results[:limit],generated_text=generated,cited=any(item.url for item in results),
-                              model=str(payload.get("model") or model),prompt_tokens=prompt,
-                              completion_tokens=completion,total_tokens=total)
-
-    @staticmethod
-    def _redact_key_echo(response:SearchResponse,key:str)->SearchResponse:
-        """不信任服务返回内容；即使中转回显请求 Key，也不能让它进入缓存或 Prompt。"""
-        secret=str(key or "")
-        if not secret:return response
-        def clean(value:str)->str:return str(value or "").replace(secret,"[REDACTED]")
-        results=[SearchResult(
-            clean(item.title),"" if secret in item.url else item.url,clean(item.snippet),item.provider_generated,
-        ) for item in response.results]
-        return SearchResponse(
-            results,response.provider_id,response.provider_type,clean(response.generated_text),
-            bool(response.cited and any(item.url for item in results)),
-            clean(response.model),response.prompt_tokens,response.completion_tokens,response.total_tokens,
-        )
 
     async def _request_provider(self,provider:Any,key:str,query:str,freshness:str)->SearchResponse:
         """按 Provider 协议构造单次请求；调用方负责 Key 状态、重试和跨服务降级。"""
@@ -289,12 +160,13 @@ class SearchService:
                      {"role":"user","content":query}],"temperature":0.2}
             response=await self.http.post_json(endpoint,payload,timeout=timeout,
                                                headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
-        payload=response.json(); payload_error=self._error_from_payload(payload)
+        payload=response.json(); payload_error=error_from_payload(payload)
         if payload_error:
             raise HttpRequestError("服务返回错误",error_class=payload_error,status_code=response.status,
                                    headers=response.headers)
-        return (self._parse_openai(kind,payload,str(provider.model)) if kind.startswith("openai_")
-                else self._parse_standard(kind,payload))
+        return (parse_openai(kind,payload,str(provider.model),int(self.config.search_api.max_results))
+                if kind.startswith("openai_")
+                else parse_standard(kind,payload,int(self.config.search_api.max_results)))
 
     @staticmethod
     def _retry_after(headers:dict[str,str],now:float)->float:
@@ -334,14 +206,74 @@ class SearchService:
             # 统计故障不能把已经成功的联网结果误判为服务失败。
             self.logger.debug(f"[MaiLife] 自定义联网模型 Token 统计失败 provider={response.provider_id}")
 
+    def _browser_client(self,provider_id:str,provider:Any)->Any:
+        """测试可注入客户端；生产按 Provider 缓存以复用 Chromium 上下文。"""
+        if self._playwright_client is not None:return self._playwright_client
+        if provider_id not in self._playwright_clients:
+            self._playwright_clients[provider_id]=PlaywrightSearchClient(
+                self.logger,headless=bool(provider.headless),
+            )
+        return self._playwright_clients[provider_id]
+
     async def search(self,query:str,*,operation:str="search",freshness:str="",event_at:float=0)->SearchResponse:
         """按服务和 Key 顺序搜索，区分 Key 故障与服务故障并限制总外部请求数。"""
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
         now=time.time(); event_time=float(event_at or now)
         for provider_id,provider in self.providers():
-            if not provider.enabled or not provider.api_keys:continue
+            if not provider.enabled:continue
             kind=str(provider.provider_type)
+            if kind=="playwright":
+                fingerprint="browser"
+                runtime=await self.store.get_search_key_runtime(provider_id,fingerprint)
+                status=str(runtime.get("status") or "healthy")
+                cooldown=float(runtime.get("cooldown_until") or 0)
+                if status=="disabled" or cooldown>now:continue
+                if attempts>=maximum:
+                    self.last_error_class="attempt_limit"; return SearchResponse([])
+                attempts+=1; started=time.perf_counter(); status_code=0
+                try:
+                    parsed=await self._browser_client(provider_id,provider).search(
+                        query,engine=str(provider.browser_engine),freshness=freshness,
+                        timeout_seconds=float(self.config.search_api.timeout_seconds),
+                        max_results=int(self.config.search_api.max_results),
+                    )
+                    latency=(time.perf_counter()-started)*1000
+                    parsed=SearchResponse(parsed.results,provider_id,kind,parsed.generated_text,
+                                          parsed.cited,parsed.model,parsed.prompt_tokens,
+                                          parsed.completion_tokens,parsed.total_tokens)
+                    if not parsed.results:raise SearchBackendError("浏览器搜索未返回结果",error_class="empty_result")
+                    await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
+                        cooldown_until=0,failure_count=0,error_class="",used_at=now,success_at=now)
+                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
+                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=True,
+                        status_code=200,latency_ms=latency,result_count=len(parsed.results),error_class="")
+                    return parsed
+                except SearchBackendError as exc:
+                    latency=(time.perf_counter()-started)*1000; error_class=str(exc.error_class or "network")
+                    if error_class=="empty_result":
+                        await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
+                            cooldown_until=0,failure_count=0,error_class="empty_result",used_at=now,
+                            success_at=float(runtime.get("last_success_at") or 0))
+                    else:
+                        failures=int(runtime.get("failure_count") or 0)+1
+                        await self.store.save_search_key_runtime(provider_id,fingerprint,status="service_error",
+                            cooldown_until=now+min(6*3600,900*(2**min(failures-1,5))),failure_count=failures,
+                            error_class=error_class,used_at=now)
+                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
+                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=False,
+                        status_code=status_code,latency_ms=latency,result_count=0,error_class=error_class)
+                    self.last_error_class=error_class
+                    self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type=playwright error={error_class}")
+                    continue
+                except Exception:
+                    latency=(time.perf_counter()-started)*1000; self.last_error_class="internal"
+                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
+                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=False,
+                        status_code=0,latency_ms=latency,result_count=0,error_class="internal")
+                    self.logger.warning(f"[MaiLife] 联网搜索内部异常 provider={provider_id} type=playwright")
+                    continue
+            if not provider.api_keys:continue
             if kind.startswith("openai_") and (not str(provider.endpoint).strip() or not str(provider.model).strip()):
                 self.last_error_class="invalid_config"; continue
             for key in provider.api_keys:
@@ -356,7 +288,7 @@ class SearchService:
                     self.last_error_class="attempt_limit"; return SearchResponse([])
                 attempts+=1; started=time.perf_counter(); error_class=""; status_code=0
                 try:
-                    parsed=self._redact_key_echo(
+                    parsed=redact_key_echo(
                         await self._request_provider(provider,key,query,freshness),key,
                     )
                     latency=(time.perf_counter()-started)*1000
@@ -418,6 +350,15 @@ class SearchService:
         result=[]
         for provider_id,provider in self.providers():
             keys=[]
+            if provider.provider_type=="playwright":
+                item=runtime.get((provider_id,"browser"),{})
+                keys.append({"fingerprint":"browser","status":str(item.get("status") or "healthy"),
+                             "cooldown_until":float(item.get("cooldown_until") or 0),
+                             "last_error_class":str(item.get("last_error_class") or "")})
+                result.append({"provider_id":provider_id,"provider_type":str(provider.provider_type),
+                               "enabled":bool(provider.enabled),"model":"", "browser_engine":str(provider.browser_engine),
+                               "headless":bool(provider.headless),"key_count":1,"keys":keys})
+                continue
             for key in provider.api_keys:
                 fingerprint=self.key_fingerprint(key); item=runtime.get((provider_id,fingerprint),{})
                 keys.append({"fingerprint":fingerprint,"status":str(item.get("status") or "healthy"),

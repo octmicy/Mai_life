@@ -281,8 +281,17 @@ max_attempts = 12
 max_results = 5
 tool_enabled = true
 
-# 建议在 WebUI 添加。列表顺序就是跨服务降级顺序。
-# provider_type 可选：bocha / tavily / you / openai_responses / openai_chat
+# 默认使用免 Key 的 Playwright/Bing 浏览器搜索；列表顺序就是降级顺序。
+[[search_api.providers]]
+enabled = true
+provider_type = "playwright"
+browser_engine = "bing"
+headless = true
+api_keys = []
+endpoint = ""
+model = ""
+
+# 可选：浏览器搜索不可靠时继续使用 API 备援。
 # [[search_api.providers]]
 # enabled = true
 # provider_type = "bocha"

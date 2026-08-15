@@ -23,6 +23,10 @@ class InformationService:
 
     async def prepare(self)->None:await self.search.prepare()
 
+    async def close(self)->None:
+        """释放 Playwright 浏览器等联网搜索资源。"""
+        await self.search.close()
+
     async def search_for_tool(self,query:str,now:Any,*,result_limit:int=5,freshness:str="any")->dict[str,Any]:
         """为 MaiBot Tool 执行一次受单次请求保护和隐私清洗约束的联网搜索。"""
         cfg=self.config.search_api

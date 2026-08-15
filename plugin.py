@@ -131,6 +131,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._group_observer:await self._group_observer.close()
         await self._stop_tasks()
         await self._active_tasks.reset()
+        if self._information:await self._information.close()
         if self._recall:self._recall.clear()
         self._session_runtime.clear(); self._group_turns.clear(); self._group_turn_generation=0
         self._reply_confirmations.clear(); self._message_tasks.clear()

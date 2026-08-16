@@ -5,7 +5,7 @@ import base64
 import tempfile
 import time
 import unittest
-from unittest.mock import AsyncMock,patch
+from unittest.mock import AsyncMock
 
 from Mai_life.config import MaiLifeSettings,UserProfile
 from Mai_life.core.environment import EnvironmentService
@@ -28,6 +28,20 @@ class DummyMessageCapability:
 
 class DummyContext:
     def __init__(self):self.message=DummyMessageCapability(); self.logger=DummyLogger()
+
+
+class StubHttpResponse:
+    def __init__(self,payload:object)->None:self._payload=payload
+    def json(self)->object:return self._payload
+
+
+class StubHttp:
+    """固定返回给定 JSON 的 HttpClient 替身，用于离线验证天气链路。"""
+    def __init__(self,payload:object)->None:self.payload=payload; self.urls:list[str]=[]
+    async def get(self,url:str,**kwargs:object)->StubHttpResponse:
+        del kwargs
+        self.urls.append(url)
+        return StubHttpResponse(self.payload)
 
 
 class FakeVisionLLM:
@@ -467,15 +481,13 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_weather_result_is_discarded_when_city_changes_inflight(self):
         config=MaiLifeSettings(); config.environment.city="Shanghai"
-        service=EnvironmentService(self.store,config,DummyLogger())
+        service=EnvironmentService(self.store,config,DummyLogger(),
+                                   http=StubHttp({"current":{"temperature_2m":30,"weather_code":0}}))
         async def resolve_and_switch(_city):
             changed=MaiLifeSettings(); changed.environment.city="Beijing"; service.update_config(changed)
             return "上海",1.0,2.0
         service._resolve_city=resolve_and_switch
-        with patch("Mai_life.core.environment._fetch_json",return_value={
-            "current":{"temperature_2m":30,"weather_code":0},
-        }):
-            weather=await service.refresh_weather(force=True)
+        weather=await service.refresh_weather(force=True)
         self.assertEqual(weather["location_name"],"Beijing")
         self.assertEqual(weather["description"],"天气未知")
         self.assertEqual(await self.store.get_weather(),{})

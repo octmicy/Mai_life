@@ -43,28 +43,33 @@ class LifeStore:
             while backup.exists():
                 backup=self.path.with_suffix(f".incompatible.{stamp}.{counter}.db"); counter+=1
             shutil.move(str(self.path),str(backup))
-        self._conn=sqlite3.connect(self.path,check_same_thread=False)
-        self._conn.row_factory=sqlite3.Row
+        self._conn=self._connect()
+
+    def _connect(self) -> sqlite3.Connection:
+        """打开数据库连接并设置行工厂与忙等待超时，写入冲突时最多等待 5 秒。"""
+        conn=sqlite3.connect(self.path,check_same_thread=False)
+        conn.row_factory=sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
 
     # quick_check 失败时先保留损坏文件，再创建全新数据库。
     def _open_checked(self) -> None:
         """打开 SQLite 并执行完整性检查；损坏文件保留副本后再建立空库。"""
-        conn: Optional[sqlite3.Connection] = None
         try:
-            conn = sqlite3.connect(self.path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            result = conn.execute("PRAGMA quick_check").fetchone()
-            if result and str(result[0]).lower() != "ok":
-                raise sqlite3.DatabaseError(str(result[0]))
+            conn=self._connect()
+            try:
+                result=conn.execute("PRAGMA quick_check").fetchone()
+                if result and str(result[0]).lower() != "ok":
+                    raise sqlite3.DatabaseError(str(result[0]))
+            except Exception:
+                conn.close()
+                raise
             self._conn = conn
         except sqlite3.DatabaseError:
-            try:
-                if conn is not None:
-                    conn.close()
-                if self._conn is not None and self._conn is not conn:
-                    self._conn.close()
-            except Exception:
-                pass
+            # 损坏时先释放当前连接，保留损坏文件副本后再建立空库。
+            if self._conn is not None:
+                try:self._conn.close()
+                except Exception:pass
             self._conn = None
             if self.path.exists():
                 stamp=int(time.time()); backup = self.path.with_suffix(f".corrupt.{stamp}.db")
@@ -72,8 +77,7 @@ class LifeStore:
                 while backup.exists():
                     backup=self.path.with_suffix(f".corrupt.{stamp}.{counter}.db"); counter+=1
                 shutil.move(str(self.path), str(backup))
-            self._conn = sqlite3.connect(self.path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
+            self._conn = self._connect()
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -604,6 +608,21 @@ class LifeStore:
             data["state_deltas"] = json.loads(data.get("state_deltas") or "{}")
             return data
 
+    async def get_scenes_by_framework_ids(self, framework_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """按框架 ID 批量读取细化场景，消除多日时间线逐节点查询的 N+1。"""
+        ids=[str(framework_id) for framework_id in framework_ids if str(framework_id)]
+        result={framework_id:{} for framework_id in dict.fromkeys(ids)}
+        if not ids:return result
+        marks=",".join("?" for _ in ids)
+        async with self._lock:
+            rows=self.conn.execute(
+                f"SELECT * FROM detailed_scenes WHERE framework_id IN ({marks})", ids,
+            ).fetchall()
+            for row in rows:
+                data=dict(row); data["state_deltas"]=json.loads(data.get("state_deltas") or "{}")
+                result[str(data["framework_id"])]=data
+        return result
+
     async def completed_unapplied_scenes(self, day: str, minute: int) -> list[dict[str, Any]]:
         async with self._lock:
             rows = self.conn.execute(
@@ -736,6 +755,23 @@ class LifeStore:
             ).fetchall()
             return {int(r[0]):int(r[1]) for r in rows}
 
+    # 主动巡检批量预加载：一次查询返回全部用户的活跃时段，避免每用户×每契机重复异步查询。
+    async def active_hours_batch(self, user_ids: Iterable[str], since: float) -> dict[str, dict[int,int]]:
+        """按 user_id 批量返回活跃时段计数，未产生互动的用户返回空字典。"""
+        ids=list(dict.fromkeys(str(user_id) for user_id in user_ids if str(user_id)))
+        result={user_id:{} for user_id in ids}
+        if not ids:return result
+        marks=",".join("?" for _ in ids)
+        async with self._lock:
+            rows=self.conn.execute(
+                f"SELECT user_id,hour,COUNT(*) c FROM interaction_events "
+                f"WHERE user_id IN ({marks}) AND created_at>? AND kind='message' GROUP BY user_id,hour",
+                (*ids,since),
+            ).fetchall()
+            for row in rows:
+                result[str(row[0])][int(row[1])]=int(row[2])
+        return result
+
     async def recent_interactions(self, user_id: str, limit: int=8) -> list[str]:
         async with self._lock:
             rows=self.conn.execute(
@@ -766,6 +802,25 @@ class LifeStore:
         async with self._lock:
             rows=self.conn.execute("SELECT summary FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 3",(user_id,)).fetchall()
             return [str(r[0]) for r in rows]
+
+    # 批量版本使用窗口函数保留“每用户最多 3 条、按创建时间排序”的原有语义。
+    async def peek_rest_backlogs_batch(self, user_ids: Iterable[str]) -> dict[str, list[str]]:
+        """按 user_id 批量返回未消费休息积压，未消费积压为空时该用户返回空列表。"""
+        ids=list(dict.fromkeys(str(user_id) for user_id in user_ids if str(user_id)))
+        result={user_id:[] for user_id in ids}
+        if not ids:return result
+        marks=",".join("?" for _ in ids)
+        async with self._lock:
+            rows=self.conn.execute(
+                f"""SELECT user_id,summary FROM (
+                    SELECT user_id,summary,ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) rn
+                    FROM rest_backlogs WHERE user_id IN ({marks}) AND consumed=0
+                ) WHERE rn<=3 ORDER BY user_id""",
+                ids,
+            ).fetchall()
+            for row in rows:
+                result[str(row[0])].append(str(row[1]))
+        return result
 
     async def add_proactive_pending(self, event_id: str, user_id: str, opportunity_id: str, stream_id: str, now: float, expires_at: float) -> None:
         async with self._lock:
@@ -2139,4 +2194,3 @@ class LifeStore:
         async with self._lock:
             self.conn.execute("DELETE FROM weather_cache WHERE id=1")
             self.conn.commit()
-

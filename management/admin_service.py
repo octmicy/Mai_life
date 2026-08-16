@@ -1,9 +1,12 @@
 """不暴露聊天原文和原始 API Key 的结构化管理摘要。"""
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 from urllib.parse import urlsplit,urlunsplit
+
+import hashlib
+
+from ..config import PLUGIN_VERSION
 
 
 _SCOPES={"overview","users","groups","dates","sources","bookshelf","tokens","proactive"}
@@ -109,7 +112,7 @@ class AdminService:
     async def _overview(self,now:Any)->dict[str,Any]:
         counts=await self.store.management_overview_counts(); usage=await self._tokens(now)
         tokens=usage["model_usage"]
-        return {"scope":"overview","version":"1.9.2","users":counts.get("users",0),
+        return {"scope":"overview","version":PLUGIN_VERSION,"users":counts.get("users",0),
                 "owners":counts.get("owners",0),"pending_dates":counts.get("pending_dates",0),
                 "bookshelf_documents":counts.get("bookshelf_documents",0),
                 "private_documents":counts.get("private_documents",0),

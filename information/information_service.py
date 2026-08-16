@@ -9,7 +9,8 @@ from typing import Any
 
 from .http_client import HttpClient
 from .news_service import NewsService
-from .search_service import SearchResponse,SearchResult,SearchService
+from .search_models import SearchResponse,SearchResult
+from .search_service import SearchService
 
 
 class InformationService:

@@ -13,7 +13,7 @@
 - [x] Task 1：搜索模型与 Bing/DuckDuckGo 解析器。
 - [x] Task 2：Playwright 搜索客户端。
 - [x] Task 3：配置与 SearchService 集成。
-- [ ] Task 4：依赖、文档、版本与真实验证。
+- [x] Task 4：依赖、文档、版本与真实验证。
 
 ## 验收标准
 
@@ -22,3 +22,8 @@
 3. 全部单元测试与编译检查通过。
 4. 真实 Chromium 搜索返回自然结果。
 5. README、CHANGELOG、manifest、requirements 和配置模板同步。
+
+## 完成记录
+
+- Playwright Chromium 已完成真实 Bing 搜索验证并返回自然结果。
+- 191 个单元测试全部通过，`compileall` 和 `git diff --check` 通过。

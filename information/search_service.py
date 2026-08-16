@@ -1,18 +1,19 @@
 """统一联网搜索服务链、Key 轮换和协议归一化。"""
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import time
 from datetime import datetime,timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import parse_qsl,urlencode,urlsplit,urlunsplit
 
+import asyncio
+import hashlib
+import time
+
 from .http_client import HttpClient,HttpRequestError
 from .playwright_search import PlaywrightSearchClient
 from .search_parsing import error_from_payload,parse_openai,parse_standard,redact_key_echo
-from .search_models import SearchBackendError,SearchResponse,SearchResult
+from .search_models import SearchBackendError,SearchResponse
 
 
 _ENDPOINTS={

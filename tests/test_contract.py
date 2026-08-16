@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 import unittest
 from pathlib import Path
@@ -10,6 +11,16 @@ from Mai_life.plugin import MaiLifePlugin
 
 
 class ContractTests(unittest.TestCase):
+    def test_playwright_release_contract_is_synchronized(self):
+        root=Path(__file__).parents[1]
+        manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
+        requirements=(root/"requirements.txt").read_text(encoding="utf-8")
+        readme=(root/"README.md").read_text(encoding="utf-8")
+        self.assertEqual(manifest["version"],"1.10.0")
+        self.assertIn("playwright>=1.49,<2",requirements)
+        self.assertIn("python -m playwright install chromium",readme)
+        self.assertIn("Playwright/Bing",readme)
+
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))

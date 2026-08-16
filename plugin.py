@@ -122,7 +122,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.9.2 加载完成")
+        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.10.0 加载完成")
 
     async def on_unload(self)->None:
         """先阻止新工作进入，再取消并等待所有任务，最后关闭 SQLite。"""

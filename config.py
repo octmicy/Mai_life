@@ -5,8 +5,9 @@
 """
 from __future__ import annotations
 
-import re
 from typing import Any, ClassVar, Literal
+
+import re
 
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator

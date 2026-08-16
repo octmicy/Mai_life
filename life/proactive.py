@@ -20,15 +20,15 @@ class ProactiveEngine:
         return start<=current<end if start<end else current>=start or current<end
 
     # 软评分只负责排序，额度、睡眠和免打扰仍由硬过滤控制。
-    async def _score(self, user: dict[str,Any], opportunity: dict[str,Any], state: dict[str,Any], now: Any) -> float:
+    # 活跃时段与休息积压由 patrol 批量预加载后传入，避免每用户×每契机重复异步查询。
+    def _score(self, user: dict[str,Any], opportunity: dict[str,Any], state: dict[str,Any], now: Any,
+               hours: dict[int,int], backlogs: list[str]) -> float:
         score=float(opportunity.get("weight",0))
         score += max(0,(float(state.get("energy",50))-40)/300)
         score += max(-0.15,min(0.15,float(state.get("mood_valence",0))*0.12))
         score += float(user.get("temperature",30))/500
-        hours=await self.store.active_hours(user["user_id"],now.timestamp()-30*86400)
         max_count=max(hours.values(),default=0)
         if max_count and hours.get(now.hour,0)>=max_count*0.6: score+=0.12
-        backlogs=await self.store.peek_rest_backlogs(user["user_id"])
         if backlogs: score+=0.05
         last=float(user.get("last_user_message_at",0))
         if last and 2*3600<=now.timestamp()-last<=24*3600: score+=0.08
@@ -44,6 +44,13 @@ class ProactiveEngine:
         opportunities=await self.store.active_opportunities(now.timestamp())
         if not opportunities:return False
         users=await self.store.list_users(proactive_only=True)
+        # 进入用户循环前一次性预加载全部候选用户的活跃时段与休息积压。
+        hours_map=await self.store.active_hours_batch(
+            (str(user.get("user_id") or "") for user in users),now.timestamp()-30*86400,
+        )
+        backlogs_map=await self.store.peek_rest_backlogs_batch(
+            (str(user.get("user_id") or "") for user in users),
+        )
         pending_users=await self.store.pending_proactive_users(now.timestamp())
         current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
         # 候选按用户独立过滤；定向契机不会进入其他 QQ 用户的评分集合。
@@ -62,7 +69,9 @@ class ProactiveEngine:
             for opportunity in opportunities:
                 target=str(opportunity.get("target_user_id") or "")
                 if target and target!=str(user.get("user_id") or ""):continue
-                score=await self._score(user,opportunity,state,now)
+                user_id=str(user.get("user_id") or "")
+                score=self._score(user,opportunity,state,now,hours_map.get(user_id,{}),
+                                  backlogs_map.get(user_id,[]))
                 if score>=cfg.score_threshold:candidates.append((score,user,opportunity))
         if not candidates:return False
         candidates.sort(key=lambda x:x[0],reverse=True); score,user,opportunity=candidates[0]

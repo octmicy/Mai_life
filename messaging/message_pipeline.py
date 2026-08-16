@@ -122,6 +122,7 @@ class _Burst:
     started: float
     generation: int=0
     messages: list[dict[str,Any]]=field(default_factory=list)
+    media_hints: list[list[str]|None]=field(default_factory=list)
     event: asyncio.Event=field(default_factory=asyncio.Event)
 
 
@@ -150,8 +151,14 @@ class MessageDebouncer:
         # Focus 可能让多个聊天流共享 session；物理群号和发送者 QQ 才是隔离边界。
         return f"group:{platform}:{group_id or session}:{uid}",False
 
-    def _quiet_wait(self, messages:list[dict[str,Any]],private:bool=True) -> float:
-        types={kind for msg in messages for kind in media_types(msg)}
+    def _quiet_wait(self, messages:list[dict[str,Any]],private:bool=True,*,
+                    media_hints:list[list[str]|None]|None=None) -> float:
+        # 入口已计算过媒体类型时直接复用提示，避免对同一条消息重复遍历组件。
+        hints=media_hints or []
+        types=set()
+        for index,msg in enumerate(messages):
+            hint=hints[index] if index<len(hints) else None
+            types.update(hint if hint is not None else media_types(msg))
         cfg=self.config.debounce
         if private:
             text_wait=float(cfg.text_wait_seconds); image_wait=float(cfg.image_wait_seconds)
@@ -182,8 +189,9 @@ class MessageDebouncer:
         if isinstance(additional,dict):additional["mai_life_merged_message_ids"]=ids
         return latest
 
-    async def collect(self, message:dict[str,Any]) -> tuple[bool,dict[str,Any],str]:
-        """按会话收集补话并返回最终一轮；每条新消息都会让较早 Hook 代际退出。"""
+    async def collect(self, message:dict[str,Any],*,media_hint:list[str]|None=None) -> tuple[bool,dict[str,Any],str]:
+        """按会话收集补话并返回最终一轮；每条新消息都会让较早 Hook 代际退出。
+        media_hint 是入口已计算好的媒体类型，供静默窗等待复用，避免重复遍历消息组件。"""
         cfg=self.config.debounce
         _uid,session,_mid,private=message_identity(message)
         if private and not cfg.enabled:return True,message,"disabled"
@@ -199,7 +207,9 @@ class MessageDebouncer:
             else:
                 burst.event.set(); burst.event=asyncio.Event()
             # 深拷贝避免后续 Hook 修改 Host 入参；generation 是并发调用唯一的所有权凭据。
-            burst.messages.append(copy.deepcopy(message)); burst.generation+=1
+            burst.messages.append(copy.deepcopy(message))
+            burst.media_hints.append(list(media_hint) if media_hint else None)
+            burst.generation+=1
             generation=burst.generation; event=burst.event
             over_limit=len(burst.messages)>=int(cfg.max_messages) or sum(media_bytes(item) for item in burst.messages)>int(cfg.max_media_bytes)
             text=direct_text(message); immediate=bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
@@ -209,7 +219,7 @@ class MessageDebouncer:
                 current=self._bursts.get(burst_key)
                 if current is not burst or burst.generation!=generation:return False,message,"superseded"
                 if self._closed:break
-                quiet=self._quiet_wait(burst.messages,private)
+                quiet=self._quiet_wait(burst.messages,private,media_hints=burst.media_hints)
                 max_wait=float(cfg.max_wait_seconds if private else cfg.group_max_wait_seconds)
                 remaining=max(0.0,min(quiet,max_wait-(time.monotonic()-burst.started)))
                 event=burst.event

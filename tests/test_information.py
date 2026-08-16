@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import threading
@@ -12,6 +13,8 @@ from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
 from Mai_life.information.feed_parser import readable_text
 from Mai_life.information.http_client import HttpClient,HttpRequestError,HttpResponse
 from Mai_life.information.information_service import InformationService
+from Mai_life.information.search_parsing import clean_generated_text,parse_openai_citations,parse_openai_usage
+from Mai_life.information.search_providers import ApiProvider,PlaywrightProvider,PROVIDER_STRATEGIES,SearchAttemptError,get_provider_strategy
 from Mai_life.information.search_service import SearchService
 from Mai_life.plugin import MaiLifePlugin
 import Mai_life.information.search_service as search_module
@@ -352,6 +355,113 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(readable_text("<script>bad()</script><p>useful article paragraph</p>",100),"useful article paragraph")
 
     def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,9)
+
+    def test_provider_strategy_registry_orders_playwright_before_api(self):
+        self.assertEqual(PROVIDER_STRATEGIES,(PlaywrightProvider,ApiProvider))
+        self.assertEqual([strategy.matches("playwright") for strategy in PROVIDER_STRATEGIES],[True,False])
+        self.assertIs(get_provider_strategy("playwright"),PlaywrightProvider)
+        self.assertIs(get_provider_strategy("bocha"),ApiProvider)
+        self.assertIs(get_provider_strategy("openai_responses"),ApiProvider)
+        self.assertIs(get_provider_strategy("未知类型"),ApiProvider)
+        self.assertIs(get_provider_strategy(""),ApiProvider)
+
+    def test_search_attempt_error_carries_classified_fields(self):
+        error=SearchAttemptError("配额用尽",error_class="quota",status_code=429,headers={"retry-after":"60"})
+        self.assertEqual(error.error_class,"quota"); self.assertEqual(error.status_code,429)
+        self.assertEqual(error.headers["retry-after"],"60"); self.assertTrue(error.penalize)
+
+
+class SearchParsingPureFunctionTests(unittest.TestCase):
+    """验证 parse_openai 拆分后的三个纯函数与对外解析结果保持一致。"""
+
+    def test_parse_openai_citations_extracts_nested_and_top_level(self):
+        responses={"output":[{"type":"message","content":[
+            {"type":"output_text","text":"回答","annotations":[{"type":"url_citation","url":"https://example.com/a"}]},
+        ]}]}
+        self.assertEqual([item["url"] for item in parse_openai_citations(responses,"openai_responses")],
+                         ["https://example.com/a"])
+        chat={"choices":[{"message":{"citations":[{"title":"来源","url":"https://example.com/b"}]}}]}
+        self.assertEqual([item["url"] for item in parse_openai_citations(chat,"openai_chat")],
+                         ["https://example.com/b"])
+        top={"output":[],"web_search_results":[{"url":"https://example.com/c"}]}
+        self.assertEqual([item["url"] for item in parse_openai_citations(top,"openai_responses")],
+                         ["https://example.com/c"])
+        self.assertEqual(parse_openai_citations({},"openai_responses"),[])
+        self.assertEqual(parse_openai_citations(None,"openai_chat"),[])
+
+    def test_parse_openai_usage_covers_both_protocols(self):
+        self.assertEqual(parse_openai_usage({"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}),
+                         (10,5,15))
+        self.assertEqual(parse_openai_usage({"usage":{"prompt_tokens":7,"completion_tokens":3}}),
+                         (7,3,10))
+        self.assertEqual(parse_openai_usage({}),(0,0,0))
+        self.assertEqual(parse_openai_usage(None),(0,0,0))
+
+    def test_clean_generated_text_joins_and_strips_blank_parts(self):
+        self.assertEqual(clean_generated_text(["  第一段  ","","  第二段  "]),"第一段\n第二段")
+        self.assertEqual(clean_generated_text([]),"")
+
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    """本地 HTTP 服务器：记录请求方法与 User-Agent，提供重定向链测试端点。"""
+    seen=[]
+    def log_message(self,format,*args):pass
+    def _record(self):
+        self.seen.append({"path":self.path,"method":self.command,"ua":self.headers.get("User-Agent","")})
+    def _redirect(self,target):
+        self.send_response(302); self.send_header("Location",target); self.end_headers()
+    def do_GET(self):
+        self._record()
+        if self.path=="/start":self._redirect("/target"); return
+        if self.path=="/loop":self._redirect("/loop"); return
+        if self.path in {"/target","/final"}:
+            body=b"target" if self.path=="/target" else b"final"
+            self.send_response(200); self.send_header("Content-Type","text/plain")
+            self.end_headers(); self.wfile.write(body); return
+        self.send_response(404); self.end_headers()
+    def do_POST(self):
+        self._record()
+        if self.path=="/redirect-post":self._redirect("/final"); return
+        body=b"final"; self.send_response(200); self.end_headers(); self.wfile.write(body)
+
+
+class HttpClientPipelineTests(unittest.TestCase):
+    """验证统一 HttpClient 链：逐跳重定向、方法改写、UA 与错误分类。"""
+    def setUp(self):
+        RedirectHandler.seen=[]; self.server=ThreadingHTTPServer(("127.0.0.1",0),RedirectHandler)
+        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
+        self.base=f"http://127.0.0.1:{self.server.server_port}"
+    def tearDown(self):
+        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
+
+    def _run(self,coro):
+        return asyncio.run(coro)
+
+    def test_redirect_loop_follows_location_and_sends_plugin_ua(self):
+        http=HttpClient(DummyLogger())
+        response=self._run(http.get(self.base+"/start"))
+        self.assertEqual(response.status,200); self.assertEqual(response.text(),"target")
+        self.assertEqual([item["path"] for item in RedirectHandler.seen],["/start","/target"])
+        self.assertEqual({item["method"] for item in RedirectHandler.seen},{"GET"})
+        self.assertTrue(all("Mai_life/1.11.0" in item["ua"] for item in RedirectHandler.seen))
+
+    def test_303_rewrites_post_to_get_and_drops_json_headers(self):
+        http=HttpClient(DummyLogger())
+        response=self._run(http.post_json(self.base+"/redirect-post",{"question":"测试"}))
+        self.assertEqual(response.status,200); self.assertEqual(response.text(),"final")
+        self.assertEqual([item["method"] for item in RedirectHandler.seen],["POST","GET"])
+        self.assertNotIn("1.9.2",RedirectHandler.seen[1]["ua"])
+
+    def test_redirect_loop_limit_and_http_error_classification(self):
+        http=HttpClient(DummyLogger())
+        with self.assertRaises(HttpRequestError) as ctx:
+            self._run(http.get(self.base+"/loop"))
+        self.assertEqual(ctx.exception.error_class,"network")
+        self.assertIn("重定向次数过多",str(ctx.exception))
+        with self.assertRaises(HttpRequestError) as ctx:
+            self._run(http.get(self.base+"/missing"))
+        self.assertEqual(ctx.exception.error_class,"http")
+        self.assertEqual(ctx.exception.status_code,404)
 
 
 if __name__=="__main__":unittest.main()

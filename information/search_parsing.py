@@ -86,10 +86,49 @@ def content_text(value:Any)->str:
     return "\n".join(parts)
 
 
+def parse_openai_citations(payload:Any,provider_type:str)->list[Any]:
+    """纯函数：从 Responses/Chat 载荷中提取引用标注，兼容顶层与消息内嵌两种位置。"""
+    if not isinstance(payload,dict):return []
+    citations=[]
+    if provider_type=="openai_responses":
+        for output in payload.get("output") if isinstance(payload.get("output"),list) else []:
+            if not isinstance(output,dict):continue
+            for content in output.get("content") if isinstance(output.get("content"),list) else []:
+                if not isinstance(content,dict):continue
+                for annotation in content.get("annotations") if isinstance(content.get("annotations"),list) else []:
+                    if isinstance(annotation,dict):citations.append(annotation)
+    else:
+        choices=payload.get("choices") if isinstance(payload.get("choices"),list) else []
+        message=(choices[0].get("message") if choices and isinstance(choices[0],dict) else {})
+        if isinstance(message,dict):
+            for key in ("citations","sources","web_search_results"):
+                value=message.get(key)
+                if isinstance(value,list):citations.extend(value)
+    for key in ("citations","sources","web_search_results"):
+        value=payload.get(key)
+        if isinstance(value,list):citations.extend(value)
+    return citations
+
+
+def parse_openai_usage(payload:Any)->tuple[int,int,int]:
+    """纯函数：解析 Responses/Chat 的 Token 用量，缺省时用输入加输出推算总数。"""
+    if not isinstance(payload,dict):return 0,0,0
+    usage=payload.get("usage") if isinstance(payload.get("usage"),dict) else {}
+    prompt=int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    completion=int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    total=int(usage.get("total_tokens") or prompt+completion)
+    return prompt,completion,total
+
+
+def clean_generated_text(texts:list[str])->str:
+    """纯函数：合并生成文本片段并做空白清洗，用于展示与引用去重。"""
+    return "\n".join(part.strip() for part in texts if part.strip())[:12000]
+
+
 def parse_openai(provider_type:str,payload:Any,model:str,max_results:int)->SearchResponse:
     """解析 Responses/Chat 中转文本、引用和 Token；无 URL 时保留 Provider 生成标记。"""
     if not isinstance(payload,dict):return SearchResponse([])
-    texts=[]; citations=[]
+    texts=[]
     if provider_type=="openai_responses":
         if isinstance(payload.get("output_text"),str):texts.append(payload["output_text"])
         for output in payload.get("output") if isinstance(payload.get("output"),list) else []:
@@ -98,21 +137,14 @@ def parse_openai(provider_type:str,payload:Any,model:str,max_results:int)->Searc
                 if not isinstance(content,dict):continue
                 text=content.get("text")
                 if isinstance(text,str):texts.append(text)
-                for annotation in content.get("annotations") if isinstance(content.get("annotations"),list) else []:
-                    if isinstance(annotation,dict):citations.append(annotation)
     else:
         choices=payload.get("choices") if isinstance(payload.get("choices"),list) else []
         message=(choices[0].get("message") if choices and isinstance(choices[0],dict) else {})
         if isinstance(message,dict):
             text=content_text(message.get("content"))
             if text:texts.append(text)
-            for key in ("citations","sources","web_search_results"):
-                value=message.get(key)
-                if isinstance(value,list):citations.extend(value)
-    for key in ("citations","sources","web_search_results"):
-        value=payload.get(key)
-        if isinstance(value,list):citations.extend(value)
-    generated="\n".join(part.strip() for part in texts if part.strip())[:12000]
+    citations=parse_openai_citations(payload,provider_type)
+    generated=clean_generated_text(texts)
     results=[]; seen=set()
     for citation in citations:
         if isinstance(citation,str):url=citation; title="外部引用"
@@ -130,10 +162,7 @@ def parse_openai(provider_type:str,payload:Any,model:str,max_results:int)->Searc
         if result and result.url:results.append(result); seen.add(result.url)
     if not results and generated:
         results=[SearchResult(f"{model} 联网结果", "", generated[:3000], True)]
-    usage=payload.get("usage") if isinstance(payload.get("usage"),dict) else {}
-    prompt=int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-    completion=int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-    total=int(usage.get("total_tokens") or prompt+completion)
+    prompt,completion,total=parse_openai_usage(payload)
     limit=int(max_results)
     return SearchResponse(results[:limit],generated_text=generated,cited=any(item.url for item in results),
                           model=str(payload.get("model") or model),prompt_tokens=prompt,

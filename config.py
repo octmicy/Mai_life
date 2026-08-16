@@ -12,8 +12,8 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.11.0"
-CONFIG_SCHEMA_VERSION = "1.10.0"
+PLUGIN_VERSION = "1.12.0"
+CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -838,6 +838,30 @@ class DebounceSettings(PluginConfigBase):
         "群聊最长等待（秒）","默认 4 秒。",9,label_en="Group Maximum Wait (sec)",hint_en="Hard limit for one group burst."))
     max_messages: int = Field(default=12, ge=2, le=50, description="单轮最多合并消息数。", json_schema_extra=_ui("单轮最大消息数", "私聊和群聊共同使用；超过后立即结束当前轮次。", 10, label_en="Maximum Messages", hint_en="Shared maximum messages per burst."))
     max_media_bytes: int = Field(default=8_388_608, ge=262_144, le=33_554_432, description="单轮媒体 Base64 解码后大小上限。", json_schema_extra=_ui("媒体大小上限（字节）", "默认 8 MiB，超出后失败开放。", 11, label_en="Media Size Limit", hint_en="Decoded media size limit for one burst."))
+    merge_separator: str = Field(
+        default="\n",
+        description="多条文本合并时使用的分隔符。",
+        json_schema_extra=_ui(
+            "合并分隔符", "多条连续消息合并时，文本之间插入的分隔符，默认换行。", 14,
+            label_en="Merge Separator", hint_en="Separator inserted between merged text segments.",
+        ),
+    )
+    ignore_empty_message: bool = Field(
+        default=True,
+        description="没有文本或图片等主体内容的消息不参与收口，直接放行。",
+        json_schema_extra=_ui(
+            "忽略空消息", "无文本且无图片/表情/语音等主体内容的消息直接放行，不进入防抖窗口。", 15,
+            label_en="Ignore Empty Messages", hint_en="Messages without text or media body bypass the debounce window.",
+        ),
+    )
+    log_detail: bool = Field(
+        default=True,
+        description="记录开始收集、追加、结算等防抖过程日志。",
+        json_schema_extra=_ui(
+            "记录详细日志", "开启后按消息记录防抖开始/追加/结算日志，便于排查合并行为。", 16,
+            label_en="Detailed Debounce Logs", hint_en="Log debounce start, append and settle events per message.",
+        ),
+    )
     outbound_turn_guard: bool = Field(default=True, description="阻止同一消息触发多次独立 Replyer 回复。", json_schema_extra=_ui("启用同轮回复防重", "不影响一次回复内部的正常分段。", 12, label_en="Enable Reply Turn Guard", hint_en="Prevent repeated Replyer responses for the same user message."))
     turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 13, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
 

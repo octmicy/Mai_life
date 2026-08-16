@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import sqlite3
 import tempfile
 import time
@@ -427,6 +428,79 @@ class DebounceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service._quiet_wait([private],True,media_hints=[["image"]]),config.debounce.image_wait_seconds)
         self.assertEqual(service._quiet_wait([private],True,media_hints=[list(expected)]),
                          service._quiet_wait([private],True))
+
+    async def test_merge_uses_configured_separator(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04
+        config.debounce.merge_separator=" || "
+        service=MessageDebouncer(config,DummyLogger())
+        first=asyncio.create_task(service.collect(self.message("m1","第一段")))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(self.message("m2","第二段")))
+        old,new=await asyncio.gather(first,second)
+        self.assertFalse(old[0]); self.assertTrue(new[0])
+        self.assertEqual(new[1]["processed_plain_text"],"第一段 || 第二段")
+        text_parts=[part["data"] for part in new[1]["raw_message"]
+                    if isinstance(part,dict) and part.get("type")=="text"]
+        self.assertIn(" || ",text_parts)
+
+    async def test_ignore_empty_message_passes_through_without_burst(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=3
+        service=MessageDebouncer(config,DummyLogger())
+        empty=self.message("m0",""); empty["raw_message"]=[{"type":"unsupported","data":"x"}]
+        allowed,merged,reason=await service.collect(empty)
+        self.assertTrue(allowed); self.assertIs(merged,empty); self.assertEqual(reason,"empty_ignored")
+        self.assertEqual(service.active_bursts,0)
+
+    async def test_ignore_empty_message_disabled_participates_in_burst(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04
+        config.debounce.ignore_empty_message=False
+        service=MessageDebouncer(config,DummyLogger())
+        empty=self.message("m0",""); empty["raw_message"]=[{"type":"unsupported","data":"x"}]
+        first=asyncio.create_task(service.collect(self.message("m1","正文")))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(empty))
+        old,new=await asyncio.gather(first,second)
+        self.assertFalse(old[0]); self.assertTrue(new[0])
+        self.assertEqual(new[1]["processed_plain_text"],"正文")
+
+    async def test_merged_message_carries_emoji_and_picture_flags(self):
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04
+        service=MessageDebouncer(config,DummyLogger())
+        image=self.message("m1",""); image["raw_message"]=[{"type":"image","binary_data_base64":"AA=="}]
+        emoji=self.message("m2",""); emoji["raw_message"]=[{"type":"emoji","data":"😀"}]
+        first=asyncio.create_task(service.collect(image))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(emoji))
+        old,new=await asyncio.gather(first,second)
+        self.assertFalse(old[0]); self.assertTrue(new[0])
+        self.assertTrue(new[1]["is_picture"]); self.assertFalse(new[1]["is_emoji"])
+        # 纯表情的两条消息合并后 is_emoji 才是 True
+        service=MessageDebouncer(config,DummyLogger())
+        emoji2=self.message("m3",""); emoji2["raw_message"]=[{"type":"emoji","data":"🔥"}]
+        third=asyncio.create_task(service.collect(copy.deepcopy(emoji)))
+        await asyncio.sleep(0.01)
+        fourth=asyncio.create_task(service.collect(emoji2))
+        old2,new2=await asyncio.gather(third,fourth)
+        self.assertFalse(old2[0]); self.assertTrue(new2[0])
+        self.assertTrue(new2[1]["is_emoji"]); self.assertFalse(new2[1]["is_picture"])
+
+    async def test_log_detail_records_debounce_events(self):
+        class CountingLogger:
+            def __init__(self):self.lines=[]
+            def info(self,*args,**kwargs):
+                if args and len(args)>1:self.lines.append(args[0]%args[1:])
+                elif args:self.lines.append(args[0])
+        config=MaiLifeSettings(); config.debounce.text_wait_seconds=0.04
+        config.debounce.log_detail=True
+        service=MessageDebouncer(config,CountingLogger())
+        first=asyncio.create_task(service.collect(self.message("m1","你好")))
+        await asyncio.sleep(0.01)
+        second=asyncio.create_task(service.collect(self.message("m2","在吗")))
+        await asyncio.gather(first,second)
+        text="\n".join(service.logger.lines)
+        self.assertIn("消息防抖开始",text)
+        self.assertIn("消息防抖追加",text)
+        self.assertIn("消息防抖结算",text)
 
     def test_local_intent_classifier(self):
         self.assertEqual(classify_intent("这张图里是什么",["image"]),"询问当前图片")

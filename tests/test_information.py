@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime,timedelta,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 
-from Mai_life.config import MaiLifeSettings,SearchProviderProfile,SocialGroupProfile,UserProfile
+from Mai_life.config import PLUGIN_VERSION,MaiLifeSettings,SearchProviderProfile,SocialGroupProfile,UserProfile
 from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
 from Mai_life.information.feed_parser import readable_text
 from Mai_life.information.http_client import HttpClient,HttpRequestError,HttpResponse
@@ -443,7 +443,7 @@ class HttpClientPipelineTests(unittest.TestCase):
         self.assertEqual(response.status,200); self.assertEqual(response.text(),"target")
         self.assertEqual([item["path"] for item in RedirectHandler.seen],["/start","/target"])
         self.assertEqual({item["method"] for item in RedirectHandler.seen},{"GET"})
-        self.assertTrue(all("Mai_life/1.11.0" in item["ua"] for item in RedirectHandler.seen))
+        self.assertTrue(all(f"Mai_life/{PLUGIN_VERSION}" in item["ua"] for item in RedirectHandler.seen))
 
     def test_303_rewrites_post_to_get_and_drops_json_headers(self):
         http=HttpClient(DummyLogger())

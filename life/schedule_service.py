@@ -76,6 +76,7 @@ class ScheduleService:
 
     # 所有 LLM 日程必须经过时间、类型、重叠和必要节点校验。
     def _validate(self, day: str, raw: Any) -> list[dict[str, Any]]:
+        """规范化节点、修复可安全修复的重叠，并拒绝缺少夜间睡眠或进餐的框架。"""
         if not isinstance(raw,list): return []
         cleaned=[]
         for index,item in enumerate(raw):
@@ -93,6 +94,7 @@ class ScheduleService:
             try: share=max(0,min(1,float(item.get("shareability",0.3))))
             except (TypeError,ValueError): share=0.3
             cleaned.append({"start_minute":start,"end_minute":end,"kind":kind,"summary":summary,"location":location,"energy_load":energy,"shareability":share})
+        # 排序后只向后推迟重叠节点，绝不把后段改回已经过去的时间。
         cleaned.sort(key=lambda x:x["start_minute"])
         result=[]; last_end=-1
         for item in cleaned:
@@ -147,6 +149,7 @@ class ScheduleService:
 
     # 只细化临近节点，减少模型调用并保持场景与最新环境一致。
     async def expand_due(self, now: datetime, nodes: list[dict[str, Any]], state: dict[str, Any], weather_text: str) -> None:
+        """细化当前与下一节点；状态增量始终由本地规则生成，模型只写叙事和机会。"""
         minute=now.hour*60+now.minute; lead=self.config.schedule.detail_lead_minutes
         due=[n for n in nodes if n["end_minute"]>minute and n["start_minute"]<=minute+lead][:2]
         for node in due:
@@ -215,6 +218,7 @@ class ScheduleService:
             await self.store.mark_scene_applied(scene["framework_id"])
 
     async def context(self, now: datetime) -> dict[str, Any]:
+        """返回今日框架、当前/下一节点和当前节点唯一的细化场景。"""
         nodes=await self.store.get_framework(now.strftime("%Y-%m-%d")); minute=now.hour*60+now.minute
         current,nxt=self.current_and_next(nodes,minute); scene=await self.store.get_scene(current["id"]) if current else {}
         return {"nodes":nodes,"current":current,"next":nxt,"scene":scene}

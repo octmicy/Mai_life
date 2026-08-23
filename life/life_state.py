@@ -30,7 +30,9 @@ class LifeStateEngine:
 
     # 状态数值由确定性规则推进，LLM 不得直接改写核心数值。
     async def advance(self, now: datetime, segment: dict[str, Any] | None, scene: dict[str, Any] | None) -> dict[str, Any]:
+        """按上次更新时间推进一次状态，并处理日程驱动的入睡或自然醒转换。"""
         state=await self.store.get_state(); runtime=await self.store.get_sleep_runtime()
+        # 单次最多补算 72 小时；更长的离线区间由 timeline 按日程边界分段推进。
         now_ts=now.timestamp(); elapsed=max(0.0,min(72.0,(now_ts-float(state.get("last_updated_at",now_ts)))/3600))
         kind=str((segment or {}).get("kind") or "leisure")
         scheduled_sleep=kind in {"sleep","nap"}
@@ -63,6 +65,7 @@ class LifeStateEngine:
             state["energy"]=self._clamp(float(state.get("energy",70))-load*elapsed,0,100)
             state["hunger"]=self._clamp(float(state.get("hunger",20))+5.0*elapsed,0,100)
             state["mood_arousal"]=self._clamp(float(state.get("mood_arousal",0.6))+0.05*elapsed,0,1)
+        # 心情和健康只接受轻微、可解释的本地修正，不随机制造严重疾病。
         energy=float(state["energy"]); hunger=float(state["hunger"])
         mood=float(state.get("mood_valence",0))
         mood += (-0.03*elapsed if energy<30 else 0.01*elapsed if energy>70 else 0)
@@ -121,6 +124,7 @@ class LifeStateEngine:
     # 梦境只负责叙事和轻微余韵，不制造预言或重大健康事件。
     async def generate_dream(self, state: dict[str, Any], sleep_started_at: float, hours: float,
                              woke_at: datetime|None=None) -> None:
+        """为一次有效夜间睡眠生成至多一个梦境，并创建有限期分享契机。"""
         count=int(self.config.memory.dream_fragment_count) if self.config.memory.dream_fragments_enabled else 0
         fallback={"summary":"只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。",
                   "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声"][:count],"mood":"calm"}

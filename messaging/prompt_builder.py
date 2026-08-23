@@ -65,6 +65,7 @@ class PromptBuilder:
                 continuity:dict[str,Any]|None=None,current_intent:str="",max_chars:int=4000,
                 memory:dict[str,Any]|None=None,information:dict[str,Any]|None=None,
                 bookshelf:dict[str,Any]|None=None,image_summaries:list[dict[str,Any]]|None=None)->str:
+        """为 Planner 构造完整背景，并明确区分内在状态、外部环境和不可信摘要。"""
         temperature=float(user.get("temperature",30)); env=environment or {}; continuity=continuity or {}
         topics=continuity.get("unresolved_topics") if isinstance(continuity.get("unresolved_topics"),list) else []
         images=image_summaries or []
@@ -103,6 +104,7 @@ class PromptBuilder:
                 current_intent:str="",image_summaries:list[dict[str,Any]]|None=None,max_chars:int=2400,
                 memory:dict[str,Any]|None=None,information:dict[str,Any]|None=None,
                 bookshelf:dict[str,Any]|None=None)->str:
+        """压缩 Replyer 背景并按用户角色裁剪私人日记、书柜和关系措辞。"""
         env=environment or {}; continuity=continuity or {}; images=image_summaries or []
         topics=continuity.get("unresolved_topics") if isinstance(continuity.get("unresolved_topics"),list) else []
         image_text="；".join(str(item.get("summary") or "") for item in images if item.get("summary"))

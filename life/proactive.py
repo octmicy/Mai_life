@@ -36,6 +36,7 @@ class ProactiveEngine:
 
     # 一次巡检最多选择一个“用户 + 生活契机”交给 Planner。
     async def patrol(self, now: Any, state: dict[str,Any]) -> bool:
+        """先执行额度、休息和间隔硬过滤，再将最高分候选交给 Planner 终审。"""
         cfg=self.config.proactive
         await self.store.expire_pending(now.timestamp())
         if not cfg.enabled or str(state.get("sleep_phase")) in {"falling_asleep","light_sleep","deep_sleep"}: return False
@@ -45,6 +46,7 @@ class ProactiveEngine:
         users=await self.store.list_users(proactive_only=True)
         pending_users=await self.store.pending_proactive_users(now.timestamp())
         current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
+        # 候选按用户独立过滤；定向契机不会进入其他 QQ 用户的评分集合。
         candidates=[]
         for user in users:
             if str(user.get("user_id") or "") in pending_users:continue
@@ -80,6 +82,7 @@ class ProactiveEngine:
             instruction="这是已归档为公开的麦麦原创作品；只在话题自然时分享，不要把一次作品拆成连续追发。"
         else:
             instruction="结合麦麦当前生活自然判断是否值得分享；可以选择不说。"
+        # reason 只提供结构化背景和隐私边界，Planner 仍可选择完全沉默。
         reason=json.dumps({"source":"mai_life","event_id":event_id,"topic":opportunity["topic"],"motive":opportunity["motive"],
                            "relationship_temperature":user["temperature"],"score":round(score,3),
                            "privacy":opportunity.get("privacy","normal"),"instruction":instruction},ensure_ascii=False)

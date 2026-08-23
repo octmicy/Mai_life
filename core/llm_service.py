@@ -20,6 +20,7 @@ class LLMService:
         self.config = config
 
     def task_for(self, kind: str) -> str:
+        """解析具体任务覆盖与基础角色回退，最终返回 MaiBot 的模型任务名。"""
         models = self.config.models
         routes = {
             "fast": models.fast_task,
@@ -106,6 +107,7 @@ class LLMService:
     async def generate(self, prompt: str | list[dict[str, Any]], system: str = "", max_tokens: int = 1800,
                        temperature: float = 0.5, *, task_kind: str = "reasoning",
                        request_type: str = "generic") -> str:
+        """统一调用 Host 模型并记录插件侧用量；失败时返回空串供业务规则降级。"""
         task=self.task_for(task_kind)
         messages: str | list[dict[str, Any]] = prompt
         if isinstance(prompt,str) and system:
@@ -128,6 +130,7 @@ class LLMService:
 
     async def generate_json(self, prompt: str, system: str, fallback: Any, max_tokens: int = 1800,
                             *, task_kind: str = "reasoning", request_type: str = "structured") -> Any:
+        """从纯响应、Markdown 代码块或首个 JSON 边界中解析结构化结果。"""
         raw=await self.generate(prompt,system,max_tokens=max_tokens,task_kind=task_kind,request_type=request_type)
         if not raw:return fallback
         candidates=[raw]

@@ -17,6 +17,7 @@ class CommandReplyService:
 
     @classmethod
     def _stream_dicts(cls,value:Any,depth:int=0)->Iterable[dict[str,Any]]:
+        """遍历 SDK 字典、列表和模型对象中的会话记录，并限制递归深度。"""
         if depth>5:return
         if hasattr(value,"model_dump"):
             try:value=value.model_dump()
@@ -56,6 +57,7 @@ class CommandReplyService:
         except Exception:return ""
 
     async def _scan_streams(self,user_id:str,group_id:str,platform:str)->str:
+        """精确查询不可用时枚举对应会话类型，并按真实 QQ 目标过滤。"""
         chat=getattr(self.ctx,"chat",None)
         if chat is None:return ""
         methods=[]
@@ -94,6 +96,7 @@ class CommandReplyService:
 
     async def send_image_bytes_with_fallback(self,image_bytes:bytes,stream_id:str,user_id:str="",group_id:str="",
                                              platform:str="qq")->bool:
+        """Base64 编码本地 PNG，优先发送到实时解析的会话，失败后尝试原始会话。"""
         if not image_bytes:return False
         resolved=await self.resolve_live_stream_id(stream_id,user_id,group_id,platform)
         if not resolved:return False
@@ -109,6 +112,7 @@ class CommandReplyService:
 
     async def send_text_with_fallback(self,text:str,stream_id:str,user_id:str="",group_id:str="",
                                       platform:str="qq")->bool:
+        """按与图片相同的实时会话策略发送纯文本降级内容。"""
         resolved=await self.resolve_live_stream_id(stream_id,user_id,group_id,platform)
         if not resolved:return False
         try:

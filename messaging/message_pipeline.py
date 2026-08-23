@@ -183,7 +183,7 @@ class MessageDebouncer:
         return latest
 
     async def collect(self, message:dict[str,Any]) -> tuple[bool,dict[str,Any],str]:
-        """返回 ``(是否继续, 最终消息, 原因)``；旧一代调用会被终止。"""
+        """按会话收集补话并返回最终一轮；每条新消息都会让较早 Hook 代际退出。"""
         cfg=self.config.debounce
         _uid,session,_mid,private=message_identity(message)
         if private and not cfg.enabled:return True,message,"disabled"
@@ -198,10 +198,12 @@ class MessageDebouncer:
                 burst=_Burst(started=now); self._bursts[burst_key]=burst
             else:
                 burst.event.set(); burst.event=asyncio.Event()
+            # 深拷贝避免后续 Hook 修改 Host 入参；generation 是并发调用唯一的所有权凭据。
             burst.messages.append(copy.deepcopy(message)); burst.generation+=1
             generation=burst.generation; event=burst.event
             over_limit=len(burst.messages)>=int(cfg.max_messages) or sum(media_bytes(item) for item in burst.messages)>int(cfg.max_media_bytes)
             text=direct_text(message); immediate=bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
+        # 每次被新消息唤醒后重新计算静默窗，但总等待永远受首次消息的 max_wait 限制。
         while not immediate:
             async with self._lock:
                 current=self._bursts.get(burst_key)

@@ -108,7 +108,7 @@ class AdminService:
     async def _overview(self,now:Any)->dict[str,Any]:
         counts=await self.store.management_overview_counts(); usage=await self._tokens(now)
         tokens=usage["model_usage"]
-        return {"scope":"overview","version":"1.7.0","users":counts.get("users",0),
+        return {"scope":"overview","version":"1.7.1","users":counts.get("users",0),
                 "owners":counts.get("owners",0),"pending_dates":counts.get("pending_dates",0),
                 "bookshelf_documents":counts.get("bookshelf_documents",0),
                 "private_documents":counts.get("private_documents",0),

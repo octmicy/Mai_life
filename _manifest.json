@@ -2,7 +2,7 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-    "version":  "1.7.0",
+    "version":  "1.7.1",
     "description":  "让麦麦拥有持续生活、消息体验、低频联网见闻以及自己的书柜与创作",
     "author":  {
                    "name":  "octmicy",
@@ -23,6 +23,8 @@
     "plugin_type":  "tool",
     "capabilities":  [
                          "send.text",
+                         "send.image",
+                         "chat.get_all_streams",
                          "chat.get_stream_by_user_id",
                          "chat.get_private_streams",
                          "chat.get_stream_by_group_id",

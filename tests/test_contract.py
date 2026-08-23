@@ -13,7 +13,7 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.7.0")
+        self.assertEqual(config.plugin.config_version,"1.7.1")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
@@ -53,7 +53,7 @@ class ContractTests(unittest.TestCase):
     def test_sdk_components_registered(self):
         plugin=MaiLifePlugin(); components=plugin.get_components()
         names={str(item.get("name") or "") for item in components}
-        for expected in {"/mai_status","/mai_schedule","/mai_relation","/mai_recalled","/mai_diary","/mai_dates","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
+        for expected in {"/mai","/mai_help","/mai_status","/mai_schedule","/mai_relation","/mai_recalled","/mai_diary","/mai_dates","/mai_news","/mai_explore","/mai_relay","/mai_bookshelf","/mai_read","/mai_create_now","/mai_admin","get_life_state","get_current_scene","admin_snapshot","mai_life_management"}:
             self.assertIn(expected,names)
         self.assertNotIn("/mai_skills",names)
         hooks={str((item.get("metadata") or {}).get("hook") or "") for item in components if item.get("type")=="HOOK_HANDLER"}
@@ -111,7 +111,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.7.0")
+        self.assertEqual(config.plugin.config_version,"1.7.1")
         self.assertTrue(config.debounce.enabled)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):

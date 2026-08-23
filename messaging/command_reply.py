@@ -104,7 +104,7 @@ class CommandReplyService:
         try:
             if await self.ctx.send.image(encoded,resolved):return True
         except Exception as exc:
-            self._debug(f"[MaiLife] 命令菜单图片发送失败 type={type(exc).__name__}")
+            self._debug(f"[MaiLife] 指令图片发送失败 type={type(exc).__name__}")
         fallback=str(stream_id or "").strip()
         if not fallback or fallback==resolved:return False
         try:return bool(await self.ctx.send.image(encoded,fallback))

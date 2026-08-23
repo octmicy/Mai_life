@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.8.1"
+CONFIG_SCHEMA_VERSION = "1.9.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -559,8 +559,8 @@ class InformationSettings(PluginConfigBase):
     __ui_label__: ClassVar[str] = "联网见闻"
     __ui_order__: ClassVar[int] = 13
 
-    enabled: bool = Field(default=False,description="联网见闻总开关。",json_schema_extra=_ui(
-        "启用联网见闻","默认关闭；新闻和搜索子开关还需分别开启。",0,label_en="Enable Connected Discovery",hint_en="Disabled by default; news and search also have separate switches."))
+    enabled: bool = Field(default=False,description="联网见闻与搜索工具总开关。",json_schema_extra=_ui(
+        "启用联网见闻","默认关闭；新闻、主动搜索和联网工具还受各自开关控制。",0,label_en="Enable Connected Discovery",hint_en="Disabled by default; news, proactive search and the web-search tool have separate switches."))
     association_enabled: bool = Field(default=True,description="判断外界信息与麦麦自身的关系。",json_schema_extra=_ui(
         "启用自我关联","先判断与人格、状态、兴趣、创作或关系是否有关，再考虑分享。",1,label_en="Enable Self-association",hint_en="Relate external information to Mai before considering sharing."))
     association_threshold: float = Field(default=0.65,ge=0,le=1,description="创建主动契机的最低关联分。",json_schema_extra=_ui(
@@ -632,6 +632,9 @@ class SearchAPISettings(PluginConfigBase):
     max_results: int = Field(default=5,ge=1,le=10,description="单次搜索最多保留结果数。",json_schema_extra=_ui(
         "单次结果数","默认 5 条，新闻和主动搜索共同使用。",3,
         label_en="Maximum Results",hint_en="Shared result limit for news and exploration."))
+    tool_enabled: bool = Field(default=True,description="允许麦麦按需调用联网搜索工具。",json_schema_extra=_ui(
+        "允许麦麦使用联网搜索工具","仍需开启“联网见闻”总开关并配置至少一个可用服务；工具只返回搜索摘要，不会直接发送消息。",4,
+        label_en="Enable Web Search Tool",hint_en="Also requires connected discovery and an available provider; the tool returns search summaries only."))
 
 
 class NewsSettings(PluginConfigBase):

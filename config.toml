@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.8.1"
+config_version = "1.9.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -279,6 +279,7 @@ context_item_limit = 3
 timeout_seconds = 12.0
 max_attempts = 12
 max_results = 5
+tool_enabled = true
 
 # 建议在 WebUI 添加。列表顺序就是跨服务降级顺序。
 # provider_type 可选：bocha / tavily / you / openai_responses / openai_chat

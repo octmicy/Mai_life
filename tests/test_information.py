@@ -13,6 +13,7 @@ from Mai_life.information.feed_parser import readable_text
 from Mai_life.information.http_client import HttpClient,HttpRequestError,HttpResponse
 from Mai_life.information.information_service import InformationService
 from Mai_life.information.search_service import SearchService
+from Mai_life.plugin import MaiLifePlugin
 import Mai_life.information.search_service as search_module
 
 
@@ -249,6 +250,60 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         query=next(item["body"]["query"] for item in LocalHandler.calls if item["path"]=="/bocha")
         for private in ("10001","小麦","秘密群","test@example.com","private.example"):
             self.assertNotIn(private,query)
+
+    async def test_web_search_tool_scrubs_private_terms_and_allows_repeated_calls(self):
+        config=MaiLifeSettings(); config.information.enabled=True
+        config.search_api.tool_enabled=True
+        config.search_api.providers=[self._provider("bocha")]
+        config.users.profiles=[UserProfile(user_id="10001")]
+        config.social.groups=[SocialGroupProfile(group_id="20001")]
+        await self.store.sync_users(config.users.profiles); await self.store.update_user_display_name("10001","小麦")
+        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
+        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+
+        first=await service.search_for_tool(
+            "10001 小麦 秘密群 test@example.com https://private.example/a 人工智能新闻",
+            self.now,result_limit=2,freshness="day",
+        )
+        self.assertTrue(first["success"]); self.assertEqual(len(first["results"]),2)
+        self.assertIn("外部联网搜索结果",first["content"]); self.assertIn("https://example.com/news/1",first["content"])
+        for private in ("10001","小麦","秘密群","test@example.com","private.example"):
+            self.assertNotIn(private,first["query"])
+        call=next(item for item in LocalHandler.calls if item["path"]=="/bocha")
+        self.assertEqual(call["body"].get("freshness"),"oneDay")
+
+        second=await service.search_for_tool("第二次搜索",self.now+timedelta(seconds=1),result_limit=3)
+        self.assertTrue(second["success"]); self.assertEqual(len(second["results"]),3)
+        start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
+        self.assertEqual(await self.store.search_attempt_count(
+            "tool_search",start.timestamp(),(start+timedelta(days=1)).timestamp(),
+        ),2)
+
+    async def test_web_search_tool_respects_connected_discovery_switch(self):
+        config=MaiLifeSettings(); config.search_api.providers=[self._provider("bocha")]
+        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+        result=await service.search_for_tool("人工智能",self.now)
+        self.assertFalse(result["success"]); self.assertIn("总开关未开启",result["content"])
+        self.assertEqual(LocalHandler.calls,[])
+
+    async def test_plugin_tool_entry_clamps_parameters_and_forwards_environment_time(self):
+        class StubInformation:
+            def __init__(self):self.calls=[]
+            async def search_for_tool(self,query,now,**kwargs):
+                self.calls.append((query,now,kwargs))
+                return {"success":True,"content":"工具调用成功"}
+
+        class StubEnvironment:
+            def now(_self):return self.now
+
+        config=MaiLifeSettings(); plugin=MaiLifePlugin()
+        plugin.set_plugin_config(config.model_dump(mode="python"))
+        information=StubInformation(); plugin._information=information; plugin._env=StubEnvironment()
+        result=await plugin.tool_web_search(query="人工智能",result_limit=99,freshness="DAY")
+        self.assertTrue(result["success"]); self.assertEqual(len(information.calls),1)
+        query,called_at,options=information.calls[0]
+        self.assertEqual(query,"人工智能"); self.assertEqual(called_at,self.now)
+        self.assertEqual(options,{"result_limit":5,"freshness":"day"})
 
     async def test_all_services_failed_keeps_existing_notes_and_creates_no_fake_record(self):
         config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True

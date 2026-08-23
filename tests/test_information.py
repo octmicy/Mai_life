@@ -333,6 +333,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_active_search_skips_query_model_without_available_provider(self):
         config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True
+        config.search_api.providers=[]
         service=InformationService(DummyContext(),self.store,config,QueryLLM(),DummyLogger())
         async def fail_if_planned(*args,**kwargs):
             del args,kwargs

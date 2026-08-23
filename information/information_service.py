@@ -9,7 +9,8 @@ from typing import Any
 
 from .http_client import HttpClient
 from .news_service import NewsService
-from .search_service import SearchResponse,SearchResult,SearchService
+from .search_models import SearchResponse,SearchResult
+from .search_service import SearchService
 
 
 class InformationService:
@@ -22,6 +23,10 @@ class InformationService:
         self.config=config; self.search.update_config(config); self.news.update_config(config)
 
     async def prepare(self)->None:await self.search.prepare()
+
+    async def close(self)->None:
+        """释放 Playwright 浏览器等联网搜索资源。"""
+        await self.search.close()
 
     async def search_for_tool(self,query:str,now:Any,*,result_limit:int=5,freshness:str="any")->dict[str,Any]:
         """为 MaiBot Tool 执行一次受单次请求保护和隐私清洗约束的联网搜索。"""

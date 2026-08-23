@@ -1,6 +1,6 @@
 # 麦麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.9.2**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.10.0**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
 
 ## 快速配置
 
@@ -41,19 +41,20 @@
 
 ## 联网搜索
 
-新闻和主动搜索共用一条有序服务链。先开启“联网见闻”，再开启“新闻阅读”或“主动搜索”，最后在“联网搜索服务”中添加至少一个服务。
+新闻和主动搜索共用一条有序服务链。默认启用免 Key 的 Playwright/Bing 浏览器搜索；需要时可在它后面添加 API 服务作为备援。先开启“联网见闻”，再开启“新闻阅读”或“主动搜索”。
 
 启用“允许麦麦使用联网搜索工具”后，MaiBot 的 Planner/Replyer 可以调用 `mai_life_web_search` 查询近期事实、未知知识和资料来源。工具复用同一套服务降级与 Key 健康状态，不直接发送消息，也不会自动创建主动契机；查询前会清除 QQ 号、自动昵称、群名称、邮箱和 URL。工具不设置每日次数上限，但每次逻辑搜索仍受最多 12 次外部请求、Key 冷却和服务退避保护，可在 WebUI 单独关闭。
 
 | 服务类型 | 需要填写 | 说明 |
 | --- | --- | --- |
+| Playwright `playwright` | 浏览器引擎、是否无头 | 默认 Bing，无需 API Key；可切换 DuckDuckGo |
 | 博查 `bocha` | 一个或多个 Key | 通常更适合中国大陆服务器 |
 | Tavily `tavily` | 一个或多个 Key | 海外网络可能超时 |
 | You.com `you` | 一个或多个 Key | 海外网络可能超时 |
 | Responses `openai_responses` | Key、地址、模型名 | 使用带 `web_search` 工具的兼容接口，可接支持该协议的中转 |
 | Chat `openai_chat` | Key、地址、模型名 | 模型本身必须具有联网能力，插件无法强制普通模型联网 |
 
-自定义地址可以填写 API 基础地址，也可以填写完整的 `/responses` 或 `/chat/completions` 地址。插件不内置公共 Key、代理或中转地址。
+Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文；安装依赖后还需要执行 `python -m playwright install chromium`。验证码、搜索页结构变化、浏览器缺失或网络失败会记录为明确的服务错误，并按列表继续尝试 API 备援。自定义地址可以填写 API 基础地址，也可以填写完整的 `/responses` 或 `/chat/completions` 地址。插件不内置公共 Key、代理或中转地址。
 
 每个服务可按优先级填写多个 Key，第一个为主 Key：
 
@@ -67,7 +68,7 @@
 
 新闻默认每天最多读取 1 次，每次轮换一个普通兴趣词，最多保留 5 条结果并尝试读取前 3 篇正文。主动搜索默认每天最多 1 次。每日次数按整条降级链的一次逻辑尝试计算，失败或空结果也会计入，避免持续请求；所有服务失败时保留旧缓存，不生成虚假见闻。
 
-v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映射配置。升级后需要在 WebUI 添加新的搜索服务。
+v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映射配置。升级到 v1.10.0 后，默认配置已经包含 Playwright/Bing；API 服务仍可在 WebUI 中追加为备援。
 
 ## 主要功能
 
@@ -140,7 +141,7 @@ v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映�
 
 SQLite Schema v9 使用事务和异步锁。升级会删除旧技能表、技能结算字段和手动关系别名数据，并把旧 `daily_proactive_max = -1` 转换为主人 `2`、朋友 `1`；其他生活、关系、新闻、日记和作品数据继续保留。数据库损坏或版本不兼容时会先保留原文件，再建立新库。
 
-适配器兼容层只读取 MaiBot 标准消息结构，并归一化 SnowLuma/NapCat 的媒介和撤回通知。插件运行时不调用浏览器、Shell、Playwright、curl、ffmpeg 或其他外部二进制。
+适配器兼容层只读取 MaiBot 标准消息结构，并归一化 SnowLuma/NapCat 的媒介和撤回通知。联网搜索由独立的 Playwright 浏览器服务负责；除 Chromium 外不调用 Shell、curl、ffmpeg 或其他外部二进制。
 
 公开 API 保持：
 
@@ -159,7 +160,7 @@ SQLite Schema v9 使用事务和异步锁。升级会删除旧技能表、技能
 不要在 TOML 中填写 `null` 或 `None`。列表项未填写时使用空字符串、空列表或直接删除该未完成项。
 
 **搜索一直降级**
-使用 `/麦麦管理 来源` 查看服务类型、Key 指纹、状态和最近错误类别。先检查服务器是否能访问对应官方端点，再检查 Key、额度、自定义地址和模型名。
+使用 `/麦麦管理 来源` 查看服务类型、浏览器引擎、Key 指纹、状态和最近错误类别。先确认已安装 Chromium，再检查网络、验证码、搜索引擎页面变化；若浏览器失败，检查后续 API 备援的 Key、额度、自定义地址和模型名。
 
 **群聊仍有连续回复**
 群防抖默认关闭。开启后检查适配器是否提供真实群 QQ 号与发送者 QQ 号；该功能只合并同一用户在同一群中的连续补话。
@@ -173,6 +174,7 @@ SQLite Schema v9 使用事务和异步锁。升级会删除旧技能表、技能
 $env:PYTHONPATH='D:\MaiBot\plugin\maibot-plugin-sdk-2.7.0;D:\MaiBot\plugin'
 python -m unittest discover -s Mai_life\tests -v
 python -m compileall Mai_life
+python -m playwright install chromium
 ```
 
-可选依赖 `chinese-calendar`、`lunar-python` 和 `Pillow` 均可离线降级；未安装 Pillow 或系统缺少可用中文字体时，GIF 抽帧和图片指令菜单会分别使用各自的降级路径，不会阻止插件加载。
+`playwright` 是联网搜索的运行依赖；浏览器二进制需单独安装 Chromium。`chinese-calendar`、`lunar-python` 和 `Pillow` 均可离线降级；未安装 Pillow 或系统缺少可用中文字体时，GIF 抽帧和图片指令菜单会分别使用各自的降级路径，不会阻止插件加载。

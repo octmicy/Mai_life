@@ -9,7 +9,8 @@ from typing import Any
 
 from .feed_parser import readable_text
 from .http_client import HttpClient
-from .search_service import SearchResponse,SearchResult,SearchService
+from .search_models import SearchResult
+from .search_service import SearchService
 
 
 class NewsService:

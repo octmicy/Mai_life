@@ -22,7 +22,7 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.9.2"
+config_version = "1.11.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
@@ -176,6 +176,12 @@ group_forward_wait_seconds = 1.2
 group_max_wait_seconds = 4.0
 max_messages = 12
 max_media_bytes = 8388608
+# 多条文本合并时使用的分隔符，默认换行。
+merge_separator = "\n"
+# 无文本、无图片等主体内容的消息直接放行，不进入防抖窗口。
+ignore_empty_message = true
+# 记录防抖开始/追加/结算日志，便于排查合并行为。
+log_detail = true
 outbound_turn_guard = true
 turn_expire_seconds = 120
 

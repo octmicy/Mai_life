@@ -1,6 +1,6 @@
 # 麦麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.11.0**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.12.0**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
 
 ## 快速配置
 
@@ -68,7 +68,7 @@ Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文；安装
 
 新闻默认每天最多读取 1 次，每次轮换一个普通兴趣词，最多保留 5 条结果并尝试读取前 3 篇正文。主动搜索默认每天最多 1 次。每日次数按整条降级链的一次逻辑尝试计算，失败或空结果也会计入，避免持续请求；所有服务失败时保留旧缓存，不生成虚假见闻。
 
-v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映射配置。升级到 v1.11.0 后，默认配置已经包含 Playwright/Bing；API 服务仍可在 WebUI 中追加为备援。
+v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映射配置。升级到 v1.12.0 后，默认配置已经包含 Playwright/Bing；API 服务仍可在 WebUI 中追加为备援。
 
 ## 主要功能
 

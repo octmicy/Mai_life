@@ -145,7 +145,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.11.0")
+        self.assertEqual(manifest["version"],"1.12.0")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 

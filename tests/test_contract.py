@@ -16,19 +16,19 @@ class ContractTests(unittest.TestCase):
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
         readme=(root/"README.md").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.11.0")
+        self.assertEqual(manifest["version"],"1.12.0")
         self.assertIn("playwright>=1.49,<2",requirements)
         self.assertIn("python -m playwright install chromium",readme)
         self.assertIn("Playwright/Bing",readme)
 
-    def test_version_constant_is_unified_around_1_11_0(self):
+    def test_version_constant_is_unified_around_1_12_0(self):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.11.0")
+        self.assertEqual(PLUGIN_VERSION,"1.12.0")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 菜单、管理概览与入口的显示版本必须统一为 1.11.0，不允许残留旧版本号。
+        # 菜单、管理概览与入口的显示版本必须统一为 1.12.0，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py","messaging/menu_renderer.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -43,11 +43,14 @@ class ContractTests(unittest.TestCase):
     def test_default_toml_validates(self):
         root=Path(__file__).parents[1]
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.10.0")
+        self.assertEqual(config.plugin.config_version,"1.11.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
         self.assertTrue(config.debounce.enabled)
+        self.assertEqual(config.debounce.merge_separator,"\n")
+        self.assertTrue(config.debounce.ignore_empty_message)
+        self.assertTrue(config.debounce.log_detail)
         self.assertTrue(config.recall.enabled)
         self.assertFalse(config.recall.cache_summary_enabled)
         self.assertTrue(config.search_api.tool_enabled)
@@ -147,7 +150,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.10.0")
+        self.assertEqual(config.plugin.config_version,"1.11.0")
         self.assertTrue(config.debounce.enabled)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):

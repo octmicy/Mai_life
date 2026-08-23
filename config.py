@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-CONFIG_SCHEMA_VERSION = "1.8.0"
+CONFIG_SCHEMA_VERSION = "1.8.1"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -100,10 +100,10 @@ class PluginSettings(PluginConfigBase):
     )
     admin_user_ids: list[str] = Field(
         default_factory=list,
-        description="允许执行日程重生成和休息诊断命令的 QQ 号列表。",
+        description="允许在私聊使用菜单、状态和管理诊断指令的 QQ 号列表。",
         json_schema_extra=_ui(
-            "管理员 QQ 列表", "留空时，私聊用户列表中第一个有效 QQ 自动成为管理员。", 2,
-            label_en="Administrator QQ IDs", hint_en="If empty, the first valid private user becomes administrator.",
+            "管理员 QQ 列表", "管理员无需同时创建用户档案即可使用管理类指令；关系、撤回摘要和重要日期等个人功能仍需启用用户档案。留空时，第一个有效私聊用户自动成为管理员。", 2,
+            label_en="Administrator QQ IDs", hint_en="Administrators can use management commands without a user profile; relationship and personal-record commands still require an enabled profile. If empty, the first valid private user becomes administrator.",
             placeholder="123456789",
         ),
     )

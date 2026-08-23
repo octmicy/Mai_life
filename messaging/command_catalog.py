@@ -1,4 +1,4 @@
-"""Mai_life 命令菜单的结构化目录与纯文本降级内容。"""
+"""Mai_life 指令菜单的结构化目录与纯文本降级内容。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,16 +20,16 @@ COMMAND_SECTIONS:tuple[CommandSection,...]=(
     CommandSection("日常状态",(
         CommandItem("/麦麦状态","生活状态、模型与后台任务健康"),
         CommandItem("/麦麦日程","今日日程与当前细化场景"),
-        CommandItem("/麦麦关系","关系角色、温度与主动额度"),
+        CommandItem("/麦麦关系","关系角色、温度与主动额度（需用户档案）"),
         CommandItem("/麦麦配置","当前插件配置摘要"),
-        CommandItem("/麦麦撤回","本人最近撤回摘要"),
+        CommandItem("/麦麦撤回","本人最近撤回摘要（需用户档案）"),
     )),
     CommandSection("生活记录",(
         CommandItem("/麦麦日记","最近生活日记（主人或管理员）"),
-        CommandItem("/麦麦日期","重要日期与待确认项"),
-        CommandItem("/麦麦添加日期 日期 名称","添加自己的重要日期"),
-        CommandItem("/麦麦删除日期 编号","删除自己的重要日期"),
-        CommandItem("/麦麦确认日期 编号 [日期]","确认日期候选"),
+        CommandItem("/麦麦日期","重要日期与待确认项（需用户档案）"),
+        CommandItem("/麦麦添加日期 日期 名称","添加自己的重要日期（需用户档案）"),
+        CommandItem("/麦麦删除日期 编号","删除自己的重要日期（需用户档案）"),
+        CommandItem("/麦麦确认日期 编号 [日期]","确认日期候选（需用户档案）"),
     )),
     CommandSection("见闻与书柜",(
         CommandItem("/麦麦新闻","近期新闻见闻（主人或管理员）"),
@@ -56,7 +56,7 @@ def build_command_usage_text(notice:str="")->str:
     for section in COMMAND_SECTIONS:
         lines.extend(("",section.title))
         lines.extend(f"{item.command}  {item.description}" for item in section.items)
-    lines.extend(("","所有命令仅对已配置的私聊用户开放。"))
+    lines.extend(("","私聊管理员无需重复创建用户档案；关系、撤回摘要和重要日期仍需启用用户档案。"))
     return "\n".join(lines)
 
 

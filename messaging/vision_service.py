@@ -63,7 +63,11 @@ class VisionService:
             with Image.open(io.BytesIO(data)) as image:
                 count=max(1,int(getattr(image,"n_frames",1)))
                 max_frames=int(self.config.vision.gif_max_frames)
-                indices=sorted({round(index*(count-1)/max(1,max_frames-1)) for index in range(min(count,max_frames))})
+                sample_count=min(count,max_frames)
+                indices=sorted({
+                    round(index*(count-1)/max(1,sample_count-1))
+                    for index in range(sample_count)
+                })
                 for index in indices:
                     image.seek(index); frame=ImageOps.exif_transpose(image.convert("RGBA"))
                     background=Image.new("RGBA",frame.size,(255,255,255,255)); background.alpha_composite(frame)
@@ -95,8 +99,10 @@ class VisionService:
         max_bytes=int(self.config.debounce.max_media_bytes)
         if media_bytes(message)>max_bytes:return ""
         types=media_types(message); text=plain_text(message)
+        # 表情包（emoji）同样携带 binary_data_base64，但 MaiBot 原生多模态不会把表情喂给 Replyer，
+        # 因此把 emoji 与 image 一并纳入疑难图片候选。
         direct=[item for item in _walk_components(message.get("raw_message") or [])
-                if component_kind(item)=="image" and _image_bytes(item,max_bytes)]
+                if component_kind(item) in ("image","emoji") and _image_bytes(item,max_bytes)]
         source_type="direct"
         info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
         additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}
@@ -148,7 +154,7 @@ class VisionService:
         prompt=[{"role":"system","content":"你是克制的图片转述器，只输出合法JSON。"},{"role":"user","content":content}]
         try:
             raw=await asyncio.wait_for(
-                self.llm.generate(prompt,max_tokens=420,temperature=0.2,task_kind="vision_summary",request_type="vision_summary"),
+                self.llm.generate(prompt,max_tokens=8096,temperature=0.2,task_kind="vision_summary",request_type="vision_summary"),
                 timeout=float(cfg.timeout_seconds),
             )
         except asyncio.TimeoutError:

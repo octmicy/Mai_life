@@ -1,6 +1,6 @@
 # 麦麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.9.1**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.9.2**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
 
 ## 快速配置
 

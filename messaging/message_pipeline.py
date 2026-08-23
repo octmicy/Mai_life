@@ -15,7 +15,7 @@ from .adapter_compat import component_kind, component_text, walk_components
 _URGENT_RE=re.compile(r"急事|紧急|救命|出事了|危险|报警|叫醒|醒醒|快醒|撑不住|自杀|轻生",re.I)
 _QUIET_RE=re.compile(r"别回|不要回|不用回|继续睡|别醒|别打扰|不用理我",re.I)
 _MEDIA_PLACEHOLDER_RE=re.compile(
-    r"\[(?:image|图片|emoji|voice|语音|video|视频|file|文件|reply|forward|unsupported)\]",
+    r"\[(?:image|图片|emoji|表情包|表情|voice|语音|video|视频|file|文件|reply|forward|unsupported)\]",
     re.I,
 )
 _PLACEHOLDER_MEDIA={
@@ -66,7 +66,7 @@ def media_types(message: dict[str,Any]) -> list[str]:
         kind=component_kind(item)
         if kind in {"image","voice","video","reply","forward","file","emoji"} and kind not in found:found.append(kind)
         if kind=="text":display_parts.append(component_text(item))
-        if kind=="image":
+        if kind in ("image","emoji"):
             fmt=str(item.get("format") or item.get("image_format") or "").lower()
             data=str(item.get("binary_data_base64") or item.get("base64") or item.get("base64_data") or "")
             if fmt=="gif" or data.startswith("R0lGOD"):

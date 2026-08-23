@@ -130,12 +130,21 @@ class LifeStateEngine:
                   "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声"][:count],"mood":"calm"}
         result=fallback
         if self.llm.task_available("dream"):
+            # 摘取入睡前白天里的群聊公开话题，作为梦境的模糊参考素材。
+            group_context=""
+            try:
+                observations=await self.store.recent_group_observations(sleep_started_at,8)
+                topics=[str(item.get("topic") or "").strip() for item in observations if str(item.get("topic") or "").strip()]
+                if topics:group_context="白天在群里看到过这些话题："+ "、".join(topics[:8]) + "。这些可以作为梦境的模糊参考，但不要逐字复述或暴露群友身份。"
+            except Exception:pass
             prompt=(f"麦麦刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
-                    f"最近生活场景是{state.get('current_activity','普通日常')}。生成克制自然的醒后梦境，"
+                    f"最近生活场景是{state.get('current_activity','普通日常')}。"
+                    f"{group_context}"
+                    "生成克制自然的醒后梦境，"
                     f"返回JSON：summary为40到120字摘要，fragments为最多{count}个短片段，mood为calm/warm/uneasy之一。"
                     "不要解释，不要写成预言，不要强行出现用户，也不要制造重大健康事件。")
             raw=await self.llm.generate_json(
-                prompt,"你只输出合法JSON格式的梦境记录。",fallback,max_tokens=360,
+                prompt,"你只输出合法JSON格式的梦境记录。",fallback,max_tokens=600,
                 task_kind="dream",request_type="dream",
             )
             if isinstance(raw,dict):result=raw

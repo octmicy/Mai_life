@@ -1,18 +1,19 @@
-"""Mai_life v1.9.2 插件入口。"""
+"""Mai_life v1.11.0 插件入口。"""
 from __future__ import annotations
+
+from datetime import date,datetime,timedelta
+
+from maibot_sdk import API,Command,HomeCard,HookHandler,MaiBotPlugin,Tool
+from maibot_sdk.types import HookMode,HookOrder,ToolParameterInfo,ToolParamType
+from typing import Any,ClassVar,Iterable,Optional
 
 import asyncio
 import hashlib
 import json
 import os
 import time
-from datetime import date,datetime,timedelta
-from typing import Any,ClassVar,Iterable,Optional
 
-from maibot_sdk import API,Command,HomeCard,HookHandler,MaiBotPlugin,Tool
-from maibot_sdk.types import HookMode,HookOrder,ToolParameterInfo,ToolParamType
-
-from .config import MaiLifeSettings
+from .config import MaiLifeSettings,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
 from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
@@ -122,7 +123,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
-        self.ctx.logger.info("[MaiLife] 麦麦生活 v1.10.0 加载完成")
+        self.ctx.logger.info(f"[MaiLife] 麦麦生活 v{PLUGIN_VERSION} 加载完成")
 
     async def on_unload(self)->None:
         """先阻止新工作进入，再取消并等待所有任务，最后关闭 SQLite。"""
@@ -146,28 +147,30 @@ class MaiLifePlugin(MaiBotPlugin):
         finally:self._reloading=False
 
     async def _apply_config_update(self,scope:str,config_data:dict[str,Any],version:str)->None:
-        """停止调度、更新所有服务引用、清理失效运行态，再按新开关恢复任务。"""
+        """停止调度、按 scope 刷新对应服务引用、清理失效运行态，再按新开关恢复任务。"""
         del config_data,version
         await self._stop_tasks()
         await self._active_tasks.reset()
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         self._reply_confirmations.clear(); self._group_turns.clear(); self._group_turn_generation=0
         if self._group_observer:await self._group_observer.reset()
-        # 所有服务必须接收同一个已校验配置实例，避免热更新后模块间参数不一致。
-        for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
-                        self._debouncer,self._vision,self._continuity,self._memory,self._information,
-                        self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall):
-            if service:service.update_config(self.config)
-        if self._store and (not self.config.recall.enabled or not self.config.recall.cache_summary_enabled):
-            await self._store.clear_recall_summaries()
-            if self._recall:self._recall.clear()
-        if self._store:await self._store.sync_users(self.config.users.profiles)
-        if self._information:await self._information.prepare()
-        enabled_ids={str(profile.user_id) for profile in self.config.users.profiles if profile.enabled}
-        self._session_runtime={session:item for session,item in self._session_runtime.items()
-                               if str(item.get("user_id") or "") in enabled_ids}
+        # 热更新按 scope 分发到各服务：只有 self 会替换插件配置实例，此时才全量下发；
+        # bot 只重载人格，model 只刷新模型健康，其他服务继续持有同一个已校验实例。
+        if scope=="self":
+            for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
+                            self._debouncer,self._vision,self._continuity,self._memory,self._information,
+                            self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall):
+                if service:service.update_config(self.config)
+            if self._store and (not self.config.recall.enabled or not self.config.recall.cache_summary_enabled):
+                await self._store.clear_recall_summaries()
+                if self._recall:self._recall.clear()
+            if self._store:await self._store.sync_users(self.config.users.profiles)
+            if self._information:await self._information.prepare()
+            enabled_ids={str(profile.user_id) for profile in self.config.users.profiles if profile.enabled}
+            self._session_runtime={session:item for session,item in self._session_runtime.items()
+                                   if str(item.get("user_id") or "") in enabled_ids}
         if scope=="bot":await self._refresh_personality()
-        if self._llm:await self._llm.refresh_health()
+        if self._llm and scope in {"self","model"}:await self._llm.refresh_health()
         await self._resolve_all_streams()
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
@@ -587,7 +590,10 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.before_process",mode=HookMode.BLOCKING,order=HookOrder.EARLY,timeout_ms=30000)
     async def on_receive(self,**kwargs:Any)->dict[str,Any]:
-        """统一处理撤回、群/私聊收口、视觉摘要、互动记录和休息闸门。"""
+        """统一处理撤回、群/私聊收口、视觉摘要、互动记录和休息闸门。
+
+        入口只负责撤回通知、启停开关与消息归属路由，具体管线由群聊/私聊服务方法承担。
+        """
         message=kwargs.get("message") if isinstance(kwargs.get("message"),dict) else {}
         if not message:return {"action":"continue"}
         notice=recall_notice(message)
@@ -605,60 +611,71 @@ class MaiLifePlugin(MaiBotPlugin):
         try:await self._recall.register_turn(message)
         except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 撤回轮次注册失败，消息继续处理: {exc}")
         initial_sources=self._recall.source_message_ids(message)
-        # 群聊只做可选防抖、撤回关联和后台公共话题观察，不注入私聊关系或生活隐私。
-        if not private:
-            group_id,group_name=group_identity(message)
-            if group_id:
-                await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
-            if not uid or is_command(message):
-                return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
-            merged=message; reason="group_disabled"
-            if self.config.debounce.group_enabled:
-                try:allowed,merged,reason=await self._debouncer.collect(message)
-                except Exception as exc:
-                    self.ctx.logger.warning(f"[MaiLife] 群聊收口失败，失败开放: {exc}")
-                    allowed=True; merged=message; reason="failed_open"
-                if not allowed:return {"action":"abort"}
-                if self._stopping or self._reloading or not self.config.plugin.enabled:
-                    kwargs["message"]=merged
-                    return {"action":"continue","modified_kwargs":kwargs}
-            uid,session,mid,_=message_identity(merged)
-            source_ids=self._recall.source_message_ids(merged)
-            try:await self._recall.register_turn(merged)
-            except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 群聊合并撤回轮次注册失败，消息继续处理: {exc}")
-            if await self._is_recalled(session,mid,*source_ids):
-                for source in source_ids:await self._cancel_message_tasks(session,source)
-                group_id,_group_name=group_identity(merged)
-                if group_id and self._group_observer:
-                    for source in source_ids:await self._group_observer.recall(group_id,source,self._env.now())
-                return {"action":"abort"}
-            group_id,group_name=group_identity(merged)
-            if group_id:
-                await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
-            if self.config.debounce.group_enabled:
-                turn_scope=self._group_scope(merged)
-                await self._cancel_group_confirmations(turn_scope)
-                expiry=max(30,int(self.config.debounce.turn_expire_seconds)); current=time.time()
-                self._group_turns={key:value for key,value in self._group_turns.items()
-                                   if current-float(value.get("updated_at") or 0)<expiry}
-                self._group_turn_generation+=1
-                self._group_turns[(session,mid)]={
-                    "turn_scope":turn_scope,"message_id":mid,"source_message_ids":source_ids,
-                    "group_id":group_id,"user_id":uid,"updated_at":current,
-                    "generation":self._group_turn_generation,
-                }
-            if self._group_observer and self.config.social.enabled:
-                # 社交观察消费防抖后的最终消息，同时保留自己的后台话题收集窗口。
-                self._spawn_transient(
-                    self._group_observer.observe(merged,self._env.now()),f"mai-life-group-{mid}",
-                    message_keys=[(session,source) for source in source_ids],
-                )
-            kwargs["message"]=merged
-            self.ctx.logger.debug(f"[MaiLife] 群聊收口完成 scope={self._group_scope(merged)} {reason}")
-            return {"action":"continue","modified_kwargs":kwargs}
+        if not private:return await self._process_group_message(kwargs,message,uid,session,mid,initial_sources)
+        return await self._process_private_message(kwargs,message,uid,session,mid,initial_sources)
+
+    async def _process_group_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
+                                     initial_sources:list[str])->dict[str,Any]:
+        """群聊管线：目录登记、可选防抖、撤回关联和后台公共话题观察（不注入私聊关系或生活隐私）。"""
+        group_id,group_name=group_identity(message)
+        if group_id:
+            await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
+        if not uid or is_command(message):
+            return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
+        merged=message; reason="group_disabled"
+        if self.config.debounce.group_enabled:
+            try:
+                # 入口一次性计算媒体类型，防抖等待直接复用，避免重复遍历消息组件结构。
+                allowed,merged,reason=await self._debouncer.collect(message,media_hint=media_types(message))
+            except Exception as exc:
+                self.ctx.logger.warning(f"[MaiLife] 群聊收口失败，失败开放: {exc}")
+                allowed=True; merged=message; reason="failed_open"
+            if not allowed:return {"action":"abort"}
+            if self._stopping or self._reloading or not self.config.plugin.enabled:
+                kwargs["message"]=merged
+                return {"action":"continue","modified_kwargs":kwargs}
+        uid,session,mid,_=message_identity(merged)
+        source_ids=self._recall.source_message_ids(merged)
+        try:await self._recall.register_turn(merged)
+        except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 群聊合并撤回轮次注册失败，消息继续处理: {exc}")
+        if await self._is_recalled(session,mid,*source_ids):
+            for source in source_ids:await self._cancel_message_tasks(session,source)
+            group_id,_group_name=group_identity(merged)
+            if group_id and self._group_observer:
+                for source in source_ids:await self._group_observer.recall(group_id,source,self._env.now())
+            return {"action":"abort"}
+        group_id,group_name=group_identity(merged)
+        if group_id:
+            await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
+        if self.config.debounce.group_enabled:
+            turn_scope=self._group_scope(merged)
+            await self._cancel_group_confirmations(turn_scope)
+            expiry=max(30,int(self.config.debounce.turn_expire_seconds)); current=time.time()
+            self._group_turns={key:value for key,value in self._group_turns.items()
+                               if current-float(value.get("updated_at") or 0)<expiry}
+            self._group_turn_generation+=1
+            self._group_turns[(session,mid)]={
+                "turn_scope":turn_scope,"message_id":mid,"source_message_ids":source_ids,
+                "group_id":group_id,"user_id":uid,"updated_at":current,
+                "generation":self._group_turn_generation,
+            }
+        if self._group_observer and self.config.social.enabled:
+            # 社交观察消费防抖后的最终消息，同时保留自己的后台话题收集窗口。
+            self._spawn_transient(
+                self._group_observer.observe(merged,self._env.now()),f"mai-life-group-{mid}",
+                message_keys=[(session,source) for source in source_ids],
+            )
+        kwargs["message"]=merged
+        self.ctx.logger.debug(f"[MaiLife] 群聊收口完成 scope={self._group_scope(merged)} {reason}")
+        return {"action":"continue","modified_kwargs":kwargs}
+
+    async def _process_private_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
+                                       initial_sources:list[str])->dict[str,Any]:
+        """私聊管线：建立本轮运行态、视觉摘要、防抖收口、互动记录与休息闸门。"""
         # 私聊新入站会结束旧主动任务归因，并建立本轮的轻量意图/媒介上下文。
+        media_hint:list[str]|None=None
         if session:
-            initial_text=direct_text(message); initial_media=media_types(message)
+            initial_text=direct_text(message); initial_media=media_types(message); media_hint=initial_media
             self._session_runtime[session]={
                 "user_id":uid,"message_id":mid,"source_message_ids":initial_sources,
                 "intent":classify_intent(initial_text,initial_media),"recall_query":is_recall_query(initial_text),
@@ -682,7 +699,7 @@ class MaiLifePlugin(MaiBotPlugin):
         # 视觉任务与收口等待并行；旧一代消息被合并后会取消自己的无效视觉任务。
         vision_task=asyncio.create_task(self._vision.summarize_if_needed(message),name=f"mai-life-vision-{mid}")
         started=time.monotonic()
-        try:allowed,merged,reason=await self._debouncer.collect(message)
+        try:allowed,merged,reason=await self._debouncer.collect(message,media_hint=media_hint)
         except Exception as exc:
             vision_task.cancel(); await asyncio.gather(vision_task,return_exceptions=True)
             self.ctx.logger.warning(f"[MaiLife] 消息收口失败，失败开放: {exc}")
@@ -1231,7 +1248,7 @@ class MaiLifePlugin(MaiBotPlugin):
         """菜单优先发本地 PNG；渲染、能力或适配器失败时自动退回纯文本。"""
         uid=str(kwargs.get("user_id") or ""); stream_id=str(kwargs.get("stream_id") or "")
         platform=str(kwargs.get("platform") or "qq"); text=build_command_usage_text(notice)
-        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.9.2",notice=notice)
+        image_bytes=self._menu_renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version=PLUGIN_VERSION,notice=notice)
         if image_bytes:
             try:
                 sent=await self._require_command_replies().send_image_bytes_with_fallback(
@@ -1480,7 +1497,7 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v1.9.2\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
+        return (f"麦麦生活 v{PLUGIN_VERSION}\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
                 f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
@@ -1578,7 +1595,7 @@ class MaiLifePlugin(MaiBotPlugin):
         name="mai_life_management",title="麦麦生活管理",
         description="配置生活、社交、联网与书柜模块；敏感明细请使用管理员命令。",
         content=[
-            {"type":"key_value","entries":{"版本":"1.9.2","管理指令":"/麦麦管理","私密 API":"不公开"}},
+            {"type":"key_value","entries":{"版本":PLUGIN_VERSION,"管理指令":"/麦麦管理","私密 API":"不公开"}},
             {"type":"list","items":["用户角色与主动额度","QQ群与日期候选","联网服务、书柜与 Token 聚合"]},
         ],
         link_url="/plugin-config?plugin=maibot-community.mai-life",link_label="打开麦麦生活配置",

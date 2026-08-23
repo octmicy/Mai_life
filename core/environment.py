@@ -5,14 +5,15 @@
 """
 from __future__ import annotations
 
-import asyncio
-import json
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
+
+import asyncio
+import time
+
+from ..information.http_client import HttpClient
 
 try:
     import chinese_calendar as _china_calendar
@@ -32,23 +33,14 @@ _WEATHER_CODES = {
 }
 
 
-def _fetch_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    """在线程中执行同步 HTTP 请求，避免阻塞插件事件循环。"""
-    request = Request(
-        f"{url}?{urlencode(params)}",
-        headers={"User-Agent": "MaiLife/1.9.2"},
-    )
-    with urlopen(request, timeout=8) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
 class EnvironmentService:
     """提供带时区的当前时间和后台天气缓存。"""
 
-    def __init__(self, store: Any, config: Any, logger: Any) -> None:
+    def __init__(self, store: Any, config: Any, logger: Any, http: HttpClient | None = None) -> None:
         self.store = store
         self.config = config
         self.logger = logger
+        self.http = http or HttpClient(logger)
         self._resolved_city_key = ""
         self._resolved_location_name = ""
         self._resolved_latitude: float | None = None
@@ -92,11 +84,10 @@ class EnvironmentService:
                 self._resolved_longitude,
             )
 
-        geo = await asyncio.to_thread(
-            _fetch_json,
-            "https://geocoding-api.open-meteo.com/v1/search",
+        geo_url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode(
             {"name": city, "count": 1, "language": "zh", "format": "json"},
         )
+        geo = (await self.http.get(geo_url, timeout=8)).json()
         results = geo.get("results") or []
         if not results:
             raise ValueError(f"找不到天气城市：{city}")
@@ -148,9 +139,7 @@ class EnvironmentService:
 
         try:
             location_name, latitude, longitude = await self._resolve_city(city)
-            raw = await asyncio.to_thread(
-                _fetch_json,
-                "https://api.open-meteo.com/v1/forecast",
+            forecast_url = "https://api.open-meteo.com/v1/forecast?" + urlencode(
                 {
                     "latitude": latitude,
                     "longitude": longitude,
@@ -158,6 +147,7 @@ class EnvironmentService:
                     "timezone": self.config.environment.timezone,
                 },
             )
+            raw = (await self.http.get(forecast_url, timeout=8)).json()
             current = raw.get("current") or {}
             code = int(current.get("weather_code", -1))
             data = {

@@ -13,7 +13,7 @@ from Mai_life.core.storage import LifeStore
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.rest_gate import RestGate
 from Mai_life.life.schedule_service import ScheduleService
-from Mai_life.messaging.message_pipeline import MessageDebouncer, classify_intent
+from Mai_life.messaging.message_pipeline import MessageDebouncer, classify_intent, media_types
 
 
 class DummyLogger:
@@ -45,6 +45,50 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         now=time.time(); await self.store.record_interaction("1","hello",now,12)
         self.assertGreater((await self.store.get_user("1"))["last_user_message_at"],0)
         self.assertEqual((await self.store.get_user("2"))["last_user_message_at"],0)
+
+    async def test_batch_active_hours_and_rest_backlogs_return_per_user_dicts(self):
+        await self.store.sync_users([UserProfile(user_id="1"),UserProfile(user_id="2")])
+        now=time.time(); await self.store.record_interaction("1","第一条",now,9)
+        await self.store.record_interaction("1","第二条",now+1,9)
+        await self.store.record_interaction("2","第三条",now+2,21)
+        since=now-60
+        active=await self.store.active_hours_batch(["1","2","3"],since)
+        self.assertEqual(active["1"],{9:2})
+        self.assertEqual(active["2"],{21:1})
+        self.assertEqual(active["3"],{})
+        self.assertEqual(active,{key:await self.store.active_hours(key,since) for key in ("1","2","3")})
+        await self.store.add_rest_backlog("1","积压一",now)
+        await self.store.add_rest_backlog("1","积压二",now+1)
+        await self.store.add_rest_backlog("2","积压三",now+2)
+        await self.store.add_rest_backlog("2","积压四",now+3)
+        await self.store.add_rest_backlog("2","积压五",now+4)
+        await self.store.add_rest_backlog("2","积压六",now+5)
+        backlogs=await self.store.peek_rest_backlogs_batch(["1","2","3"])
+        self.assertEqual(backlogs["1"],["积压一","积压二"])
+        self.assertEqual(len(backlogs["2"]),3)
+        self.assertEqual(backlogs["3"],[])
+        self.assertEqual(backlogs["2"],await self.store.peek_rest_backlogs("2"))
+
+    async def test_batch_scenes_by_framework_ids_keep_missing_entries(self):
+        now=time.time()
+        self.store.conn.executemany(
+            "INSERT INTO daily_framework(id,day,start_minute,end_minute,kind,summary,location,energy_load,shareability) VALUES(?,?,?,?,?,?,?,?,?)",
+            [("f1","2026-07-13",600,900,"daily","上午框架","家里",0.5,0.6),
+             ("f2","2026-07-13",900,1200,"daily","下午框架","公司",0.4,0.5)],
+        )
+        self.store.conn.executemany(
+            "INSERT INTO detailed_scenes(framework_id,scene,state_deltas,created_at) VALUES(?,?,?,?)",
+            [("f1","切番茄","{\"energy\":-5}",now),
+             ("f2","写代码","{\"energy\":-6,\"mood_valence\":0.2}",now)],
+        )
+        self.store.conn.commit()
+        scenes=await self.store.get_scenes_by_framework_ids(["f1","f2","missing"])
+        self.assertEqual(set(scenes),{"f1","f2","missing"})
+        self.assertEqual(scenes["f1"]["scene"],"切番茄")
+        self.assertEqual(scenes["f1"]["state_deltas"],{"energy":-5})
+        self.assertEqual(scenes["f2"]["state_deltas"],{"energy":-6,"mood_valence":0.2})
+        self.assertEqual(scenes["missing"],{})
+        self.assertEqual(scenes["f1"]["scene"],(await self.store.get_scene("f1"))["scene"])
 
     async def test_role_defaults_resolve_to_per_user_quota(self):
         await self.store.sync_users([
@@ -374,10 +418,19 @@ class DebounceTests(unittest.IsolatedAsyncioTestCase):
         group["raw_message"]=[{"type":"forward","data":[{"content":[{"type":"text","data":"转发"}]}]}]
         self.assertEqual(service._quiet_wait([group],False),config.debounce.group_forward_wait_seconds)
 
+    def test_quiet_wait_reuses_entry_media_hint(self):
+        config=MaiLifeSettings(); service=MessageDebouncer(config,DummyLogger())
+        private=self.message("p",""); private["raw_message"]=[{"type":"image","binary_data_base64":"AA=="}]
+        expected=media_types(private)
+        self.assertEqual(expected,["image"])
+        self.assertEqual(service._quiet_wait([private],True),config.debounce.image_wait_seconds)
+        self.assertEqual(service._quiet_wait([private],True,media_hints=[["image"]]),config.debounce.image_wait_seconds)
+        self.assertEqual(service._quiet_wait([private],True,media_hints=[list(expected)]),
+                         service._quiet_wait([private],True))
+
     def test_local_intent_classifier(self):
         self.assertEqual(classify_intent("这张图里是什么",["image"]),"询问当前图片")
         self.assertEqual(classify_intent("醒醒，有急事",["text"]),"安全或紧急需要")
 
 
 if __name__=="__main__": unittest.main()
-

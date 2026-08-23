@@ -179,9 +179,9 @@ class ScheduleService:
             await self.store.save_scene(node["id"],scene,deltas,opportunities)
 
     async def state_timeline(self,start:datetime,end:datetime)->list[dict[str,Any]]:
-        """按日程边界切分离线时间；缺失的过去日程只使用本地模板。"""
+        """按日程边界切分离线时间；缺失的过去日程只使用本地模板，场景按 ID 批量读取。"""
         if end<=start:return []
-        spans=[]; day=start.date()
+        windows=[]; day=start.date()
         while day<=end.date():
             day_start=datetime.combine(day,datetime.min.time(),tzinfo=end.tzinfo)
             next_day=datetime.combine(day+timedelta(days=1),datetime.min.time(),tzinfo=end.tzinfo)
@@ -189,6 +189,15 @@ class ScheduleService:
             if window_end<=window_start:day+=timedelta(days=1); continue
             stored=await self.store.get_framework(day.isoformat())
             nodes=stored or self._fallback(day.isoformat(),day.weekday()>=5)
+            windows.append((window_start,window_end,day_start,stored,nodes))
+            day+=timedelta(days=1)
+        # 先收集窗口内所有已存储框架的节点 ID，再一次性查询场景，消除每节点一次 get_scene。
+        scene_map=await self.store.get_scenes_by_framework_ids(
+            node["id"] for _window_start,_window_end,_day_start,stored,nodes in windows if stored
+            for node in nodes
+        )
+        spans=[]
+        for window_start,window_end,day_start,stored,nodes in windows:
             cursor=window_start
             for node in nodes:
                 node_start=day_start+timedelta(minutes=int(node["start_minute"]))
@@ -197,7 +206,7 @@ class ScheduleService:
                 span_start=max(window_start,node_start); span_end=min(window_end,node_end)
                 if cursor<span_start:
                     spans.append({"start":cursor,"end":span_start,"segment":{"kind":"leisure","summary":"自由活动","location":"家里"}})
-                scene=await self.store.get_scene(str(node["id"])) if stored else {}
+                scene=scene_map.get(str(node["id"]),{}) if stored else {}
                 completion={}
                 if node_end<=end and node_end>start:
                     if scene and not int(scene.get("applied") or 0):completion={"framework_id":str(node["id"]),"deltas":self._state_deltas(node)}
@@ -206,7 +215,6 @@ class ScheduleService:
                 cursor=max(cursor,span_end)
             if cursor<window_end:
                 spans.append({"start":cursor,"end":window_end,"segment":{"kind":"leisure","summary":"自由活动","location":"家里"}})
-            day+=timedelta(days=1)
         return spans
 
     # applied 标记确保节点结束增量只执行一次。

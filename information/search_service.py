@@ -12,8 +12,9 @@ import time
 
 from .http_client import HttpClient,HttpRequestError
 from .playwright_search import PlaywrightSearchClient
-from .search_parsing import error_from_payload,parse_openai,parse_standard,redact_key_echo
-from .search_models import SearchBackendError,SearchResponse
+from .search_parsing import error_from_payload,parse_openai,parse_standard
+from .search_models import SearchResponse
+from .search_providers import SearchAttemptError,get_provider_strategy
 
 
 _ENDPOINTS={
@@ -73,10 +74,8 @@ class SearchService:
         if self._prepared:return
         entries=[]
         for provider_id,provider in self.providers():
-            if provider.provider_type=="playwright":
-                entries.append((provider_id,"browser"))
-                continue
-            for key in provider.api_keys:entries.append((provider_id,self.key_fingerprint(key)))
+            for fingerprint in self._strategy_for(provider).fingerprints(provider):
+                entries.append((provider_id,fingerprint))
         await self.store.reconcile_search_keys(entries,reset_existing=self._reset_runtime)
         for provider_id,fingerprint in entries:
             runtime=await self.store.get_search_key_runtime(provider_id,fingerprint)
@@ -95,25 +94,16 @@ class SearchService:
         await self.prepare(); current=float(now or time.time())
         for provider_id,provider in self.providers():
             if not provider.enabled:continue
-            kind=str(provider.provider_type)
-            if kind=="playwright":
-                runtime=await self.store.get_search_key_runtime(provider_id,"browser")
-                status=str(runtime.get("status") or "healthy")
-                cooldown=float(runtime.get("cooldown_until") or 0)
-                if status!="disabled" and cooldown<=current:return True
-                continue
-            if not provider.api_keys:continue
-            if kind.startswith("openai_") and (not str(provider.endpoint).strip() or not str(provider.model).strip()):
-                continue
-            for key in provider.api_keys:
-                runtime=await self.store.get_search_key_runtime(provider_id,self.key_fingerprint(key))
-                status=str(runtime.get("status") or "healthy")
-                cooldown=float(runtime.get("cooldown_until") or 0)
-                if status=="disabled":continue
-                if status=="service_error" and cooldown>current:break
-                if cooldown>current:continue
-                return True
+            strategy=self._strategy_for(provider)
+            if strategy.validate(provider):continue
+            runtimes={fingerprint:await self.store.get_search_key_runtime(provider_id,fingerprint)
+                      for fingerprint in strategy.fingerprints(provider)}
+            if strategy.available(provider,runtimes,current):return True
         return False
+
+    def _strategy_for(self,provider:Any)->Any:
+        """按注册表返回 Provider 对应的策略实例；Playwright 优先、API 备援。"""
+        return get_provider_strategy(str(provider.provider_type))(self)
 
     @staticmethod
     def _custom_endpoint(value:str,kind:str)->str:
@@ -216,133 +206,92 @@ class SearchService:
             )
         return self._playwright_clients[provider_id]
 
+    async def _handle_success(self,provider_id:str,provider_type:str,fingerprint:str,
+                              parsed:SearchResponse,*,now:float,event_time:float,
+                              operation:str,latency_ms:float)->None:
+        """统一成功收尾：恢复 Key 健康状态、记录事件并统计自定义模型 Token。"""
+        await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
+            cooldown_until=0,failure_count=0,error_class="",used_at=now,success_at=now)
+        await self.store.record_search_api_event(created_at=event_time,operation=operation,
+            provider_id=provider_id,provider_type=provider_type,key_fingerprint=fingerprint,success=True,
+            status_code=200,latency_ms=latency_ms,result_count=len(parsed.results),error_class="")
+        await self._record_custom_usage(parsed,operation,latency_ms)
+
+    async def _handle_failure(self,provider_id:str,fingerprint:str,runtime:dict[str,Any],
+                              err:SearchAttemptError,*,now:float,event_time:float,operation:str,
+                              latency_ms:float,provider_type:str)->bool:
+        """统一失败分类与冷却去重；返回是否继续尝试同一 Provider 的下一个 Key。"""
+        error_class=err.error_class
+        if not err.penalize:
+            # 空结果与内部异常不惩罚 Key；空结果只记录状态，内部异常不写运行时。
+            if error_class=="empty_result":
+                await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
+                    cooldown_until=0,failure_count=0,error_class="empty_result",used_at=now,
+                    success_at=float(runtime.get("last_success_at") or 0))
+            await self.store.record_search_api_event(created_at=event_time,operation=operation,
+                provider_id=provider_id,provider_type=provider_type,key_fingerprint=fingerprint,
+                success=False,status_code=err.status_code,latency_ms=latency_ms,result_count=0,
+                error_class=error_class)
+            self.last_error_class=error_class
+            return False
+        failures=int(runtime.get("failure_count") or 0)+1
+        if error_class=="auth":
+            # 鉴权失败只禁用该 Key，主 Key 恢复顺序仍由配置顺序决定。
+            key_status="disabled"; cooldown_until=0.0; try_next=True
+        elif error_class in {"rate_limit","quota"}:
+            retry_at=self._retry_after(err.headers,now)
+            if not retry_at:
+                retry_at=now+(86400 if error_class=="quota" else min(86400,900*(2**min(failures-1,6))))
+            key_status="cooldown"; cooldown_until=retry_at; try_next=True
+        else:
+            # DNS、超时、5xx、协议和配置错误属于服务故障，不继续消耗同服务备用 Key。
+            key_status="service_error"
+            cooldown_until=now+min(6*3600,900*(2**min(failures-1,5)))
+            try_next=False
+        await self.store.save_search_key_runtime(provider_id,fingerprint,status=key_status,
+            cooldown_until=cooldown_until,failure_count=failures,error_class=error_class,used_at=now)
+        await self.store.record_search_api_event(created_at=event_time,operation=operation,
+            provider_id=provider_id,provider_type=provider_type,key_fingerprint=fingerprint,
+            success=False,status_code=err.status_code,latency_ms=latency_ms,result_count=0,
+            error_class=error_class)
+        self.last_error_class=error_class
+        self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type={provider_type} error={error_class}")
+        return try_next
+
     async def search(self,query:str,*,operation:str="search",freshness:str="",event_at:float=0)->SearchResponse:
-        """按服务和 Key 顺序搜索，区分 Key 故障与服务故障并限制总外部请求数。"""
+        """按服务与 Key 顺序搜索；只负责顺序、超时限制与降级，其余交给策略与共享编排层。"""
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
         now=time.time(); event_time=float(event_at or now)
         for provider_id,provider in self.providers():
             if not provider.enabled:continue
-            kind=str(provider.provider_type)
-            if kind=="playwright":
-                fingerprint="browser"
-                runtime=await self.store.get_search_key_runtime(provider_id,fingerprint)
-                status=str(runtime.get("status") or "healthy")
-                cooldown=float(runtime.get("cooldown_until") or 0)
-                if status=="disabled" or cooldown>now:continue
+            strategy=self._strategy_for(provider)
+            invalid=strategy.validate(provider)
+            if invalid:
+                self.last_error_class=invalid; continue
+            runtimes={fingerprint:await self.store.get_search_key_runtime(provider_id,fingerprint)
+                      for fingerprint in strategy.fingerprints(provider)}
+            for fingerprint,key in strategy.available(provider,runtimes,now):
                 if attempts>=maximum:
                     self.last_error_class="attempt_limit"; return SearchResponse([])
-                attempts+=1; started=time.perf_counter(); status_code=0
+                attempts+=1; started=time.perf_counter()
                 try:
-                    parsed=await self._browser_client(provider_id,provider).search(
-                        query,engine=str(provider.browser_engine),freshness=freshness,
-                        timeout_seconds=float(self.config.search_api.timeout_seconds),
-                        max_results=int(self.config.search_api.max_results),
-                    )
+                    parsed=await strategy.attempt(provider_id,provider,fingerprint,key,query,freshness)
+                except SearchAttemptError as exc:
                     latency=(time.perf_counter()-started)*1000
-                    parsed=SearchResponse(parsed.results,provider_id,kind,parsed.generated_text,
-                                          parsed.cited,parsed.model,parsed.prompt_tokens,
-                                          parsed.completion_tokens,parsed.total_tokens)
-                    if not parsed.results:raise SearchBackendError("浏览器搜索未返回结果",error_class="empty_result")
-                    await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
-                        cooldown_until=0,failure_count=0,error_class="",used_at=now,success_at=now)
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
-                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=True,
-                        status_code=200,latency_ms=latency,result_count=len(parsed.results),error_class="")
-                    return parsed
-                except SearchBackendError as exc:
-                    latency=(time.perf_counter()-started)*1000; error_class=str(exc.error_class or "network")
-                    if error_class=="empty_result":
-                        await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",
-                            cooldown_until=0,failure_count=0,error_class="empty_result",used_at=now,
-                            success_at=float(runtime.get("last_success_at") or 0))
-                    else:
-                        failures=int(runtime.get("failure_count") or 0)+1
-                        await self.store.save_search_key_runtime(provider_id,fingerprint,status="service_error",
-                            cooldown_until=now+min(6*3600,900*(2**min(failures-1,5))),failure_count=failures,
-                            error_class=error_class,used_at=now)
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
-                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=False,
-                        status_code=status_code,latency_ms=latency,result_count=0,error_class=error_class)
-                    self.last_error_class=error_class
-                    self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type=playwright error={error_class}")
-                    continue
-                except Exception:
-                    latency=(time.perf_counter()-started)*1000; self.last_error_class="internal"
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,
-                        provider_id=provider_id,provider_type=kind,key_fingerprint=fingerprint,success=False,
-                        status_code=0,latency_ms=latency,result_count=0,error_class="internal")
-                    self.logger.warning(f"[MaiLife] 联网搜索内部异常 provider={provider_id} type=playwright")
-                    continue
-            if not provider.api_keys:continue
-            if kind.startswith("openai_") and (not str(provider.endpoint).strip() or not str(provider.model).strip()):
-                self.last_error_class="invalid_config"; continue
-            for key in provider.api_keys:
-                fingerprint=self.key_fingerprint(key)
-                runtime=await self.store.get_search_key_runtime(provider_id,fingerprint)
-                status=str(runtime.get("status") or "healthy")
-                cooldown=float(runtime.get("cooldown_until") or 0)
-                if status=="disabled":continue
-                if status=="service_error" and cooldown>now:break
-                if cooldown>now:continue
-                if attempts>=maximum:
-                    self.last_error_class="attempt_limit"; return SearchResponse([])
-                attempts+=1; started=time.perf_counter(); error_class=""; status_code=0
-                try:
-                    parsed=redact_key_echo(
-                        await self._request_provider(provider,key,query,freshness),key,
+                    try_next=await self._handle_failure(
+                        provider_id,fingerprint,runtimes[fingerprint],exc,
+                        now=now,event_time=event_time,operation=operation,latency_ms=latency,
+                        provider_type=str(provider.provider_type),
                     )
-                    latency=(time.perf_counter()-started)*1000
-                    parsed=SearchResponse(parsed.results,provider_id,kind,parsed.generated_text,parsed.cited,
-                                          parsed.model,parsed.prompt_tokens,parsed.completion_tokens,parsed.total_tokens)
-                    # 空结果不惩罚 Key，但结束当前服务并尝试下一个服务，避免同服务重复计费。
-                    if not parsed.results:
-                        await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",cooldown_until=0,
-                            failure_count=0,error_class="empty_result",used_at=now,success_at=float(runtime.get("last_success_at") or 0))
-                        await self.store.record_search_api_event(created_at=event_time,operation=operation,provider_id=provider_id,
-                            provider_type=kind,key_fingerprint=fingerprint,success=False,status_code=200,
-                            latency_ms=latency,result_count=0,error_class="empty_result")
-                        self.last_error_class="empty_result"; break
-                    await self.store.save_search_key_runtime(provider_id,fingerprint,status="healthy",cooldown_until=0,
-                        failure_count=0,error_class="",used_at=now,success_at=now)
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,provider_id=provider_id,
-                        provider_type=kind,key_fingerprint=fingerprint,success=True,status_code=200,
-                        latency_ms=latency,result_count=len(parsed.results),error_class="")
-                    await self._record_custom_usage(parsed,operation,latency)
-                    return parsed
-                except HttpRequestError as exc:
-                    latency=(time.perf_counter()-started)*1000; status_code=exc.status_code
-                    quota=self._quota_error(exc); error_class="quota" if quota else exc.error_class
-                    failures=int(runtime.get("failure_count") or 0)+1
-                    # 鉴权/额度问题可切备用 Key；网络和协议故障直接切服务，避免耗尽整组 Key。
-                    if error_class=="auth":
-                        key_status="disabled"; cooldown_until=0; try_next_key=True
-                    elif error_class in {"rate_limit","quota"}:
-                        retry_at=self._retry_after(exc.headers,now)
-                        if not retry_at:
-                            retry_at=now+(86400 if error_class=="quota" else min(86400,900*(2**min(failures-1,6))))
-                        key_status="cooldown"; cooldown_until=retry_at; try_next_key=True
-                    else:
-                        # DNS、超时、5xx、协议和配置错误属于服务故障，不继续消耗同服务备用 Key。
-                        key_status="service_error"
-                        cooldown_until=now+min(6*3600,900*(2**min(failures-1,5)))
-                        try_next_key=False
-                    await self.store.save_search_key_runtime(provider_id,fingerprint,status=key_status,
-                        cooldown_until=cooldown_until,failure_count=failures,error_class=error_class,used_at=now)
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,provider_id=provider_id,
-                        provider_type=kind,key_fingerprint=fingerprint,success=False,status_code=status_code,
-                        latency_ms=latency,result_count=0,error_class=error_class)
-                    self.last_error_class=error_class
-                    self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type={kind} error={error_class}")
-                    if try_next_key:continue
+                    if try_next:continue
                     break
-                except Exception:
-                    latency=(time.perf_counter()-started)*1000; self.last_error_class="internal"
-                    await self.store.record_search_api_event(created_at=event_time,operation=operation,provider_id=provider_id,
-                        provider_type=kind,key_fingerprint=fingerprint,success=False,status_code=0,
-                        latency_ms=latency,result_count=0,error_class="internal")
-                    self.logger.warning(f"[MaiLife] 联网搜索内部异常 provider={provider_id} type={kind}")
-                    break
+                latency=(time.perf_counter()-started)*1000
+                await self._handle_success(
+                    provider_id,str(provider.provider_type),fingerprint,parsed,
+                    now=now,event_time=event_time,operation=operation,latency_ms=latency,
+                )
+                return parsed
         return SearchResponse([])
 
     async def health_snapshot(self)->list[dict[str,Any]]:
@@ -351,20 +300,16 @@ class SearchService:
         result=[]
         for provider_id,provider in self.providers():
             keys=[]
-            if provider.provider_type=="playwright":
-                item=runtime.get((provider_id,"browser"),{})
-                keys.append({"fingerprint":"browser","status":str(item.get("status") or "healthy"),
+            for fingerprint in self._strategy_for(provider).fingerprints(provider):
+                item=runtime.get((provider_id,fingerprint),{})
+                keys.append({"fingerprint":fingerprint,"status":str(item.get("status") or "healthy"),
                              "cooldown_until":float(item.get("cooldown_until") or 0),
                              "last_error_class":str(item.get("last_error_class") or "")})
+            if provider.provider_type=="playwright":
                 result.append({"provider_id":provider_id,"provider_type":str(provider.provider_type),
                                "enabled":bool(provider.enabled),"model":"", "browser_engine":str(provider.browser_engine),
                                "headless":bool(provider.headless),"key_count":1,"keys":keys})
                 continue
-            for key in provider.api_keys:
-                fingerprint=self.key_fingerprint(key); item=runtime.get((provider_id,fingerprint),{})
-                keys.append({"fingerprint":fingerprint,"status":str(item.get("status") or "healthy"),
-                             "cooldown_until":float(item.get("cooldown_until") or 0),
-                             "last_error_class":str(item.get("last_error_class") or "")})
             result.append({"provider_id":provider_id,"provider_type":str(provider.provider_type),
                            "enabled":bool(provider.enabled),"model":str(provider.model or ""),
                            "key_count":len(keys),"keys":keys})

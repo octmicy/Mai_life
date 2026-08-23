@@ -1,17 +1,22 @@
 """无第三方依赖的异步 HTTP 客户端，兼容 Windows 与 Linux。"""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urljoin,urlparse
+
 import asyncio
 import http.client
 import ipaddress
 import json
 import socket
 import ssl
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
-from typing import Any
-from urllib.parse import urljoin,urlparse
+
+from ..config import PLUGIN_VERSION
+
+
+_USER_AGENT=f"Mai_life/{PLUGIN_VERSION} (+https://github.com/octmicy/Mai_life)"
+_MAX_REDIRECTS=10
 
 
 class HttpRequestError(RuntimeError):
@@ -76,12 +81,6 @@ def _validate_public_url_sync(url:str)->tuple[str,str]:
     return value,pinned
 
 
-class _PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self,req:Any,fp:Any,code:int,msg:str,headers:Any,newurl:str)->Any:
-        _validate_public_url_sync(newurl)
-        return super().redirect_request(req,fp,code,msg,headers,newurl)
-
-
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """连接到已校验的公网 IP；Host 头仍使用原域名，阻断 DNS rebinding。"""
     def __init__(self,host:str,port:int,*,pinned_ip:str,timeout:float)->None:
@@ -101,6 +100,37 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         if self._tunnel_host:
             self.sock=sock; self._tunnel()
         self.sock=self._context.wrap_socket(sock,server_hostname=self.host)
+
+
+def _request_path(url:str)->str:
+    """从 URL 提取 http.client 使用的 origin-form 请求路径。"""
+    parsed=urlparse(url); path=parsed.path or "/"
+    if parsed.query:path+="?"+parsed.query
+    return path
+
+
+class _ConnectionFactory:
+    """按 public_only 标志生产连接：公网模式固定 IP 阻断 DNS rebinding，普通模式直连。"""
+
+    def __init__(self,*,timeout:float,public_only:bool,context:ssl.SSLContext)->None:
+        self.timeout=max(1,timeout); self.public_only=public_only; self.context=context
+
+    def build(self,url:str)->tuple[http.client.HTTPConnection,str]:
+        """解析并校验 URL，返回 (连接, 最终目标 URL)。"""
+        if self.public_only:
+            target,pinned=_validate_public_url_sync(url)
+        else:
+            target=_validated_url(url); pinned=""
+        parsed=urlparse(target); host=str(parsed.hostname or ""); scheme=parsed.scheme
+        port=parsed.port or (443 if scheme=="https" else 80)
+        if scheme=="https":
+            if self.public_only:
+                return (_PinnedHTTPSConnection(host,port,pinned_ip=pinned,timeout=self.timeout,
+                                               context=self.context),target)
+            return (http.client.HTTPSConnection(host,port,timeout=self.timeout,context=self.context),target)
+        if self.public_only:
+            return (_PinnedHTTPConnection(host,port,pinned_ip=pinned,timeout=self.timeout),target)
+        return (http.client.HTTPConnection(host,port,timeout=self.timeout),target)
 
 
 class HttpClient:
@@ -136,88 +166,53 @@ class HttpClient:
     @staticmethod
     def _request_sync(method:str,url:str,body:bytes|None,timeout:float,max_bytes:int,
                       headers:dict[str,str],public_only:bool)->HttpResponse:
-        """执行一次有大小上限的请求，并将网络/HTTP 失败归一化为不含 Key 的异常。"""
-        if public_only:
-            return HttpClient._request_public_sync(method,url,body,timeout,max_bytes,headers)
-        target=_validated_url(url)
-        request_headers={"User-Agent":"Mai_life/1.9.2 (+https://github.com/octmicy/Mai_life)",
-                         "Accept-Encoding":"identity",**headers}
-        request=urllib.request.Request(target,data=body,headers=request_headers,method=method)
+        """统一执行一次带大小上限与逐跳重定向的请求，并把网络/HTTP 失败归一化为不含 Key 的异常。"""
+        request_headers={"User-Agent":_USER_AGENT,"Accept-Encoding":"identity",**headers}
         context=ssl.create_default_context()
-        opener=urllib.request.build_opener(
-            urllib.request.ProxyHandler(),urllib.request.HTTPSHandler(context=context),
-        )
-        try:
-            with opener.open(request,timeout=max(1,timeout)) as response:
-                # 多读一个字节用于可靠判断是否越过上限，避免把超大页面完整载入内存。
-                response_body=response.read(max(1,max_bytes)+1)
-                if len(response_body)>max_bytes:
-                    raise HttpRequestError("响应超过大小限制",error_class="too_large",
-                                           status_code=int(response.status))
-                return HttpResponse(int(response.status),str(response.url),
-                                    {str(k).lower():str(v) for k,v in response.headers.items()},response_body)
-        except urllib.error.HTTPError as exc:
-            response_headers={str(k).lower():str(v) for k,v in exc.headers.items()}
-            try:response_body=exc.read(64_001)[:64_000]
-            except Exception:response_body=b""
-            status=int(exc.code); error_class=("auth" if status in {401,403} else
-                "rate_limit" if status==429 else "server" if status>=500 else "http")
-            raise HttpRequestError(f"HTTP {status}",error_class=error_class,status_code=status,
-                                   headers=response_headers,response_body=response_body) from exc
-        except HttpRequestError:raise
-        except (TimeoutError,socket.timeout) as exc:
-            raise HttpRequestError("请求超时",error_class="timeout") from exc
-        except urllib.error.URLError as exc:
-            reason=getattr(exc,"reason",None)
-            error_class="timeout" if isinstance(reason,(TimeoutError,socket.timeout)) else "network"
-            raise HttpRequestError("网络连接失败",error_class=error_class) from exc
-        except (ssl.SSLError,OSError) as exc:
-            raise HttpRequestError("网络连接失败",error_class="network") from exc
-
-    @staticmethod
-    def _request_public_sync(method:str,url:str,body:bytes|None,timeout:float,max_bytes:int,
-                             headers:dict[str,str])->HttpResponse:
-        """public_only 路径：解析一次并固定公网 IP 连接，逐跳复验重定向，阻断 DNS rebinding。"""
-        request_headers={"User-Agent":"Mai_life/1.9.2 (+https://github.com/octmicy/Mai_life)",
-                         "Accept-Encoding":"identity",**headers}
-        context=ssl.create_default_context()
-        target,pinned=_validate_public_url_sync(url)
-        visited=0
+        factory=_ConnectionFactory(timeout=timeout,public_only=public_only,context=context)
+        target=_validated_url(url); visited=0
         while True:
-            parsed=urlparse(target)
-            host=parsed.hostname; port=parsed.port or (443 if parsed.scheme=="https" else 80)
-            path=parsed.path or "/"
-            if parsed.query: path+="?"+parsed.query
-            if parsed.scheme=="https":
-                conn=_PinnedHTTPSConnection(host,port,pinned_ip=pinned,timeout=max(1,timeout),context=context)
-            else:
-                conn=_PinnedHTTPConnection(host,port,pinned_ip=pinned,timeout=max(1,timeout))
+            connection,target=factory.build(target)
             try:
-                conn.request(method,path,body=body,headers=request_headers)
-                response=conn.getresponse()
+                connection.request(method,_request_path(target),body=body,headers=request_headers)
+                response=connection.getresponse()
                 status=response.status
                 if status in (301,302,303,307,308):
                     location=response.getheader("Location") or ""
-                    response.read()
+                    response.read()  # 释放响应体，保证连接可安全关闭。
                     if not location:
                         raise HttpRequestError("重定向缺少 Location",error_class="network")
                     visited+=1
-                    if visited>10:
+                    if visited>_MAX_REDIRECTS:
                         raise HttpRequestError("重定向次数过多",error_class="network")
                     target=urljoin(target,location)
-                    target,pinned=_validate_public_url_sync(target)
+                    if status in (301,302,303) and method!="HEAD":
+                        # 与标准客户端一致：301/302/303 把 POST 等请求转为 GET 并丢弃请求体。
+                        method="GET"; body=None
+                        request_headers={key:value for key,value in request_headers.items()
+                                         if key.casefold() not in {"content-type","content-length"}}
                     continue
+                if status>=400:
+                    response_headers={str(key).lower():str(value) for key,value in response.getheaders()}
+                    try:response_body=response.read(64_001)[:64_000]
+                    except Exception:response_body=b""
+                    error_class=("auth" if status in {401,403} else
+                                 "rate_limit" if status==429 else "server" if status>=500 else "http")
+                    raise HttpRequestError(f"HTTP {status}",error_class=error_class,status_code=status,
+                                           headers=response_headers,response_body=response_body)
                 response_body=response.read(max(1,max_bytes)+1)
+                # 多读一个字节用于可靠判断是否越过上限，避免把超大页面完整载入内存。
                 if len(response_body)>max_bytes:
                     raise HttpRequestError("响应超过大小限制",error_class="too_large",
                                            status_code=int(status))
                 return HttpResponse(int(status),target,
-                                    {str(k).lower():str(v) for k,v in response.getheaders()},response_body)
+                                    {str(key).lower():str(value) for key,value in response.getheaders()},
+                                    response_body)
             except HttpRequestError:raise
             except (TimeoutError,socket.timeout) as exc:
                 raise HttpRequestError("请求超时",error_class="timeout") from exc
             except (ssl.SSLError,OSError,http.client.HTTPException) as exc:
                 raise HttpRequestError("网络连接失败",error_class="network") from exc
             finally:
-                try:conn.close()
+                try:connection.close()
                 except Exception:pass

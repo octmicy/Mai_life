@@ -130,6 +130,12 @@ class SearchService:
         if not isinstance(payload,dict):return ""
         code=str(payload.get("code") or payload.get("status") or "").casefold()
         error=payload.get("error")
+        success=payload.get("success")
+        # 显式成功（success=True 或 code 为明确成功值且无 error 字段）时直接返回，
+        # 避免 message 中误含 "quota"/"balance"/"credit" 等词被当成错误。
+        # 注意 code="" 属于歧义，不在此早返回，需继续走关键字分类以兼容只靠 message 报错的 Provider。
+        if error is None and success is not False and code in {"0","200","ok","success"}:
+            return ""
         if isinstance(error,dict):message=str(error.get("message") or error.get("type") or "")
         else:message=str(error or payload.get("message") or payload.get("msg") or "")
         text=(code+" "+message).casefold()
@@ -137,7 +143,6 @@ class SearchService:
         if any(term in text for term in ("insufficient_quota","quota","credit","balance","exhausted","额度","余额")):return "quota"
         if any(term in text for term in ("unauthorized","authentication","invalid api key","invalid_api_key","鉴权","密钥无效")):return "auth"
         if any(term in text for term in ("rate limit","rate_limit","too many","限流")):return "rate_limit"
-        success=payload.get("success")
         if success is False or code not in {"","0","200","ok","success"}:return "provider_error"
         return ""
 
@@ -297,12 +302,15 @@ class SearchService:
         reset_raw=str(headers.get("x-ratelimit-reset") or "").strip()
         raw=retry_raw or reset_raw
         if not raw:return 0
+        cap=86400.0  # 外部给定的冷却一律限制在 24 小时内，避免单条响应永久禁用 Key
         try:
             value=float(raw)
-            if retry_raw:return now+max(0,value)
-            return max(now,value) if value>=1_000_000_000 else now+max(0,value)
+            if retry_raw:return now+min(max(0.0,value),cap)
+            if value>=1_000_000_000:  # 视为绝对时间戳
+                return min(max(now,value),now+cap)
+            return now+min(max(0.0,value),cap)
         except ValueError:
-            try:return parsedate_to_datetime(raw).astimezone(timezone.utc).timestamp()
+            try:return min(max(now,parsedate_to_datetime(raw).astimezone(timezone.utc).timestamp()),now+cap)
             except (TypeError,ValueError,OverflowError):return 0
 
     @staticmethod

@@ -134,6 +134,50 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["modified_kwargs"]["response"],"第一条回复")
         self.assertEqual(second["modified_kwargs"]["response"],"")
 
+    async def test_group_turn_guard_uses_physical_group_and_sender_scope(self):
+        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
+        now=time.time(); plugin._group_turns={
+            ("focus","g1"):{"turn_scope":"group:qq:100:1","message_id":"g1","source_message_ids":["g1"],"updated_at":now},
+            ("focus","g2"):{"turn_scope":"group:qq:100:2","message_id":"g2","source_message_ids":["g2"],"updated_at":now},
+        }
+        first=await plugin.on_replyer_after(session_id="focus",response="用户一回复",reply_message_id="g1")
+        duplicate=await plugin.on_replyer_after(session_id="focus",response="用户一重复",reply_message_id="g1")
+        other=await plugin.on_replyer_after(session_id="focus",response="用户二回复",reply_message_id="g2")
+        self.assertEqual(first["modified_kwargs"]["response"],"用户一回复")
+        self.assertEqual(duplicate["modified_kwargs"]["response"],"")
+        self.assertEqual(other["modified_kwargs"]["response"],"用户二回复")
+        await plugin._cancel_group_confirmations("group:qq:100:2")
+        first_confirmation=plugin._reply_confirmations[("focus","g1")]
+        self.assertFalse(bool(first_confirmation.get("cancelled")))
+
+    async def test_focus_shared_group_turn_never_injects_private_context(self):
+        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        await self.store.sync_users([UserProfile(user_id="10001",role="owner")])
+        await self.store.set_user_stream("10001","focus")
+        plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
+        plugin._session_runtime={"focus":{"user_id":"10001","message_id":"private-old"}}
+        plugin._group_turns={("focus","group-new"):{"turn_scope":"group:qq:100:20001",
+            "message_id":"group-new","source_message_ids":["group-new"],"updated_at":time.time()}}
+        planner=await plugin.on_planner(session_id="focus",messages=[{"role":"user","content":"群消息"}])
+        replyer=await plugin.on_replyer(session_id="focus",reply_message_id="group-new")
+        self.assertEqual(planner,{"action":"continue"}); self.assertEqual(replyer,{"action":"continue"})
+
+    async def test_new_group_message_only_cancels_older_same_sender_turn(self):
+        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
+        now=time.time(); plugin._group_turns={
+            ("focus","old"):{"turn_scope":"group:qq:100:1","message_id":"old","generation":1,"updated_at":now},
+            ("focus","new"):{"turn_scope":"group:qq:100:1","message_id":"new","generation":2,"updated_at":now},
+            ("focus","other"):{"turn_scope":"group:qq:100:2","message_id":"other","generation":3,"updated_at":now},
+        }
+        stale=await plugin.on_replyer_after(session_id="focus",response="旧回复",reply_message_id="old")
+        latest=await plugin.on_replyer_after(session_id="focus",response="新回复",reply_message_id="new")
+        other=await plugin.on_replyer_after(session_id="focus",response="另一人回复",reply_message_id="other")
+        self.assertEqual(stale["modified_kwargs"]["response"],"")
+        self.assertEqual(latest["modified_kwargs"]["response"],"新回复")
+        self.assertEqual(other["modified_kwargs"]["response"],"另一人回复")
+
     async def test_reply_guard_does_not_touch_unconfigured_session(self):
         plugin=MaiLifePlugin(); plugin.set_plugin_config(MaiLifeSettings().model_dump(mode="python")); plugin._store=self.store
         first=await plugin.on_replyer_after(session_id="unconfigured",response="第一条",reply_message_id="m1")

@@ -22,7 +22,7 @@ _SENSITIVE_RE=re.compile(
 @dataclass
 class _GroupBurst:
     generation:int=0
-    snippets:list[str]=field(default_factory=list)
+    entries:list[tuple[str,str]]=field(default_factory=list)
     adapter:str="unknown"
 
 
@@ -59,10 +59,16 @@ class GroupObserver:
     async def observe(self,message:dict[str,Any],now:datetime)->dict[str,Any]:
         """收口一个群话题；较早的并发调用返回 superseded。"""
         if self._closed or not self.config.social.enabled:return {"status":"disabled"}
-        group_id,_group_name=group_identity(message); profile=self._group_profile(group_id)
+        group_id,group_name=group_identity(message); profile=self._group_profile(group_id)
         if not profile:return {"status":"not_allowlisted"}
         user_id,user_name=sender_identity(message)
-        if user_id:await self.store.record_group_activity(group_id,user_id,user_name,now.timestamp())
+        await self.store.upsert_group_directory(
+            group_id,group_name,str(message.get("session_id") or ""),now.timestamp(),
+        )
+        if user_id:
+            await self.store.record_group_activity(
+                group_id,user_id,user_name,now.timestamp(),str(message.get("message_id") or ""),
+            )
         snippet=self._snippet(message)
         if not snippet:return {"status":"empty"}
         async with self._lock:
@@ -70,26 +76,43 @@ class GroupObserver:
             burst=self._bursts.setdefault(group_id,_GroupBurst())
             burst.generation+=1; generation=burst.generation
             burst.adapter=adapter_name(message)
-            burst.snippets.append(snippet)
+            burst.entries.append((str(message.get("message_id") or ""),snippet))
             limit=int(self.config.social.max_buffer_messages)
-            if len(burst.snippets)>limit:burst.snippets=burst.snippets[-limit:]
+            if len(burst.entries)>limit:burst.entries=burst.entries[-limit:]
         await asyncio.sleep(float(self.config.social.observation_wait_seconds))
         async with self._lock:
             current=self._bursts.get(group_id)
             if current is not burst or burst.generation!=generation:return {"status":"superseded"}
-            self._bursts.pop(group_id,None); snippets=list(burst.snippets); source_adapter=burst.adapter
+            self._bursts.pop(group_id,None); entries=list(burst.entries); source_adapter=burst.adapter
+        snippets=[snippet for _message_id,snippet in entries]
         digest=await self._summarize(snippets)
         if not digest.get("public") or not digest.get("summary"):return {"status":"private_or_empty"}
         stamp=now.timestamp(); key="\n".join(snippets)
         observation_id=hashlib.sha1(f"{group_id}:{stamp}:{key}".encode("utf-8","ignore")).hexdigest()[:24]
-        item={"id":observation_id,"group_id":group_id,"group_alias":str(profile.alias),
+        # group_alias 是旧库兼容列，只保存 Host 自动读取的群名称，不参与任何匹配或权限判断。
+        item={"id":observation_id,"group_id":group_id,"group_alias":group_name or f"QQ群 {group_id}",
               "topic":str(digest.get("topic") or "群聊里的公开话题")[:240],
               "summary":str(digest["summary"])[:1200],"interest_score":float(digest.get("score") or 0),
               "source_adapter":source_adapter,"created_at":stamp,
-              "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600}
+              "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600,
+              "source_message_ids":[message_id for message_id,_snippet in entries if message_id]}
         if not await self.store.save_group_observation(item):return {"status":"duplicate"}
         queued=await self._queue_private_share(item,now)
         return {"status":"saved","observation_id":observation_id,"private_share_queued":queued}
+
+    async def recall(self,group_id:str,message_id:str,now:datetime)->dict[str,Any]:
+        """从群缓冲和已保存匿名摘要中删除撤回消息的整条衍生链。"""
+        removed_pending=False
+        async with self._lock:
+            burst=self._bursts.get(group_id)
+            if burst is not None:
+                retained=[entry for entry in burst.entries if entry[0]!=message_id]
+                removed_pending=len(retained)!=len(burst.entries)
+                if retained:burst.entries=retained
+                elif removed_pending:self._bursts.pop(group_id,None)
+        removed_saved=await self.store.retract_group_observation_source(group_id,message_id,now.timestamp())
+        removed_activity=await self.store.clear_recalled_group_activity(group_id,message_id)
+        return {"pending":removed_pending,"saved":removed_saved,"activity":removed_activity}
 
     async def _summarize(self,snippets:list[str])->dict[str,Any]:
         joined="\n".join(snippets)[:5000]
@@ -180,7 +203,7 @@ class GroupObserver:
         await self.store.add_opportunity({
             "id":opportunity_id,"framework_id":f"social:{now.date().isoformat()}",
             "topic":str(observation["topic"])[:160],
-            "motive":f"白名单群“{observation['group_alias']}”有一条公开话题摘要：{observation['summary'][:300]}。"
+            "motive":f"QQ群 {observation['group_id']}（{observation['group_alias']}）有一条公开话题摘要：{observation['summary'][:300]}。"
                      "该用户已较久未在群里出现；只在自然且不泄露群友身份或原句时考虑转述。",
             "weight":min(0.85,max(0.45,float(observation["interest_score"]))),
             "privacy":"group_public","target_user_id":uid,"expires_at":expires_at,

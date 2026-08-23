@@ -39,11 +39,9 @@ class PromptBuilder:
     def _memory_text(memory:dict[str,Any]|None)->str:
         data=memory or {}; diary=data.get("diary") if isinstance(data.get("diary"),dict) else {}
         dates=data.get("upcoming_dates") if isinstance(data.get("upcoming_dates"),list) else []
-        skills=data.get("skills") if isinstance(data.get("skills"),list) else []
         date_text="；".join(f"{item.get('name','安排')} {item.get('date','')}（{item.get('days',0)}天后）" for item in dates[:8]) or "无"
-        skill_text="；".join(f"{item.get('name','技能')}：{item.get('stage','不太熟')}" for item in skills[:6]) or "尚无稳定技能记录"
         diary_text=(f"{diary.get('day','')} {diary.get('title','')}：{diary.get('mood_summary','')}；{diary.get('content','')}" if diary else "当前关系无权读取私人日记")
-        return f"近期重要日期 {_safe(date_text,600)}；技能边界 {_safe(skill_text,500)}；日记余韵 {_safe(diary_text,900)}。"
+        return f"近期重要日期 {_safe(date_text,600)}；日记余韵 {_safe(diary_text,900)}。"
 
     @staticmethod
     def _information_text(information:dict[str,Any]|None)->str:

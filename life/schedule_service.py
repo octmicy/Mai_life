@@ -127,7 +127,7 @@ class ScheduleService:
         prompt=(f"为虚拟网友麦麦生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
                 f"人格：{personality or '自然、独立、有自己的生活'}\n模板骨架：{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
                 f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁；"
-                "技能熟悉度是能力边界，不得安排明显超过当前阶段的高难任务。\n"
+                "日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项。\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。时间不重叠，包含夜间睡眠和至少两顿饭。")
         raw=fallback

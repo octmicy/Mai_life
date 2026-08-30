@@ -16,19 +16,19 @@ class ContractTests(unittest.TestCase):
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
         readme=(root/"README.md").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.12.0")
+        self.assertEqual(manifest["version"],"1.13.0")
         self.assertIn("playwright>=1.49,<2",requirements)
         self.assertIn("python -m playwright install chromium",readme)
         self.assertIn("Playwright/Bing",readme)
 
-    def test_version_constant_is_unified_around_1_12_0(self):
+    def test_version_constant_is_unified_around_1_13_0(self):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.12.0")
+        self.assertEqual(PLUGIN_VERSION,"1.13.0")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 菜单、管理概览与入口的显示版本必须统一为 1.12.0，不允许残留旧版本号。
+        # 菜单、管理概览与入口的显示版本必须统一为 1.13.0，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py","messaging/menu_renderer.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -56,7 +56,6 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(config.search_api.tool_enabled)
         self.assertEqual(config.context.prompt_max_chars,4000)
         self.assertEqual(config.models.scene_detail_task,"")
-        self.assertEqual(config.models.vision_task,"vlm")
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
@@ -189,7 +188,7 @@ class ContractTests(unittest.TestCase):
         text=PromptBuilder().replyer(
             {"energy":60,"mood_valence":0,"current_location":"家里","current_activity":"看书"},{"description":"晴"},
             {"current":{"summary":"休息","location":"家里"}},{"temperature":50,"role":"friend"},[],
-            {"time_period":"晚上","day_type":"工作日","media":["text"]},{"unresolved_topics":["插件测试"]},"提出问题",[],
+            {"time_period":"晚上","day_type":"工作日","media":["text"]},{"unresolved_topics":["插件测试"]},"提出问题",
         )
         self.assertIn("普通朋友",text)
         self.assertIn("不得对这位用户使用主人/恋人称呼",text)

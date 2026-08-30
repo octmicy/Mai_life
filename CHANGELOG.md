@@ -1,5 +1,30 @@
 # 更新日志
 
+## [1.13.0] - 2026-08-30
+
+### 主要功能
+
+- 新增本地搜索历史：联网工具、主动搜索和新闻阅读每次逻辑搜索都会在 SQLite 保存一条历史，含清洗后的查询词、实际使用的服务、结果数与结果摘要，供主人本地审计 bot 搜过什么。
+- 新增网页浏览截图工具 `mai_life_browse_web`：麦麦可打开公网网页、截图并把截图发送给当前对话用户。
+- 删除「疑难图片视觉摘要」功能：图片预摘要、GIF 抽帧、`image_summaries` 表与视觉模型路由全部移除，疑难图片交回 MaiBot 原生多模态。
+- 搜索完全人格化：新闻阅读与主动搜索不再依赖预设词条（删除 `interest_topics`/`interest_keywords`），搜索词由麦麦根据人格提示词自主规划，模型不可用时跳过而不退化为硬编码词条。
+
+### 细节
+
+- `search_history` 表（Schema v10）：一次降级链共享一条记录，不重复计 Key 尝试；`record_search_history`/`recent_search_history` 提供读写，`cleanup_information` 按保留期清理。
+- `SearchService.search()` 主链统一落历史，三类来源（`tool_search`/`search`/`news`）自动覆盖，无需调用方各自埋点；失败路径也记录错误类别。
+- 新增配置 `search_api.history_enabled`（默认开）与 `history_retention_days`（默认 30 天），可在 WebUI 调整或完全关闭。
+- `/麦麦管理 搜索` 新增脱敏视图；`/麦麦状态` 增加搜索历史条数与「私聊用户：已配置 X 个（启用 Y 个）」诊断信息，帮助排查被动回复增强是否因未配置用户而未生效。
+- 查询词沿用既有隐私清洗（QQ 号、昵称、群名、邮箱、网址），原始 Key 永不入库；结果摘要截断保存，图片二进制不落库。
+- Playwright 截图链路：`PlaywrightSearchClient.screenshot()`（公网校验防 SSRF 内网）→ `SearchService.browse_screenshot()` → `InformationService.browse_screenshot()` → `mai_life_browse_web` Tool；截图/发图失败优雅降级。
+- 搜索失败提示补全：`playwright_unavailable`/`browser_unavailable`/`blocked`/`browser_error`/`internal` 均给出明确中文提示，不再统一显示「所有搜索服务暂时不可用」。
+- 配置顺序调整：「模型与成本编排」「Token 监控」移到 WebUI 配置页最后。
+- SQLite Schema 升级到 v11：v9 新增 `search_history`，v10 删除 `image_summaries`，迁移均为幂等操作，不丢失生活数据。
+- 修复删除视觉摘要时遗漏的 `on_replyer` 里 `payload["images"]` 残留（导致 `KeyError: 'images'`）。
+- `LifeStore` 支持 `journal_mode`：测试临时库默认 `memory`（回滚日志放内存、不落盘），杜绝测试残留 `-journal` 文件；生产 data 库显式 `delete` 保留崩溃回滚保护。
+- 菜单渲染器 Linux 字体路径修复：硬编码路径改为覆盖 Debian/Ubuntu `fonts-noto-cjk` 实际位置（`/usr/share/fonts/opentype/noto-cjk/` 等），并补充文泉驿正黑/微米黑、文鼎明体/楷体、IPA 等发行版字体；找不到中文字体时启动日志提示安装（`apt install fonts-noto-cjk`），避免菜单中文显示为方块。
+- 测试基建：`tests/fixtures` 引用改为基于测试文件位置的绝对路径；新增截图、SSRF 防护、发图降级与离线搜索跳过等测试，共 214 项全部通过。
+
 ## [1.12.0] - 2026-08-16
 
 ### 主要功能

@@ -14,7 +14,6 @@ from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.rest_gate import RestGate
 from Mai_life.messaging.adapter_compat import adapter_name,reply_target_ids
 from Mai_life.messaging.message_pipeline import MessageDebouncer,direct_text,is_command,media_types,plain_text
-from Mai_life.messaging.vision_service import VisionService
 from Mai_life.plugin import MaiLifePlugin
 
 
@@ -44,14 +43,6 @@ class StubHttp:
         return StubHttpResponse(self.payload)
 
 
-class FakeVisionLLM:
-    def __init__(self):self.last_prompt=[]
-    def task_available(self,kind):return kind=="vision_summary"
-    async def generate(self,*args,**kwargs):
-        self.last_prompt=args[0] if args else kwargs.get("prompt",[])
-        return '{"summary":"一张桌面截图，显示正在编辑插件代码。","intent":"分享开发进度","ownership_hint":"由当前私聊用户直接发送"}'
-
-
 class OfflineLLM:
     def task_available(self,kind):return False
 
@@ -73,106 +64,6 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         await self.store.set_proactive_task_id(event_id,task_id)
         return now
 
-    async def test_difficult_image_summary_stores_no_binary(self):
-        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
-        raw=b"\xff\xd8\xff"+b"test-image"
-        message={"message_id":"m1","session_id":"s1","processed_plain_text":"[image]","message_info":{
-            "additional_config":{"napcat_message_type":"private"}},"raw_message":[{
-            "type":"image","hash":"h1","binary_data_base64":base64.b64encode(raw).decode(),
-        }]}
-        summary=await service.summarize_if_needed(message)
-        self.assertIn("插件代码",summary)
-        rows=await self.store.current_image_summaries("s1",time.time())
-        self.assertEqual(len(rows),1)
-        self.assertNotIn("binary",rows[0])
-
-    async def test_emoji_gif_is_summarized_like_difficult_image(self):
-        # 表情包（emoji）GIF 同样携带 binary_data_base64，应被视觉服务识别为难图并生成摘要。
-        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
-        raw=b"GIF89a"+b"emoji-gif-payload"
-        message={"message_id":"m4","session_id":"s1","processed_plain_text":"[表情包]","message_info":{
-            "additional_config":{"napcat_message_type":"private"}},"raw_message":[{
-            "type":"emoji","hash":"eh1","binary_data_base64":base64.b64encode(raw).decode(),
-        }]}
-        self.assertIn("gif",media_types(message))
-        summary=await service.summarize_if_needed(message)
-        self.assertIn("插件代码",summary)
-
-    async def test_static_emoji_alone_is_summarized(self):
-        # 单条静态表情（无真实文字，仅 [表情包] 占位）也应被识别为难图并生成摘要。
-        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
-        raw=b"\x89PNG"+b"static-emoji-payload"
-        message={"message_id":"m5","session_id":"s1","processed_plain_text":"[表情包]","message_info":{
-            "additional_config":{"napcat_message_type":"private"}},"raw_message":[{
-            "type":"emoji","hash":"eh2","binary_data_base64":base64.b64encode(raw).decode(),
-        }]}
-        self.assertEqual(plain_text(message),"")
-        summary=await service.summarize_if_needed(message)
-        self.assertIn("插件代码",summary)
-
-    async def test_qq_emoji_gif_reaches_vlm_planner_and_replyer(self):
-        """使用 Host Hook 的真实字段路径验证二进制，而不是只识别 ``emoji`` 标签。"""
-        try:
-            from PIL import Image
-        except ImportError:self.skipTest("Pillow is optional")
-        import io
-        from types import SimpleNamespace
-
-        first=Image.new("RGB",(4,4),(255,0,0)); last=Image.new("RGB",(4,4),(0,0,255))
-        gif=io.BytesIO()
-        first.save(gif,format="GIF",save_all=True,append_images=[last],duration=80,loop=0)
-
-        config=MaiLifeSettings(); config.debounce.enabled=False
-        config.users.profiles=[UserProfile(user_id="1",enabled=True)]
-        await self.store.sync_users(config.users.profiles)
-        logger=DummyLogger(); llm=FakeVisionLLM(); ctx=DummyContext()
-        vision=VisionService(ctx,self.store,config,llm,logger)
-
-        class FakeRecall:
-            def note_inbound(self,message):del message
-            def source_message_ids(self,message):return [str(message.get("message_id") or "")]
-            async def register_turn(self,message):del message
-            async def is_turn_recalled(self,*args):del args; return False
-            async def planner_context(self,session_id):del session_id; return ""
-
-        plugin=MaiLifePlugin(); plugin._set_context(ctx); plugin.set_plugin_config(config.model_dump(mode="python"))
-        plugin._store=self.store; plugin._env=EnvironmentService(self.store,config,logger)
-        plugin._llm=llm; plugin._state=object(); plugin._schedule=SimpleNamespace(
-            context=AsyncMock(return_value={"current":None,"next":None,"scene":None}))
-        plugin._rest=SimpleNamespace(decide=AsyncMock(return_value=(True,"awake")))
-        plugin._proactive=object(); plugin._debouncer=MessageDebouncer(config,logger)
-        plugin._recall=FakeRecall(); plugin._vision=vision
-        plugin._continuity=SimpleNamespace(refresh=AsyncMock(return_value=None))
-        plugin._memory=SimpleNamespace(observe_message=AsyncMock(return_value=None),
-                                       context_for_user=AsyncMock(return_value={}))
-        plugin._information=SimpleNamespace(context=AsyncMock(return_value={}))
-        plugin._group_observer=object(); plugin._relay=object()
-        plugin._bookshelf=SimpleNamespace(context_for_user=AsyncMock(return_value={}))
-        plugin._creation=object(); plugin._admin=object()
-
-        message={"message_id":"qq-gif","session_id":"s1","platform":"qq",
-                 "processed_plain_text":"[表情包]","message_info":{
-                     "user_info":{"user_id":"1","user_nickname":"测试用户"},
-                     "group_info":{},"additional_config":{"napcat_message_type":"private"}},
-                 "raw_message":[{"type":"emoji","data":"[表情包]","hash":"qq-gif-hash",
-                                 "binary_data_base64":base64.b64encode(gif.getvalue()).decode()}]}
-        received=await plugin.on_receive(hook_name="chat.receive.before_process",message=message)
-        self.assertIn("modified_kwargs",received,received)
-        self.assertIs(received["modified_kwargs"]["message"],message)
-        image_parts=[part for part in llm.last_prompt[-1]["content"] if part.get("type")=="image"]
-        self.assertEqual(len(image_parts),2)
-        self.assertTrue(all(part.get("image_format")=="jpeg" for part in image_parts))
-
-        planner=await plugin.on_planner(
-            session_id="s1",messages=[{"role":"system","content":"base"},{"role":"user","content":"[表情包]"}],
-        )
-        planner_text="\n".join(str(item.get("content") or "")
-                                for item in planner["modified_kwargs"]["messages"])
-        replyer=await plugin.on_replyer(session_id="s1",reply_message_id="qq-gif",extra_prompt="base")
-        self.assertIn("一张桌面截图",planner_text)
-        self.assertIn("一张桌面截图",replyer["modified_kwargs"]["extra_prompt"])
-        await asyncio.sleep(0)
-
     def test_adapter_image_placeholders_use_single_image_wait(self):
         config=MaiLifeSettings(); debouncer=MessageDebouncer(config,DummyLogger())
         for marker in ({"napcat_message_type":"private"},{"snowluma_message_type":"private"}):
@@ -180,32 +71,6 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
                      "raw_message":[{"type":"image","binary_data_base64":"AA=="}]}
             self.assertEqual(plain_text(message),"")
             self.assertEqual(debouncer._quiet_wait([message]),config.debounce.image_wait_seconds)
-
-    async def test_image_then_caption_still_gets_merged_visual_summary(self):
-        config=MaiLifeSettings(); service=VisionService(DummyContext(),self.store,config,FakeVisionLLM(),DummyLogger())
-        raw=b"\xff\xd8\xff"+b"merged-image"
-        message={"message_id":"m2","session_id":"s1","processed_plain_text":"这是刚才那张图", "message_info":{
-            "additional_config":{"mai_life_merged_message_ids":["m1","m2"]}},"raw_message":[
-            {"type":"image","hash":"h2","binary_data_base64":base64.b64encode(raw).decode()},
-            {"type":"text","data":"这是刚才那张图"},
-        ]}
-        summary=await service.summarize_if_needed(message)
-        self.assertIn("插件代码",summary)
-
-    async def test_merged_multi_image_summary_contains_every_image(self):
-        config=MaiLifeSettings(); llm=FakeVisionLLM()
-        service=VisionService(DummyContext(),self.store,config,llm,DummyLogger())
-        images=[]
-        for index in range(2):
-            raw=b"\xff\xd8\xff"+f"merged-{index}".encode()
-            images.append({"type":"image","hash":f"multi-{index}",
-                           "binary_data_base64":base64.b64encode(raw).decode()})
-        message={"message_id":"m3","session_id":"s1","processed_plain_text":"",
-                 "message_info":{"additional_config":{"mai_life_merged_message_ids":["m1","m2"]}},
-                 "raw_message":images}
-        await service.summarize_if_needed(message)
-        content=llm.last_prompt[-1]["content"]
-        self.assertEqual(sum(item.get("type")=="image" for item in content),2)
 
     def test_forwarded_text_is_not_trusted_as_direct_control_text(self):
         message={"processed_plain_text":"【合并转发消息】/麦麦状态 醒醒救命",

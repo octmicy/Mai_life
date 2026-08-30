@@ -34,6 +34,9 @@ class MaiLifeMenuRenderer:
         self.regular_font_path,self.bold_font_path=self._find_font_paths(font_path)
         self._cache:OrderedDict[tuple[Any,...],bytes]=OrderedDict()
         self.last_error=""
+        if Image is not None and not self.regular_font_path:
+            self.last_error=("未找到中文字体，菜单中文将显示为方块。"
+                              "Debian/Ubuntu 建议安装 fonts-noto-cjk 或 fonts-wqy-microhei（如 apt install fonts-noto-cjk）。")
 
     @property
     def available(self)->bool:return Image is not None and ImageDraw is not None and ImageFont is not None
@@ -47,22 +50,44 @@ class MaiLifeMenuRenderer:
             Path("C:/Windows/Fonts/SIMYOU.TTF"),Path("C:/Windows/Fonts/simyou.ttf"),
             Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),Path("C:/Windows/Fonts/msyh.ttc"),
             Path("C:/Windows/Fonts/Deng.ttf"),Path("C:/Windows/Fonts/simhei.ttf"),
-            Path("/usr/share/fonts/truetype/mplus/MPLUSRounded1c-Regular.ttf"),
-            Path("/usr/share/fonts/opentype/mplus/MPLUSRounded1c-Regular.ttf"),
+            # Debian 12+ / Ubuntu 的 fonts-noto-cjk 实际路径（注意是 noto-cjk 不是 noto）
+            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJKsc-Regular.otf"),
+            # Arch / 旧发行版的路径
             Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
             Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
             Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            # M PLUS Rounded（可选字体）
+            Path("/usr/share/fonts/truetype/mplus/MPLUSRounded1c-Regular.ttf"),
+            Path("/usr/share/fonts/opentype/mplus/MPLUSRounded1c-Regular.ttf"),
+            # 文泉驿正黑（fonts-wqy-zenhei）与微米黑（fonts-wqy-microhei）
+            Path("/usr/share/fonts/truetype/wqy-zenhei/wqy-zenhei.ttc"),
+            Path("/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc"),
             Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+            # 文鼎明体/楷体 / IPA（覆盖更小众发行版）
+            Path("/usr/share/fonts/truetype/arphic/uming.ttc"),
+            Path("/usr/share/fonts/truetype/arphic/ukai.ttc"),
+            Path("/usr/share/fonts/opentype/ipafont/ipam.ttf"),
         ]
         bold_candidates=[
             root/"assets"/"font-bold.ttf",Path("C:/Windows/Fonts/SIMYOU.TTF"),Path("C:/Windows/Fonts/simyou.ttf"),
             Path("C:/Windows/Fonts/msyhbd.ttc"),Path("C:/Windows/Fonts/Dengb.ttf"),
             Path("C:/Windows/Fonts/simhei.ttf"),
+            # Debian 12+ / Ubuntu 的 Noto CJK Bold 实际路径
+            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Bold.ttc"),
+            Path("/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Bold.ttc"),
+            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJKsc-Bold.otf"),
+            # Arch / 旧发行版
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf"),
+            # M PLUS Rounded Bold
             Path("/usr/share/fonts/truetype/mplus/MPLUSRounded1c-Bold.ttf"),
             Path("/usr/share/fonts/opentype/mplus/MPLUSRounded1c-Bold.ttf"),
             Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf"),
+            Path("/usr/share/fonts/truetype/wqy-zenhei/wqy-zenhei.ttc"),
+            Path("/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc"),
             Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
         ]
         regular=next((str(path) for path in regular_candidates if str(path) not in {"","."} and path.is_file()),"")

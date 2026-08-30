@@ -14,8 +14,9 @@ from .search_service import SearchService
 
 
 class NewsService:
-    def __init__(self,store:Any,config:Any,search:SearchService,http:HttpClient,logger:Any)->None:
+    def __init__(self,store:Any,config:Any,search:SearchService,http:HttpClient,logger:Any,llm:Any)->None:
         self.store=store; self.config=config; self.search=search; self.http=http; self.logger=logger
+        self.llm=llm
 
     def update_config(self,config:Any)->None:self.config=config
 
@@ -24,20 +25,19 @@ class NewsService:
         start=now.replace(hour=0,minute=0,second=0,microsecond=0)
         return start.timestamp(),(start+timedelta(days=1)).timestamp()
 
-    async def refresh_due(self,now:Any,schedule:dict[str,Any])->int:
-        """在允许的空闲日程轮换兴趣词，执行一次逻辑新闻搜索并保存去重结果。"""
+    async def refresh_due(self,now:Any,schedule:dict[str,Any],personality:str)->int:
+        """在允许的空闲日程由人格规划新闻词，执行一次逻辑新闻搜索并保存去重结果。"""
         cfg=self.config.news
         if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return 0
         current=schedule.get("current") or {}
         if str(current.get("kind") or "") not in set(cfg.allowed_schedule_types):return 0
         start,end=self._day_bounds(now)
         if await self.store.search_attempt_count("news",start,end)>=int(cfg.daily_max):return 0
-        completed=await self.store.search_success_count("news",start,end)
-        topics=[str(item).strip() for item in cfg.interest_topics if str(item).strip()]
-        if not topics:return 0
-        topic=topics[(now.toordinal()+completed)%len(topics)]
+        query=await self._plan_query(now,personality,schedule)
+        if not query:
+            return 0
         response=await self.search.search(
-            f"{topic} 最新新闻 过去24小时",operation="news",freshness="day",event_at=now.timestamp(),
+            query,operation="news",freshness="day",event_at=now.timestamp(),
         )
         if not response.results:return 0
         results=response.results[:min(5,int(self.config.search_api.max_results))]
@@ -58,6 +58,27 @@ class NewsService:
                 "content_hash":digest,"expires_at":now_ts+retention,
             }):changed+=1
         return changed
+
+    async def _plan_query(self,now,personality:str,schedule:dict)->str:
+        """让麦麦根据人格自主决定此刻想了解什么新闻；模型不可用时跳过。"""
+        if not self.llm.task_available("news"):
+            return ""
+        current=schedule.get("current") or {}
+        result=await self.llm.generate_json(
+            "你是麦麦。根据你的人设与当前状态，自主决定此刻最想了解的一类新闻，给出一个简短、"
+            "适合网页搜索的查询词（不超过 40 字）。不要搜索用户身份、账号、群名、私密关系或聊天原句。\n"
+            + json.dumps({
+                "personality": personality[:1200],
+                "current_activity": current.get("summary") or "",
+            }, ensure_ascii=False)
+            + "\n只返回JSON：{\"query\":\"\"}。",
+            "你自主决定麦麦此刻读什么新闻。", {"query": ""}, max_tokens=120,
+            task_kind="news", request_type="news_query_planning",
+        )
+        if not isinstance(result,dict):
+            return ""
+        query=" ".join(str(result.get("query") or "").split())[:100]
+        return query
 
     async def _read_articles(self,results:list[SearchResult])->dict[int,str]:
         """并发读取最多三篇公网正文；任一页面失败只降级为搜索摘要。"""

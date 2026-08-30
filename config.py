@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.12.0"
+PLUGIN_VERSION = "1.13.0"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -649,6 +649,12 @@ class SearchAPISettings(PluginConfigBase):
     tool_enabled: bool = Field(default=True,description="允许麦麦按需调用联网搜索工具。",json_schema_extra=_ui(
         "允许麦麦使用联网搜索工具","仍需开启“联网见闻”总开关并配置至少一个可用服务；工具只返回搜索摘要，不会直接发送消息。",4,
         label_en="Enable Web Search Tool",hint_en="Also requires connected discovery and an available provider; the tool returns search summaries only."))
+    history_enabled: bool = Field(default=True,description="本地记录每次逻辑搜索的查询词与结果摘要。",json_schema_extra=_ui(
+        "记录搜索历史","记录联网工具、主动搜索和新闻阅读的查询词与结果摘要；查询词已做隐私清洗，原始 Key 不入库。",5,
+        label_en="Record Search History",hint_en="Store sanitized query and result summaries for local audit."))
+    history_retention_days: int = Field(default=30,ge=1,le=365,description="本地搜索历史保留天数。",json_schema_extra=_ui(
+        "搜索历史保留天数","到期自动清理；新闻与探索笔记仍按各自保留期管理。",6,
+        label_en="Search History Retention (days)",hint_en="Expired history rows are cleaned automatically."))
 
 
 class NewsSettings(PluginConfigBase):
@@ -659,8 +665,6 @@ class NewsSettings(PluginConfigBase):
         "启用新闻阅读","默认关闭；还需要在“联网搜索服务”中启用至少一个服务。",0,label_en="Enable News Reading",hint_en="Disabled by default and requires an enabled search provider."))
     daily_max: int = Field(default=1,ge=0,le=12,description="每天最多发起的新闻阅读次数。",json_schema_extra=_ui(
         "每日新闻阅读次数","默认 1 次；一次主备 Key 和跨服务降级链合计为一次。",1,label_en="Daily News Reads",hint_en="One provider failover chain counts as one daily attempt."))
-    interest_topics: list[str] = Field(default_factory=lambda:["科技","人工智能","游戏","文化"],description="轮换阅读的新闻兴趣。",json_schema_extra=_ui(
-        "新闻兴趣","每次轮换一个主题并搜索过去 24 小时内容。",2,label_en="News Interests",hint_en="One topic is rotated per read for the previous 24 hours."))
     full_text_count: int = Field(default=3,ge=0,le=3,description="最多继续读取正文的结果数。",json_schema_extra=_ui(
         "正文读取数量","最多读取最相关的前 3 篇；0 表示只使用 API 返回内容。",3,label_en="Full-text Articles",hint_en="Read up to three source pages; zero uses API summaries only."))
     max_concurrency: int = Field(default=2,ge=1,le=4,description="正文读取最大并发数。",json_schema_extra=_ui(
@@ -671,16 +675,6 @@ class NewsSettings(PluginConfigBase):
         "新闻保留天数","过期缓存自动清理。",6,label_en="News Retention",hint_en="Expired cached articles are removed automatically."))
     allowed_schedule_types: list[Literal["leisure","rest"]] = Field(default_factory=lambda:["leisure","rest"],description="允许阅读新闻的日程类型。",json_schema_extra=_ui(
         "允许阅读的日程","默认只在闲暇或休息时阅读。",7,label_en="Allowed Schedules",hint_en="Read news only during leisure or rest.",enum_labels={"leisure":"闲暇","rest":"休息"}))
-
-    @field_validator("interest_topics",mode="before")
-    @classmethod
-    def normalize_topics(cls,value:Any)->list[str]:
-        values=value if isinstance(value,list) else []
-        cleaned=[]
-        for item in values:
-            topic=" ".join(str(item or "").split())[:60]
-            if topic and topic not in cleaned:cleaned.append(topic)
-        return cleaned[:20] or ["科技","人工智能","游戏","文化"]
 
 
 class SearchSettings(PluginConfigBase):
@@ -694,8 +688,6 @@ class SearchSettings(PluginConfigBase):
         "每日主动搜索上限","默认 1 次；失败或空结果也会计入，避免持续请求。",1,label_en="Daily Search Limit",hint_en="Failures and empty results count to prevent repeated external requests."))
     include_chat_topics: bool = Field(default=False,description="允许使用匿名未完话题规划搜索。",json_schema_extra=_ui(
         "允许参考聊天话题","默认关闭，避免把私聊内容变成外部搜索词。",2,label_en="Use Chat Topics",hint_en="Disabled by default to keep private chat out of external queries."))
-    interest_keywords: list[str] = Field(default_factory=lambda:["科技","创作","游戏","生活方式"],description="规则 fallback 的人格兴趣。",json_schema_extra=_ui(
-        "兴趣关键词","模型不可用时从这些方向选择低频探索主题。",3,label_en="Interest Keywords",hint_en="Fallback interests used when query planning is unavailable."))
     allowed_schedule_types: list[Literal["leisure","rest","travel"]] = Field(default_factory=lambda:["leisure","rest"],description="允许主动搜索的日程类型。",json_schema_extra=_ui(
         "允许搜索的日程类型","只在空档、休息或按配置允许的出行段探索。",4,label_en="Allowed Schedule Types",hint_en="Search only during configured free schedule segments.",enum_labels={"leisure":"闲暇","rest":"休息","travel":"出行"}))
     note_retention_days: int = Field(default=30,ge=1,le=365,description="探索笔记保留天数。",json_schema_extra=_ui(
@@ -906,35 +898,19 @@ class RecallSettings(PluginConfigBase):
     )
 
 
-class VisionSettings(PluginConfigBase):
-    """疑难图片预摘要设置。"""
-
-    __ui_label__: ClassVar[str] = "图片转述增强"
-    __ui_order__: ClassVar[int] = 7
-
-    enabled: bool = Field(default=True, description="在视觉任务可用时分析疑难图片。", json_schema_extra=_ui("启用疑难图片摘要", "仅处理单图无文字、引用图、转发图和 GIF。", 0, label_en="Enable Difficult-image Summary", hint_en="Pre-summarize standalone, quoted, forwarded and GIF images."))
-    timeout_seconds: float = Field(default=6.0, ge=1, le=30, description="视觉预摘要最长等待。", json_schema_extra=_ui("视觉等待上限（秒）", "超时后立即交回 MaiBot 原生多模态。", 1, label_en="Vision Timeout", hint_en="Fall back to native multimodal after this timeout."))
-    max_images: int = Field(default=6, ge=1, le=16, description="单轮最多分析图片数。", json_schema_extra=_ui("最多分析图片数", "限制合并转发的视觉成本。", 2, label_en="Maximum Images", hint_en="Maximum images analyzed per message."))
-    gif_max_frames: int = Field(default=4, ge=1, le=8, description="动态 GIF 最大抽帧数。", json_schema_extra=_ui("GIF 最大抽帧", "使用可选 Pillow，不依赖 ffmpeg。", 3, label_en="GIF Maximum Frames", hint_en="Maximum GIF frames extracted with optional Pillow."))
-    summary_ttl_hours: int = Field(default=24, ge=1, le=168, description="视觉摘要缓存时间。", json_schema_extra=_ui("摘要缓存（小时）", "只保存哈希与摘要，不保存图片二进制。", 4, label_en="Summary Cache TTL", hint_en="Store hashes and summaries only."))
-    current_pointer_minutes: int = Field(default=30, ge=1, le=240, description="当前图片指针保留时间。", json_schema_extra=_ui("当前图片指针（分钟）", "图片问答优先关联这段时间内的当前图片。", 5, label_en="Current Image Pointer", hint_en="How long an image remains the current conversation image."))
-
-
 class ModelRoutingSettings(PluginConfigBase):
     """MaiBot 任务路由名，而不是 Provider API Key。"""
 
     __ui_label__: ClassVar[str] = "模型与成本编排"
-    __ui_order__: ClassVar[int] = 8
+    __ui_order__: ClassVar[int] = 19
 
     fast_task: str = Field(default="utils", description="快速整理任务名。", json_schema_extra=_ui("快速任务", "默认 utils，用于连续话题等轻量任务。", 0, label_en="Fast Task", hint_en="MaiBot task name for lightweight analysis."))
     reasoning_task: str = Field(default="planner", description="推理任务名。", json_schema_extra=_ui("推理任务", "默认 planner，用于日程和复杂判断。", 1, label_en="Reasoning Task", hint_en="MaiBot task name for reasoning."))
     creative_task: str = Field(default="replyer", description="创作任务名。", json_schema_extra=_ui("创作任务", "默认 replyer，用于梦境和叙事文本。", 2, label_en="Creative Task", hint_en="MaiBot task name for narrative generation."))
-    vision_task: str = Field(default="vlm", description="视觉任务名。", json_schema_extra=_ui("视觉任务", "默认 vlm，必须配置支持图片的模型。", 3, label_en="Vision Task", hint_en="MaiBot task name backed by a visual model."))
     schedule_task: str = Field(default="", description="日程任务覆盖。", json_schema_extra=_ui("日程任务覆盖", "留空继承推理任务。", 4, label_en="Schedule Override", hint_en="Leave empty to inherit reasoning task."))
     rest_wakeup_task: str = Field(default="", description="判醒任务覆盖。", json_schema_extra=_ui("判醒任务覆盖", "留空继承快速任务。", 5, label_en="Wake Decision Override", hint_en="Leave empty to inherit fast task."))
     continuity_task: str = Field(default="", description="连续话题任务覆盖。", json_schema_extra=_ui("话题整理任务覆盖", "留空继承快速任务。", 6, label_en="Continuity Override", hint_en="Leave empty to inherit fast task."))
     dream_task: str = Field(default="", description="梦境任务覆盖。", json_schema_extra=_ui("梦境任务覆盖", "留空继承创作任务。", 7, label_en="Dream Override", hint_en="Leave empty to inherit creative task."))
-    vision_summary_task: str = Field(default="", description="图片摘要任务覆盖。", json_schema_extra=_ui("图片摘要任务覆盖", "留空继承视觉任务。", 8, label_en="Vision Summary Override", hint_en="Leave empty to inherit vision task."))
     diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务覆盖", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
     date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务覆盖", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
     news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 11, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
@@ -955,7 +931,7 @@ class UsageSettings(PluginConfigBase):
     """插件模型调用统计。"""
 
     __ui_label__: ClassVar[str] = "Token 监控"
-    __ui_order__: ClassVar[int] = 9
+    __ui_order__: ClassVar[int] = 20
 
     enabled: bool = Field(default=True, description="记录插件与观察到的 Host 模型用量。", json_schema_extra=_ui("启用 Token 统计", "不限制每日额度，只记录调用、Token、耗时与失败。", 0, label_en="Enable Token Monitoring", hint_en="Record usage without enforcing a daily budget."))
     retention_days: int = Field(default=30, ge=1, le=365, description="明细保留天数。", json_schema_extra=_ui("明细保留天数", "每日聚合可长期保留，调用明细按此清理。", 1, label_en="Detail Retention Days", hint_en="Retention period for individual call records."))
@@ -1104,18 +1080,6 @@ class MaiLifeSettings(PluginConfigBase):
         json_schema_extra=_ui("撤回增强", "撤回通知取消回复与可选本人摘要。", 8,
                               label_en="Recall Handling", hint_en="Cancel replies for recalled messages and optionally retain own summaries."),
     )
-    vision: VisionSettings = Field(
-        default_factory=VisionSettings,
-        json_schema_extra=_ui("图片转述增强", "疑难图片摘要和短期缓存。", 9, label_en="Enhanced Image Understanding", hint_en="Difficult-image summaries and short-lived cache."),
-    )
-    models: ModelRoutingSettings = Field(
-        default_factory=ModelRoutingSettings,
-        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 9, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
-    )
-    usage: UsageSettings = Field(
-        default_factory=UsageSettings,
-        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 10, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
-    )
     schedule: ScheduleSettings = Field(
         default_factory=ScheduleSettings,
         json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 11, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
@@ -1150,4 +1114,12 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=CreationSettings,
         json_schema_extra=_ui("书柜与创作", "作品、日记、阅读批注和分阶段创作。", 18,
                               label_en="Bookshelf and Creation", hint_en="Works, diaries, reading notes and staged creation."),
+    )
+    models: ModelRoutingSettings = Field(
+        default_factory=ModelRoutingSettings,
+        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 19, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
+    )
+    usage: UsageSettings = Field(
+        default_factory=UsageSettings,
+        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 20, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
     )

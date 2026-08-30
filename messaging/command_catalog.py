@@ -40,7 +40,7 @@ COMMAND_SECTIONS:tuple[CommandSection,...]=(
     )),
     CommandSection("管理与诊断",(
         CommandItem("/麦麦统计","Token 与搜索 API 统计（管理员）"),
-        CommandItem("/麦麦管理 [概览/用户/群聊/日期/来源/书柜/统计/主动]","查看脱敏管理摘要（管理员）"),
+        CommandItem("/麦麦管理 [概览/用户/群聊/日期/来源/书柜/统计/主动/搜索]","查看脱敏管理摘要（管理员）"),
         CommandItem("/麦麦立即创作","立即执行创作判断（管理员）"),
         CommandItem("/麦麦重生日程","重新生成今日日程（管理员）"),
         CommandItem("/麦麦休息测试","休息闸门诊断（管理员）"),

@@ -17,7 +17,7 @@ class InformationService:
     def __init__(self,ctx:Any,store:Any,config:Any,llm:Any,logger:Any)->None:
         self.ctx=ctx; self.store=store; self.config=config; self.llm=llm; self.logger=logger
         self.http=HttpClient(logger); self.search=SearchService(config,self.http,store,logger)
-        self.news=NewsService(store,config,self.search,self.http,logger)
+        self.news=NewsService(store,config,self.search,self.http,logger,llm)
 
     def update_config(self,config:Any)->None:
         self.config=config; self.search.update_config(config); self.news.update_config(config)
@@ -51,6 +51,11 @@ class InformationService:
                 "auth":"API Key 鉴权失败","rate_limit":"搜索服务正在限流","quota":"搜索服务额度不足",
                 "timeout":"搜索服务请求超时","network":"服务器无法连接搜索服务","empty_result":"没有找到结果",
                 "attempt_limit":"本次搜索已达到降级尝试上限","invalid_config":"搜索服务配置不完整",
+                "playwright_unavailable":"Playwright 依赖未安装，请 pip install playwright",
+                "browser_unavailable":"Chromium 浏览器不可用，请运行 python -m playwright install chromium",
+                "blocked":"搜索页被验证码或反爬拦截，可尝试切换 DuckDuckGo 或改用 API 服务",
+                "browser_error":"浏览器搜索失败，请检查网络与搜索引擎页面结构",
+                "internal":"浏览器或搜索服务内部异常",
             }
             reason=labels.get(self.search.last_error_class,"所有搜索服务暂时不可用")
             return {"success":False,"content":f"联网搜索失败：{reason}。"}
@@ -70,18 +75,22 @@ class InformationService:
             "provider_type":response.provider_type,"cited":bool(response.cited),"results":rows,
         }
 
+    async def browse_screenshot(self,url:str)->bytes:
+        """浏览网页并截图，供 Tool 调用；复用 Playwright 服务。"""
+        return await self.search.browse_screenshot(url)
+
     async def tick(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],
                    chat_topics:list[str]|None=None)->dict[str,int]:
         if not self.config.information.enabled:return {"news":0,"associated":0,"search":0}
         await self.prepare()
-        news_count=await self.news.refresh_due(now,schedule)
+        news_count=await self.news.refresh_due(now,schedule,personality)
         associated=await self._associate_pending_news(now,personality,state,schedule)
         searched=1 if await self.explore_due(now,personality,state,schedule,chat_topics or []) else 0
         await self.store.cleanup_information(now.timestamp())
         return {"news":news_count,"associated":associated,"search":searched}
 
     async def refresh_news_now(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any])->dict[str,int]:
-        await self.prepare(); count=await self.news.refresh_due(now,schedule)
+        await self.prepare(); count=await self.news.refresh_due(now,schedule,personality)
         associated=await self._associate_pending_news(now,personality,state,schedule)
         return {"news":count,"associated":associated}
 
@@ -133,16 +142,14 @@ class InformationService:
         return len(items)
 
     async def _associate(self,payload:dict[str,Any],personality:str,state:dict[str,Any],schedule:dict[str,Any])->dict[str,Any]:
-        """先用本地兴趣规则建立保守基线，再由可选模型判断是否与麦麦自身有关。"""
+        """先用本地活动规则建立保守基线，再由可选模型判断是否与麦麦自身有关。"""
         if not self.config.information.association_enabled:return {"score":0.0,"reason":"自我关联已关闭","topic":"","motive":""}
         text=(str(payload.get("title") or "")+" "+str(payload.get("summary") or "")).casefold()
-        interests=[str(item).strip() for item in self.config.search.interest_keywords if str(item).strip()]
-        score=0.2; matched=[word for word in interests if word.casefold() in text]
-        if matched:score+=min(0.35,0.12*len(matched))
+        score=0.2
         activity=str(state.get("current_activity") or "")+" "+str((schedule.get("current") or {}).get("summary") or "")
         activity_terms=[part for part in re.split(r"[\s，。,.、/]+",activity) if len(part)>=2]
         if any(term.casefold() in text for term in activity_terms):score+=0.18
-        fallback={"score":min(1,score),"reason":"与已配置兴趣或当前生活的规则匹配" if score>0.2 else "暂未发现明确的自我关联",
+        fallback={"score":min(1,score),"reason":"与当前生活的规则匹配" if score>0.2 else "暂未发现明确的自我关联",
                   "topic":str(payload.get("title") or "")[:160],"motive":"最近读到的内容与自己的兴趣有一点联系"}
         if not self.llm.task_available("relevance"):return fallback
         context={"personality":personality[:1200],"state":{"energy":state.get("energy"),"mood":state.get("mood_valence"),
@@ -179,16 +186,14 @@ class InformationService:
 
     async def _plan_query(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->dict[str,str]:
         """在移除 QQ 号、昵称、群名及网址后规划一个有限长度的探索查询。"""
-        interests=[str(item).strip() for item in self.config.search.interest_keywords if str(item).strip()]
-        fallback_topic=interests[now.toordinal()%len(interests)] if interests else "近期科技与文化"
-        fallback={"topic":fallback_topic,"query":fallback_topic,"reason":"从配置的人格兴趣中选择一个方向"}
+        fallback={"topic":"","query":"","reason":"模型不可用，跳过自主搜索"}
         forbidden=await self._private_query_terms()
         safe_topics=[self._safe_query(topic,forbidden) for topic in chat_topics[:5]] if self.config.search.include_chat_topics else []
         safe_topics=[topic for topic in safe_topics if topic]
         if not self.llm.task_available("search"):return fallback
         context={"personality":personality[:1200],"state":{"energy":state.get("energy"),"mood":state.get("mood_valence"),
                   "activity":state.get("current_activity")},"schedule":{"current":schedule.get("current"),"next":schedule.get("next")},
-                 "interests":interests,"anonymous_chat_topics":safe_topics}
+                 "anonymous_chat_topics":safe_topics}
         result=await self.llm.generate_json(
             "为麦麦选择一个此刻真想了解的具体主题。不能搜索用户身份、账号、群名、私密关系、聊天原句或敏感个人信息。\n"+
             json.dumps(context,ensure_ascii=False)+"\n只返回JSON：topic、query、reason。query适合普通网页搜索，最多100字。",
@@ -267,4 +272,5 @@ class InformationService:
         return {"enabled":bool(self.config.information.enabled),"news_enabled":bool(self.config.news.enabled),
                 "search_enabled":bool(self.config.search.enabled),"sources":len([item for item in providers if item["enabled"]]),
                 "providers":providers,"recent_news":len(await self.store.recent_news_items(now.timestamp(),100)),
-                "recent_explorations":len(await self.store.recent_exploration_notes(now.timestamp(),100))}
+                "recent_explorations":len(await self.store.recent_exploration_notes(now.timestamp(),100)),
+                "recent_search_history":len(await self.store.recent_search_history(now.timestamp(),500))}

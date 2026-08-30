@@ -222,6 +222,28 @@ class PlaywrightSearchClient:
                 raise SearchBackendError("浏览器搜索未返回自然结果",error_class="empty_result")
             return SearchResponse(results=results,provider_type="playwright",cited=True,model=str(engine))
 
+    async def screenshot(self,url:str,timeout_seconds:float)->bytes:
+        """打开网页并截图，返回 PNG 字节；失败抛 SearchBackendError。"""
+        try:
+            validated=HttpClient.validate_public_url(url)
+        except HttpRequestError:
+            raise SearchBackendError("网页地址无效或不允许访问内网",error_class="invalid_response")
+        if not validated:
+            raise SearchBackendError("网页地址为空或不可访问",error_class="invalid_response")
+        async with self._search_lock:
+            context=await self._ensure_browser()
+            page=await context.new_page()
+            try:
+                await page.goto(validated,timeout=max(1000,int(timeout_seconds*1000)),wait_until="domcontentloaded")
+                return await page.screenshot(type="png")
+            except Exception as exc:
+                message=str(exc).casefold()
+                if "timeout" in message or isinstance(exc,TimeoutError):
+                    raise SearchBackendError("网页打开超时",error_class="network") from exc
+                raise SearchBackendError("网页打开失败",error_class="browser_error") from exc
+            finally:
+                await page.close()
+
     async def close(self)->None:
         """释放页面上下文、浏览器与 Playwright 运行时。"""
         async with self._search_lock:

@@ -196,27 +196,16 @@ summary_ttl_minutes = 10
 summary_max_chars = 240
 
 
-[vision]
-enabled = true
-timeout_seconds = 6.0
-max_images = 6
-gif_max_frames = 4
-summary_ttl_hours = 24
-current_pointer_minutes = 30
-
-
 [models]
 # 这里填写 MaiBot model_task_config 的任务名，而不是模型供应商 ID。
 fast_task = "utils"
 reasoning_task = "planner"
 creative_task = "replyer"
-vision_task = "vlm"
 schedule_task = ""
 scene_detail_task = ""
 rest_wakeup_task = ""
 continuity_task = ""
 dream_task = ""
-vision_summary_task = ""
 diary_task = ""
 date_analysis_task = ""
 news_task = ""
@@ -287,6 +276,11 @@ max_attempts = 12
 max_results = 5
 tool_enabled = true
 
+# 本地搜索历史：记录联网工具、主动搜索和新闻阅读的查询词与结果摘要。
+# 查询词已做隐私清洗（QQ 号、昵称、群名、邮箱、网址），原始 Key 永不入库。
+history_enabled = true
+history_retention_days = 30
+
 # 默认使用免 Key 的 Playwright/Bing 浏览器搜索；列表顺序就是降级顺序。
 [[search_api.providers]]
 enabled = true
@@ -317,7 +311,6 @@ model = ""
 [news]
 enabled = false
 daily_max = 1
-interest_topics = ["科技", "人工智能", "游戏", "文化"]
 full_text_count = 3
 max_concurrency = 2
 max_article_chars = 8000
@@ -329,7 +322,6 @@ allowed_schedule_types = ["leisure", "rest"]
 enabled = false
 daily_max = 1
 include_chat_topics = false
-interest_keywords = ["科技", "创作", "游戏", "生活方式"]
 allowed_schedule_types = ["leisure", "rest"]
 note_retention_days = 30
 

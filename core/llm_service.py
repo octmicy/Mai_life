@@ -26,13 +26,11 @@ class LLMService:
             "fast": models.fast_task,
             "reasoning": models.reasoning_task,
             "creative": models.creative_task,
-            "vision": models.vision_task,
             "schedule": models.schedule_task or models.reasoning_task,
             "scene_detail": models.scene_detail_task or models.reasoning_task,
             "rest_wakeup": models.rest_wakeup_task or models.fast_task,
             "continuity": models.continuity_task or models.fast_task,
             "dream": models.dream_task or models.creative_task,
-            "vision_summary": models.vision_summary_task or models.vision_task,
             "diary": models.diary_task or models.creative_task,
             "date_analysis": models.date_analysis_task or models.fast_task,
             "news": models.news_task or models.fast_task,
@@ -52,7 +50,6 @@ class LLMService:
         kinds={"schedule","scene_detail"}
         if self.config.context.enabled and self.config.context.continuity_enabled:kinds.add("continuity")
         if self.config.rest_gate.enabled and self.config.rest_gate.mode=="llm":kinds.add("rest_wakeup")
-        if self.config.vision.enabled:kinds.add("vision_summary")
         if self.config.memory.enabled:
             kinds.add("dream")
             if self.config.memory.diary_enabled:kinds.add("diary")

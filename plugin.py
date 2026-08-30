@@ -34,14 +34,13 @@ from .messaging.message_pipeline import MessageDebouncer,classify_intent,direct_
 from .messaging.prompt_builder import PromptBuilder,relationship_stage
 from .messaging.recall_service import RecallService,is_recall_query
 from .messaging.task_context import ActivePluginTask,ActiveTaskRegistry,HOST_TASK_PREFIX,PLUGIN_ID,latest_plugin_task_marker
-from .messaging.vision_service import VisionService
 from .management import AdminService
 from .social import GroupObserver,RelayService
 
 
 ADMIN_SCOPE_ALIASES:dict[str,str]={
     "概览":"overview","用户":"users","群聊":"groups","日期":"dates",
-    "来源":"sources","书柜":"bookshelf","统计":"tokens","主动":"proactive",
+    "来源":"sources","书柜":"bookshelf","统计":"tokens","主动":"proactive","搜索":"search",
 }
 PRIVATE_COMMAND_ACCESS_DENIED="该指令仅对已配置并启用的私聊用户或私聊管理员开放。"
 
@@ -59,7 +58,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._llm:Optional[LLMService]=None; self._state:Optional[LifeStateEngine]=None
         self._schedule:Optional[ScheduleService]=None; self._rest:Optional[RestGate]=None
         self._proactive:Optional[ProactiveEngine]=None; self._debouncer:Optional[MessageDebouncer]=None
-        self._recall:Optional[RecallService]=None; self._vision:Optional[VisionService]=None
+        self._recall:Optional[RecallService]=None
         self._continuity:Optional[ContinuityService]=None
         self._memory:Optional[MemoryService]=None
         self._information:Optional[InformationService]=None
@@ -84,7 +83,7 @@ class MaiLifePlugin(MaiBotPlugin):
     @property
     def _ready(self)->bool:
         return all((self._store,self._env,self._llm,self._state,self._schedule,self._rest,self._proactive,
-                    self._debouncer,self._vision,self._continuity,self._memory,self._information,
+                    self._debouncer,self._continuity,self._memory,self._information,
                     self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall))
 
     async def on_load(self)->None:
@@ -92,7 +91,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._stopping=False
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         await self._active_tasks.reset()
-        root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"))
+        root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"),journal_mode="delete")
         await self._store.initialize()
         if not self.config.recall.enabled or not self.config.recall.cache_summary_enabled:
             await self._store.clear_recall_summaries()
@@ -106,7 +105,6 @@ class MaiLifePlugin(MaiBotPlugin):
         self._proactive=ProactiveEngine(self.ctx,self._store,self.config,self._env,self.ctx.logger)
         self._debouncer=MessageDebouncer(self.config,self.ctx.logger)
         self._recall=RecallService(self.ctx,self._store,self.config,self.ctx.logger)
-        self._vision=VisionService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
         self._continuity=ContinuityService(self._store,self.config,self._llm,self.ctx.logger)
         self._memory=MemoryService(self._store,self.config,self._llm,self.ctx.logger)
         self._information=InformationService(self.ctx,self._store,self.config,self._llm,self.ctx.logger)
@@ -120,6 +118,8 @@ class MaiLifePlugin(MaiBotPlugin):
         await self._store.sync_users(self.config.users.profiles)
         await self._information.prepare()
         await self._refresh_personality(); await self._resolve_all_streams(); await self._llm.refresh_health()
+        if self._menu_renderer.last_error:
+            self.ctx.logger.warning(f"[MaiLife] 菜单渲染器：{self._menu_renderer.last_error}")
         if self.config.plugin.enabled:
             await self._maintenance_tick(allow_weather_network=False); self._start_tasks()
             self._spawn_transient(self._env.refresh_weather(force=True),"mai-life-weather-initial")
@@ -158,7 +158,7 @@ class MaiLifePlugin(MaiBotPlugin):
         # bot 只重载人格，model 只刷新模型健康，其他服务继续持有同一个已校验实例。
         if scope=="self":
             for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
-                            self._debouncer,self._vision,self._continuity,self._memory,self._information,
+                            self._debouncer,self._continuity,self._memory,self._information,
                             self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall):
                 if service:service.update_config(self.config)
             if self._store and (not self.config.recall.enabled or not self.config.recall.cache_summary_enabled):
@@ -590,7 +590,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.before_process",mode=HookMode.BLOCKING,order=HookOrder.EARLY,timeout_ms=30000)
     async def on_receive(self,**kwargs:Any)->dict[str,Any]:
-        """统一处理撤回、群/私聊收口、视觉摘要、互动记录和休息闸门。
+        """统一处理撤回、群/私聊收口、互动记录和休息闸门。
 
         入口只负责撤回通知、启停开关与消息归属路由，具体管线由群聊/私聊服务方法承担。
         """
@@ -606,7 +606,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return {"action":"continue"}
         if message.get("is_notify"):return {"action":"continue"}
         uid,session,mid,private=message_identity(message)
-        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._vision and self._continuity and self._memory and self._recall
+        assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._continuity and self._memory and self._recall
         self._recall.note_inbound(message)
         try:await self._recall.register_turn(message)
         except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 撤回轮次注册失败，消息继续处理: {exc}")
@@ -671,7 +671,7 @@ class MaiLifePlugin(MaiBotPlugin):
 
     async def _process_private_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
                                        initial_sources:list[str])->dict[str,Any]:
-        """私聊管线：建立本轮运行态、视觉摘要、防抖收口、互动记录与休息闸门。"""
+        """私聊管线：建立本轮运行态、防抖收口、互动记录与休息闸门。"""
         # 私聊新入站会结束旧主动任务归因，并建立本轮的轻量意图/媒介上下文。
         media_hint:list[str]|None=None
         if session:
@@ -696,43 +696,17 @@ class MaiLifePlugin(MaiBotPlugin):
         if sender_name and sender_name!=str(user.get("display_name") or ""):
             await self._store.update_user_display_name(uid,sender_name)
 
-        # 视觉任务与收口等待并行；旧一代消息被合并后会取消自己的无效视觉任务。
-        vision_task=asyncio.create_task(self._vision.summarize_if_needed(message),name=f"mai-life-vision-{mid}")
-        started=time.monotonic()
         try:allowed,merged,reason=await self._debouncer.collect(message,media_hint=media_hint)
         except Exception as exc:
-            vision_task.cancel(); await asyncio.gather(vision_task,return_exceptions=True)
             self.ctx.logger.warning(f"[MaiLife] 消息收口失败，失败开放: {exc}")
             return {"action":"continue"}
         if not allowed:
-            vision_task.cancel(); await asyncio.gather(vision_task,return_exceptions=True)
             return {"action":"abort"}
         if self._stopping or self._reloading or not self.config.plugin.enabled:
             # 热禁用可能发生在防抖等待期间；此时保留合并结果，但不再记录或阻断消息。
-            vision_task.cancel(); await asyncio.gather(vision_task,return_exceptions=True)
             kwargs["message"]=merged
             return {"action":"continue","modified_kwargs":kwargs}
-        # 视觉摘要是内部背景，互动/意图/休息判断只能使用用户原始文本。
         user_text=direct_text(merged); user_media=media_types(merged)
-        remaining=max(0.01,float(self.config.vision.timeout_seconds)-(time.monotonic()-started)); summary=""
-        try:summary=await asyncio.wait_for(vision_task,timeout=remaining)
-        except (asyncio.TimeoutError,asyncio.CancelledError):vision_task.cancel()
-        except Exception as exc:self.ctx.logger.debug(f"[MaiLife] 视觉摘要降级: {exc}")
-        # “先发图后补文字”时旧任务会被取消；多图补话则必须用组合哈希重新理解完整一轮。
-        merged_info=merged.get("message_info") if isinstance(merged.get("message_info"),dict) else {}
-        merged_additional=merged_info.get("additional_config") if isinstance(merged_info.get("additional_config"),dict) else {}
-        merged_ids=merged_additional.get("mai_life_merged_message_ids")
-        needs_merged_vision=bool(
-            isinstance(merged_ids,list) and len(merged_ids)>1
-            and any(kind in user_media for kind in ("image","gif","reply","forward"))
-        )
-        remaining=max(0.0,float(self.config.vision.timeout_seconds)-(time.monotonic()-started))
-        if (not summary or needs_merged_vision) and remaining>0.05:
-            try:
-                merged_summary=await asyncio.wait_for(self._vision.summarize_if_needed(merged),timeout=remaining)
-                if merged_summary:summary=merged_summary
-            except (asyncio.TimeoutError,asyncio.CancelledError):pass
-            except Exception as exc:self.ctx.logger.debug(f"[MaiLife] 合并图片摘要降级: {exc}")
         uid,session,mid,_=message_identity(merged); text=user_text; media=user_media
         source_ids=self._recall.source_message_ids(merged)
         try:await self._recall.register_turn(merged)
@@ -776,7 +750,9 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return None
         assert self._store and self._env and self._schedule and self._memory and self._information and self._bookshelf
         user=await self._user_by_session(session_id)
-        if not user:return None
+        if not user:
+            self.ctx.logger.debug(f"[MaiLife] 被动回复增强跳过：session={session_id} 未匹配到已启用私聊用户（请检查「私聊用户」配置）")
+            return None
         now=self._env.now(); runtime=self._session_runtime.get(session_id) or {}
         backlogs=await (self._store.consume_rest_backlogs(user["user_id"]) if consume_backlog else self._store.peek_rest_backlogs(user["user_id"]))
         return {"state":await self._store.get_state(),"weather":await self._store.get_weather() or {"description":"天气未知"},
@@ -784,7 +760,6 @@ class MaiLifePlugin(MaiBotPlugin):
                 "environment":self._env.snapshot(now,platform=str(runtime.get("platform") or "qq"),adapter=str(runtime.get("adapter") or "unknown"),
                                                  chat_type="private",media=runtime.get("media") or ["text"]),
                 "continuity":await self._store.get_continuity(user["user_id"]),"intent":str(runtime.get("intent") or ""),
-                "images":await self._store.current_image_summaries(session_id,now.timestamp()),
                 "memory":await self._memory.context_for_user(user,now),
                 "information":await self._information.context(now),
                 "bookshelf":await self._bookshelf.context_for_user(user)}
@@ -823,7 +798,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 suffix=self._prompts.planner(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
                                              payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
                                              int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
-                                             bookshelf=payload["bookshelf"],image_summaries=payload["images"])
+                                             bookshelf=payload["bookshelf"])
         if self._recall and self.config.recall.enabled:
             suffix+=await self._recall.planner_context(session)
             runtime=self._session_runtime.get(session) or {}
@@ -867,7 +842,7 @@ class MaiLifePlugin(MaiBotPlugin):
             payload=await self._prompt_payload(session,consume_backlog=True)
             if payload:
                 suffix=self._prompts.replyer(payload["state"],payload["weather"],payload["context"],payload["user"],payload["backlogs"],
-                                             payload["environment"],payload["continuity"],payload["intent"],payload["images"],
+                                             payload["environment"],payload["continuity"],payload["intent"],
                                              min(2400,int(self.config.context.prompt_max_chars)),memory=payload["memory"],information=payload["information"],
                                              bookshelf=payload["bookshelf"])
         if self._recall and self.config.recall.enabled:
@@ -1178,6 +1153,46 @@ class MaiLifePlugin(MaiBotPlugin):
             query,self._env.now(),result_limit=result_limit,freshness=freshness,
         )
 
+    @Tool(
+        "mai_life_browse_web",
+        brief_description="打开网页并截图发送给当前用户",
+        description=("当麦麦需要展示某个网页的实际内容，或用户要求查看某个网址时使用。"
+                     "会使用 Playwright 打开网页、截图，并把截图作为图片发送给当前对话的用户。"),
+        detailed_description=("仅支持公网 http/https 地址，会拒绝内网地址。打开失败、截图失败或发送失败会返回失败说明。"
+                              "不要对同一网页重复截图。"),
+        parameters=[
+            ToolParameterInfo(
+                name="url",param_type=ToolParamType.STRING,required=True,
+                description="要打开并截图的完整 http/https 网页地址。",
+            ),
+        ],
+    )
+    async def tool_browse_web(self,**kwargs:Any)->dict[str,Any]:
+        """用 Playwright 打开公网网页、截图并把截图发给当前对话用户。"""
+        url=str(kwargs.get("url") or "").strip()
+        if not self.config.plugin.enabled:
+            return {"success":False,"content":"麦麦生活插件当前已关闭。"}
+        if not self._information or not self._command_replies:
+            return {"success":False,"content":"网页浏览服务尚未初始化。"}
+        if not url.startswith(("http://","https://")):
+            return {"success":False,"content":"请提供完整的 http/https 网页地址。"}
+        user_id=str(kwargs.get("user_id") or "")
+        stream_id=str(kwargs.get("stream_id") or kwargs.get("chat_id") or "")
+        platform=str(kwargs.get("platform") or "qq")
+        try:
+            image_bytes=await self._information.browse_screenshot(url)
+        except Exception as exc:
+            self.ctx.logger.warning(f"[MaiLife] 网页截图失败: {exc}")
+            return {"success":False,"content":"网页打开或截图失败，可能无法访问或页面较复杂。"}
+        if not image_bytes:
+            return {"success":False,"content":"网页截图内容为空。"}
+        sent=await self._command_replies.send_image_bytes_with_fallback(
+            image_bytes,stream_id,user_id=user_id,platform=platform,
+        )
+        if not sent:
+            return {"success":False,"content":"截图成功但发送失败，请稍后重试。"}
+        return {"success":True,"content":"已打开网页并截图发送给用户。"}
+
     def _is_admin(self,user_id:str)->bool:
         admins=[str(item).strip() for item in self.config.plugin.admin_user_ids if str(item).strip()]
         if not admins:
@@ -1433,7 +1448,7 @@ class MaiLifePlugin(MaiBotPlugin):
             return await self._send_command(kwargs,"只有私聊管理员可以查看 Token 统计。")
         return await self._send_command(kwargs,await self._token_report())
 
-    @Command(name="/麦麦管理",pattern=r"^(?:/麦麦管理|/mai_admin)(?:\s+(?P<scope>概览|用户|群聊|日期|来源|书柜|统计|主动|overview|users|groups|dates|sources|bookshelf|tokens|proactive))?\s*$",description="管理员查看聚合管理摘要")
+    @Command(name="/麦麦管理",pattern=r"^(?:/麦麦管理|/mai_admin)(?:\s+(?P<scope>概览|用户|群聊|日期|来源|书柜|统计|主动|搜索|overview|users|groups|dates|sources|bookshelf|tokens|proactive|search))?\s*$",description="管理员查看聚合管理摘要")
     async def cmd_admin(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not self._is_admin(uid):
@@ -1455,7 +1470,7 @@ class MaiLifePlugin(MaiBotPlugin):
               f"联网见闻：{'开启' if self.config.information.enabled else '关闭'}（新闻 {'开' if self.config.news.enabled else '关'} / 搜索 {'开' if self.config.search.enabled else '关'}）\n"
               f"社交转述：{'开启' if self.config.social.enabled else '关闭'}（白名单群 {len(self.config.social.groups)}）\n"
               f"书柜创作：{'开启' if self.config.creation.enabled else '关闭'}（明文确认 {'是' if self.config.creation.plaintext_storage_acknowledged else '否'}）\n"
-              f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}/{self.config.models.vision_task}")
+              f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}")
         return await self._send_command(kwargs,text)
 
     @Command(name="/麦麦帮助",pattern=r"^(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦麦生活指令")
@@ -1502,9 +1517,11 @@ class MaiLifePlugin(MaiBotPlugin):
                 f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
                 f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
                 f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}，本人摘要缓存 {'开启' if self.config.recall.cache_summary_enabled else '关闭'}\n"
-                f"视觉摘要：{'可用' if self._llm.task_available('vision_summary') else '降级'}\n可用模型任务：{tasks}\n"
+                f"私聊用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
+                f"可用模型任务：{tasks}\n"
                 f"生活记忆：日记 {len(diaries)}（最近一篇）\n"
-                f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}\n"
+                f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}，"
+                f"搜索历史 {info['recent_search_history']}\n"
                 f"社交转述：{'开启' if self.config.social.enabled else '关闭'}，短期群摘要 {len(observations)}，"
                 f"群缓冲 {self._group_observer.active_groups if self._group_observer else 0}\n"
                 f"书柜创作：{'开启' if creation['enabled'] else '关闭'}，今日归档 {creation['archived_today']}，"

@@ -34,8 +34,19 @@ class BatchLLM:
     def task_available(self,kind):return kind in {"news","relevance"}
     async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
         del prompt,system,max_tokens; kind=kwargs.get("request_type"); self.calls.append(kind)
+        if kind=="news_query_planning":return {"query":"科技 最新新闻"}
         if kind=="news_batch_digest":return {"summary":"五条新闻的批量整理"}
         if kind=="external_self_association":return {"score":0.9,"reason":"相关","share_topic":"近期科技","motive":"想分享"}
+        return fallback
+
+
+class BothQueryLLM:
+    """同时支持新闻与主动搜索的查询规划，用于验证空结果仍计入每日额度。"""
+    def task_available(self,kind):return kind in {"news","search"}
+    async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
+        del prompt,system,max_tokens
+        if kwargs.get("request_type")=="news_query_planning":return {"query":"科技 最新新闻"}
+        if kwargs.get("request_type")=="search_query_planning":return {"topic":"探索","query":"科技","reason":"测试"}
         return fallback
 
 
@@ -164,6 +175,53 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await restarted.search("科技")).results)
         self.assertEqual([item["key"] for item in LocalHandler.calls],["bad-auth","good"])
 
+    async def test_search_history_records_success_and_failure_with_query(self):
+        """本地搜索历史：成功与失败都记录查询词、来源和结果摘要；结果与查询词进入 SQLite。"""
+        logger=DummyLogger(); config=MaiLifeSettings()
+        config.information.enabled=True; config.search_api.history_enabled=True
+        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"])]
+        service=SearchService(config,HttpClient(logger),self.store,logger)
+        ok=await service.search("人工智能最新进展",operation="tool_search")
+        self.assertTrue(ok.results)
+        history=await self.store.recent_search_history(self.now.timestamp(),10,operation="tool_search")
+        self.assertEqual(len(history),1)
+        self.assertEqual(history[0]["query"],"人工智能最新进展"); self.assertEqual(history[0]["operation"],"tool_search")
+        self.assertEqual(history[0]["provider_type"],"tavily"); self.assertTrue(history[0]["success"])
+        self.assertEqual(history[0]["result_count"],1); self.assertIn("https://example.com/tavily",str(history[0]["results"]))
+        # 失败路径（所有服务不可用）也记录一条失败历史；倒序排列时最新记录在前。
+        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["bad-auth"])]
+        failed=await service.search("量子计算",operation="tool_search")
+        self.assertFalse(failed.results)
+        history=await self.store.recent_search_history(self.now.timestamp(),10,operation="tool_search")
+        self.assertEqual(len(history),2)
+        self.assertFalse(history[0]["success"]); self.assertEqual(history[0]["error_class"],"auth")
+        self.assertTrue(history[1]["success"])
+        # 新闻与主动搜索共用同一记录表。
+        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="you",api_keys=["good"])]
+        await service.search("今日新闻",operation="news")
+        history=await self.store.recent_search_history(self.now.timestamp(),10)
+        self.assertEqual(len(history),3); self.assertEqual(history[0]["operation"],"news")
+        LocalHandler.calls=[]
+
+    async def test_search_history_cleanup_and_disabled(self):
+        """搜索历史开关关闭时不写入；过期记录按保留期清理。"""
+        logger=DummyLogger(); config=MaiLifeSettings()
+        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"])]
+        config.search_api.history_enabled=False
+        service=SearchService(config,HttpClient(logger),self.store,logger)
+        await service.search("不记录",operation="tool_search")
+        self.assertEqual(await self.store.recent_search_history(self.now.timestamp(),10),[])
+        config.search_api.history_enabled=True
+        await service.search("记录一条",operation="tool_search")
+        now=self.now.timestamp(); older=now-40*86400
+        await self.store.record_search_history(created_at=older,operation="tool_search",query="过期记录",
+            provider_type="tavily",success=False,result_count=0,error_class="timeout",duration_ms=100,
+            results=[],expires_at=older+30*86400)
+        await self.store.cleanup_information(now)
+        history=await self.store.recent_search_history(now,10)
+        self.assertEqual(len(history),1); self.assertNotEqual(history[0]["query"],"过期记录")
+        LocalHandler.calls=[]
+
     async def test_rate_limit_and_quota_apply_different_cooldowns(self):
         for key,minimum in (("rate",55),("quota",23*3600)):
             LocalHandler.calls=[]; config=MaiLifeSettings()
@@ -228,12 +286,14 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.calls.count("news_batch_digest"),1)
         self.assertEqual(llm.calls.count("external_self_association"),1)
         news_calls=[item for item in LocalHandler.calls if item["path"]=="/bocha"]
-        self.assertEqual(len(news_calls),1); self.assertIn("过去24小时",news_calls[0]["body"]["query"])
+        self.assertEqual(len(news_calls),1)
+        self.assertEqual(news_calls[0]["body"]["query"],"科技 最新新闻")
+        self.assertEqual(news_calls[0]["body"].get("freshness"),"oneDay")
 
     async def test_custom_uncited_news_is_saved_with_explicit_marker(self):
         config=MaiLifeSettings(); config.information.enabled=True; config.news.enabled=True
         config.search_api.providers=[self._provider("openai_chat")]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+        service=InformationService(DummyContext(),self.store,config,BatchLLM(),DummyLogger())
         schedule={"current":{"kind":"rest"},"next":None}
         await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
         items=await self.store.recent_news_items(self.now.timestamp(),5)
@@ -322,7 +382,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         config=MaiLifeSettings(); config.information.enabled=True
         config.news.enabled=True; config.search.enabled=True
         config.search_api.providers=[self._provider("bocha","empty")]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+        service=InformationService(DummyContext(),self.store,config,BothQueryLLM(),DummyLogger())
         schedule={"current":{"kind":"leisure"},"next":None}
         first=await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
         second=await service.tick(self.now+timedelta(minutes=10),"人格",await self.store.get_state(),schedule,[])
@@ -333,6 +393,21 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
         self.assertEqual(await self.store.search_attempt_count("news",start.timestamp(),(start+timedelta(days=1)).timestamp()),1)
         self.assertEqual(await self.store.search_attempt_count("search",start.timestamp(),(start+timedelta(days=1)).timestamp()),1)
+
+    async def test_offline_llm_skips_news_and_active_search_without_request(self):
+        """模型不可用时，新闻与主动搜索跳过且不产生任何外部搜索请求。"""
+        config=MaiLifeSettings(); config.information.enabled=True
+        config.news.enabled=True; config.search.enabled=True
+        config.search_api.providers=[self._provider("bocha","good")]
+        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
+        schedule={"current":{"kind":"leisure"},"next":None}
+        result=await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
+        self.assertEqual(result,{"news":0,"associated":0,"search":0})
+        self.assertEqual(LocalHandler.calls,[])
+        start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
+        end=start+timedelta(days=1)
+        self.assertEqual(await self.store.search_attempt_count("news",start.timestamp(),end.timestamp()),0)
+        self.assertEqual(await self.store.search_attempt_count("search",start.timestamp(),end.timestamp()),0)
 
     async def test_active_search_skips_query_model_without_available_provider(self):
         config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True
@@ -354,7 +429,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HttpRequestError):HttpClient.validate_public_url(self.base+"/article")
         self.assertEqual(readable_text("<script>bad()</script><p>useful article paragraph</p>",100),"useful article paragraph")
 
-    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,9)
+    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,11)
 
     def test_provider_strategy_registry_orders_playwright_before_api(self):
         self.assertEqual(PROVIDER_STRATEGIES,(PlaywrightProvider,ApiProvider))
@@ -369,6 +444,61 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         error=SearchAttemptError("配额用尽",error_class="quota",status_code=429,headers={"retry-after":"60"})
         self.assertEqual(error.error_class,"quota"); self.assertEqual(error.status_code,429)
         self.assertEqual(error.headers["retry-after"],"60"); self.assertTrue(error.penalize)
+
+
+class StubBrowseInformation:
+    def __init__(self,result:object)->None:self.result=result; self.calls:list[str]=[]
+    async def browse_screenshot(self,url:str)->object:
+        self.calls.append(url)
+        if isinstance(self.result,Exception):raise self.result
+        return self.result
+
+
+class StubCommandReplies:
+    def __init__(self,sent:bool=True)->None:self.sent=sent; self.calls:list[dict[str,object]]=[]
+    async def send_image_bytes_with_fallback(self,image_bytes:bytes,stream_id:str,user_id:str|None=None,platform:str|None=None)->bool:
+        self.calls.append({"image_bytes":image_bytes,"stream_id":stream_id,"user_id":user_id,"platform":platform})
+        return self.sent
+
+
+class BrowseContext:
+    def __init__(self)->None:self.logger=DummyLogger()
+
+
+class BrowseWebToolTests(unittest.IsolatedAsyncioTestCase):
+    def _plugin(self,info_result:object,sent:bool=True)->tuple[MaiLifePlugin,StubBrowseInformation,StubCommandReplies]:
+        plugin=MaiLifePlugin(); plugin.set_plugin_config(MaiLifeSettings().model_dump(mode="python"))
+        plugin._set_context(BrowseContext())
+        information=StubBrowseInformation(info_result); replies=StubCommandReplies(sent)
+        plugin._information=information; plugin._command_replies=replies
+        return plugin,information,replies
+
+    async def test_browse_web_tool_sends_image_and_reports_success(self):
+        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
+        plugin,information,replies=self._plugin(png,sent=True)
+        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1",platform="qq")
+        self.assertTrue(result["success"]); self.assertIn("截图",result["content"])
+        self.assertEqual(information.calls,["https://example.com"])
+        self.assertEqual(replies.calls,[{"image_bytes":png,"stream_id":"s1","user_id":"1","platform":"qq"}])
+
+    async def test_browse_web_tool_rejects_non_http_url(self):
+        plugin,information,replies=self._plugin(b"x",sent=True)
+        result=await plugin.tool_browse_web(url="javascript:alert(1)")
+        self.assertFalse(result["success"]); self.assertIn("http",result["content"])
+        self.assertEqual(information.calls,[]); self.assertEqual(replies.calls,[])
+
+    async def test_browse_web_tool_degrades_when_send_fails(self):
+        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
+        plugin,information,replies=self._plugin(png,sent=False)
+        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1")
+        self.assertFalse(result["success"]); self.assertIn("发送失败",result["content"])
+        self.assertEqual(information.calls,["https://example.com"]); self.assertEqual(len(replies.calls),1)
+
+    async def test_browse_web_tool_reports_screenshot_failure(self):
+        plugin,information,replies=self._plugin(RuntimeError("网页打开失败"),sent=True)
+        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1")
+        self.assertFalse(result["success"]); self.assertIn("截图失败",result["content"])
+        self.assertEqual(information.calls,["https://example.com"]); self.assertEqual(replies.calls,[])
 
 
 class SearchParsingPureFunctionTests(unittest.TestCase):

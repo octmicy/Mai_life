@@ -108,7 +108,7 @@ class InformationCloseTests(unittest.IsolatedAsyncioTestCase):
 class SearchResultParserTests(unittest.TestCase):
     def test_bing_parser_extracts_organic_redirect_and_snippet(self):
         parser=BingSearchParser()
-        html=Path("tests/fixtures/bing_search.html").read_text(encoding="utf-8")
+        html=(Path(__file__).parent / "fixtures" / "bing_search.html").read_text(encoding="utf-8")
         results=parser.parse(html,5)
         self.assertEqual([item.title for item in results[:2]],["人工智能 - Microsoft","人工智能报告"])
         self.assertEqual(results[0].url,"https://www.microsoft.com/ai")
@@ -117,12 +117,12 @@ class SearchResultParserTests(unittest.TestCase):
         self.assertTrue(all(item.url.startswith("https://") for item in results))
 
     def test_bing_parser_respects_limit_and_filters_invalid_urls(self):
-        results=BingSearchParser().parse(Path("tests/fixtures/bing_search.html").read_text(encoding="utf-8"),2)
+        results=BingSearchParser().parse((Path(__file__).parent / "fixtures" / "bing_search.html").read_text(encoding="utf-8"),2)
         self.assertEqual(len(results),2)
         self.assertNotIn("无效协议",[item.title for item in results])
 
     def test_duckduckgo_parser_extracts_results_and_keeps_missing_snippet(self):
-        results=DuckDuckGoSearchParser().parse(Path("tests/fixtures/duckduckgo_search.html").read_text(encoding="utf-8"),5)
+        results=DuckDuckGoSearchParser().parse((Path(__file__).parent / "fixtures" / "duckduckgo_search.html").read_text(encoding="utf-8"),5)
         self.assertEqual(len(results),3)
         self.assertEqual(results[0].title,"DuckDuckGo 人工智能")
         self.assertEqual(results[0].url,"https://example.com/ddg")
@@ -130,7 +130,7 @@ class SearchResultParserTests(unittest.TestCase):
         self.assertEqual(results[2].snippet,"")
 
     def test_duckduckgo_parser_respects_limit(self):
-        results=DuckDuckGoSearchParser().parse(Path("tests/fixtures/duckduckgo_search.html").read_text(encoding="utf-8"),1)
+        results=DuckDuckGoSearchParser().parse((Path(__file__).parent / "fixtures" / "duckduckgo_search.html").read_text(encoding="utf-8"),1)
         self.assertEqual([item.url for item in results],["https://example.com/ddg"])
 
 
@@ -149,12 +149,16 @@ class PlaywrightSearchUrlTests(unittest.TestCase):
 
 
 class FakePage:
-    def __init__(self,html:str,error:BaseException|None=None)->None:
-        self.html=html; self.error=error; self.goto_calls:list[dict[str,object]]=[]; self.closed=False
+    def __init__(self,html:str="",error:BaseException|None=None,screenshot_bytes:bytes=b"")->None:
+        self.html=html; self.error=error; self.screenshot_bytes=screenshot_bytes
+        self.goto_calls:list[dict[str,object]]=[]; self.screenshot_calls:list[dict[str,object]]=[]; self.closed=False
     async def goto(self,url:str,**options:object)->None:
         self.goto_calls.append({"url":url,**options})
         if self.error is not None:raise self.error
     async def content(self)->str:return self.html
+    async def screenshot(self,**options:object)->bytes:
+        self.screenshot_calls.append(options)
+        return self.screenshot_bytes
     async def close(self)->None:self.closed=True
 
 
@@ -194,7 +198,7 @@ class MissingPlaywrightFactory:
 
 class PlaywrightClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_parses_page_and_reuses_resources_until_close(self):
-        page=FakePage(Path("tests/fixtures/bing_search.html").read_text(encoding="utf-8"))
+        page=FakePage((Path(__file__).parent / "fixtures" / "bing_search.html").read_text(encoding="utf-8"))
         factory=FakePlaywrightFactory(page); client=PlaywrightSearchClient(None,headless=False,playwright_factory=factory)
         response=await client.search("人工智能",engine="bing",freshness="day",timeout_seconds=12,max_results=2)
         self.assertEqual(response.provider_type,"playwright"); self.assertEqual(response.model,"bing")
@@ -225,6 +229,61 @@ class PlaywrightClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SearchBackendError) as caught:
             await client.search("人工智能",engine="bing",freshness="any",timeout_seconds=12,max_results=2)
         self.assertEqual(caught.exception.error_class,"blocked")
+
+    async def test_screenshot_returns_png_bytes(self):
+        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
+        page=FakePage(screenshot_bytes=png)
+        client=PlaywrightSearchClient(None,playwright_factory=FakePlaywrightFactory(page))
+        result=await client.screenshot("http://8.8.8.8/page",12)
+        self.assertEqual(result,png)
+        self.assertEqual(page.goto_calls[0]["url"],"http://8.8.8.8/page")
+        self.assertEqual(page.goto_calls[0]["timeout"],12000)
+        self.assertEqual(page.screenshot_calls[0]["type"],"png")
+        self.assertTrue(page.closed)
+
+    async def test_screenshot_rejects_private_addresses(self):
+        client=PlaywrightSearchClient(None,playwright_factory=FakePlaywrightFactory(FakePage()))
+        for url in ("http://127.0.0.1/x","http://localhost","http://192.168.1.1","ftp://x"):
+            with self.subTest(url=url):
+                with self.assertRaises(SearchBackendError) as caught:
+                    await client.screenshot(url,12)
+                self.assertEqual(caught.exception.error_class,"invalid_response")
+
+    async def test_screenshot_timeout_maps_to_network(self):
+        page=FakePage("",TimeoutError("Timeout 12000ms exceeded"))
+        client=PlaywrightSearchClient(None,playwright_factory=FakePlaywrightFactory(page))
+        with self.assertRaises(SearchBackendError) as caught:
+            await client.screenshot("http://8.8.8.8/page",12)
+        self.assertEqual(caught.exception.error_class,"network")
+
+
+class SearchServiceBrowseScreenshotTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self)->None:
+        self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
+
+    async def asyncTearDown(self)->None:
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_browse_screenshot_delegates_to_playwright_client(self):
+        class FakeClient:
+            def __init__(self)->None:self.url=""; self.timeout=0.0
+            async def screenshot(self,url:str,timeout_seconds:float)->bytes:
+                self.url=url; self.timeout=timeout_seconds
+                return b"png"
+        client=FakeClient()
+        service=SearchService(MaiLifeSettings(),HttpClientDummy(),self.store,DummyLogger(),playwright_client=client)
+        result=await service.browse_screenshot("http://8.8.8.8/x")
+        self.assertEqual(result,b"png")
+        self.assertEqual(client.url,"http://8.8.8.8/x")
+        self.assertEqual(client.timeout,12.0)
+
+    async def test_browse_screenshot_without_playwright_raises_browser_unavailable(self):
+        config=MaiLifeSettings()
+        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["k"])]
+        service=SearchService(config,HttpClientDummy(),self.store,DummyLogger())
+        with self.assertRaises(SearchBackendError) as caught:
+            await service.browse_screenshot("http://8.8.8.8/x")
+        self.assertEqual(caught.exception.error_class,"browser_unavailable")
 
 
 if __name__=="__main__":unittest.main()

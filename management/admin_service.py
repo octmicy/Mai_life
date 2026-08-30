@@ -5,11 +5,12 @@ from typing import Any
 from urllib.parse import urlsplit,urlunsplit
 
 import hashlib
+from datetime import datetime
 
 from ..config import PLUGIN_VERSION
 
 
-_SCOPES={"overview","users","groups","dates","sources","bookshelf","tokens","proactive"}
+_SCOPES={"overview","users","groups","dates","sources","bookshelf","tokens","proactive","search"}
 
 
 def _safe_endpoint(value:Any)->str:
@@ -60,6 +61,8 @@ class AdminService:
                     "creation_runs":await self.store.management_creation_runs(limit)}
         if normalized=="tokens":return {"scope":normalized,**await self._tokens(now)}
         if normalized=="proactive":return {"scope":normalized,"items":await self.store.management_proactive_candidates(limit)}
+        if normalized=="search":
+            return {"scope":normalized,"items":await self.store.recent_search_history(now.timestamp(),limit)}
         return await self._overview(now)
 
     async def _users(self,limit:int)->list[dict[str,Any]]:
@@ -153,6 +156,16 @@ class AdminService:
             lines=["今日模型 Token 聚合"]+[f"{item['source']}/{item['task_name']}｜{item['calls']} 次｜{int(item['total_tokens'] or 0)} Token" for item in data["model_usage"]]
             lines.append("今日搜索 API 请求（不计作 Token）")
             lines.extend(f"{item['provider_type']}｜{item['calls']} 次｜成功 {item['successes'] or 0}｜结果 {item['results'] or 0}" for item in data["search_api_usage"])
+        elif scope=="search":
+            labels={"tool_search":"联网工具","search":"主动搜索","news":"新闻阅读"}
+            lines=["最近本地搜索历史（查询词已隐私清洗）"]
+            for item in data["items"]:
+                when=datetime.fromtimestamp(float(item["created_at"])).strftime("%m-%d %H:%M")
+                status="成功" if item["success"] else f"失败({item['error_class'] or '未知'})"
+                first=" ".join(str(result.get("title") or "").split())[:60] if item["results"] else ""
+                line=f"{when}｜{labels.get(item['operation'],item['operation'])}｜{item['query'][:60]}｜{item['provider_type'] or '-'}｜{status}｜{item['result_count']} 条"
+                if first:line+=f"｜{first}"
+                lines.append(line)
         else:
             lines=["近期主动候选"]+[f"{item['user_id']}｜{item.get('topic') or item['opportunity_id']}｜{item['status']}" for item in data["items"]]
         if len(lines)==1:lines.append("暂无记录。")

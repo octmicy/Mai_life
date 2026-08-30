@@ -215,7 +215,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
         self.assertEqual(len(backups),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"9")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"11")
         await upgraded.close(); other.cleanup()
 
     async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
@@ -223,7 +223,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"not-a-sqlite-database")
         upgraded=LifeStore(other.name); await upgraded.initialize()
         self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"9")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"11")
         await upgraded.close(); other.cleanup()
 
     async def test_v8_to_v9_drops_skills_aliases_and_converts_legacy_quota(self):

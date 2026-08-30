@@ -13,7 +13,7 @@ import time
 from .http_client import HttpClient,HttpRequestError
 from .playwright_search import PlaywrightSearchClient
 from .search_parsing import error_from_payload,parse_openai,parse_standard
-from .search_models import SearchResponse
+from .search_models import SearchBackendError,SearchResponse
 from .search_providers import SearchAttemptError,get_provider_strategy
 
 
@@ -258,11 +258,33 @@ class SearchService:
         self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type={provider_type} error={error_class}")
         return try_next
 
+    async def _record_history(self,query:str,operation:str,event_time:float,
+                              response:SearchResponse,duration_ms:float,
+                              error_class:str="")->None:
+        """按配置把一次逻辑搜索写入本地历史；记录失败不影响搜索主链。"""
+        if not getattr(self.config.search_api,"history_enabled",True):return
+        try:
+            retention=max(1,min(365,int(getattr(self.config.search_api,"history_retention_days",30) or 30)))
+            results=[
+                {"title":str(item.title)[:240],"url":str(item.url)[:2000],
+                 "snippet":str(item.snippet)[:900],"provider_generated":bool(item.provider_generated)}
+                for item in response.results
+            ]
+            await self.store.record_search_history(
+                created_at=event_time,operation=operation,query=str(query)[:300],
+                provider_type=str(response.provider_type or ""),success=bool(response.results),
+                result_count=len(response.results),error_class=error_class,
+                duration_ms=duration_ms,results=results,
+                expires_at=event_time+retention*86400,
+            )
+        except Exception:
+            self.logger.debug("[MaiLife] 搜索历史记录失败，不影响搜索主链")
+
     async def search(self,query:str,*,operation:str="search",freshness:str="",event_at:float=0)->SearchResponse:
         """按服务与 Key 顺序搜索；只负责顺序、超时限制与降级，其余交给策略与共享编排层。"""
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
-        now=time.time(); event_time=float(event_at or now)
+        now=time.time(); event_time=float(event_at or now); search_started=time.perf_counter()
         for provider_id,provider in self.providers():
             if not provider.enabled:continue
             strategy=self._strategy_for(provider)
@@ -291,8 +313,25 @@ class SearchService:
                     provider_id,str(provider.provider_type),fingerprint,parsed,
                     now=now,event_time=event_time,operation=operation,latency_ms=latency,
                 )
+                await self._record_history(
+                    query,operation,event_time,parsed,
+                    (time.perf_counter()-search_started)*1000,
+                )
                 return parsed
+        await self._record_history(
+            query,operation,event_time,SearchResponse([]),
+            (time.perf_counter()-search_started)*1000,error_class=self.last_error_class or "no_available_provider",
+        )
         return SearchResponse([])
+
+    async def browse_screenshot(self,url:str)->bytes:
+        """用 Playwright 打开网页并截图；无可用浏览器时抛 SearchBackendError。"""
+        for provider_id,provider in self.providers():
+            if not provider.enabled or str(provider.provider_type)!="playwright":
+                continue
+            client=self._browser_client(provider_id,provider)
+            return await client.screenshot(url,float(self.config.search_api.timeout_seconds))
+        raise SearchBackendError("未启用 Playwright 浏览器服务",error_class="browser_unavailable")
 
     async def health_snapshot(self)->list[dict[str,Any]]:
         await self.prepare(); rows=await self.store.search_provider_health()

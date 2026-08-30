@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -11,15 +12,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 
 class LifeStore:
-    def __init__(self, data_dir: str) -> None:
+    def __init__(self, data_dir: str, *, journal_mode: str = "memory") -> None:
         self.data_dir = Path(data_dir)
         self.path = self.data_dir / "mai_life.db"
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = asyncio.Lock()
+        # 测试用临时库默认 memory（回滚日志放内存，不落盘，避免 -journal 文件残留）；
+        # 生产 data 库由 plugin.py 显式传入 delete，保留崩溃回滚保护。
+        self._journal_mode = str(journal_mode or "memory").strip().casefold() or "memory"
 
     # 初始化可重复调用；同一 Runner 内不会重复打开 SQLite 连接。
     async def initialize(self) -> None:
@@ -48,9 +52,15 @@ class LifeStore:
     def _connect(self) -> sqlite3.Connection:
         """打开数据库连接并设置行工厂与忙等待超时，写入冲突时最多等待 5 秒。"""
         conn=sqlite3.connect(self.path,check_same_thread=False)
-        conn.row_factory=sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        try:
+            conn.row_factory=sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute(f"PRAGMA journal_mode={self._journal_mode}")
+            return conn
+        except Exception:
+            # journal_mode 等 PRAGMA 可能在损坏文件上抛错；必须关闭连接，否则文件句柄泄漏。
+            conn.close()
+            raise
 
     # quick_check 失败时先保留损坏文件，再创建全新数据库。
     def _open_checked(self) -> None:
@@ -117,8 +127,7 @@ class LifeStore:
                 while backup.exists():
                     backup=self.path.with_suffix(f".future-v{version}.{stamp}.{counter}.db"); counter+=1
                 shutil.move(str(self.path), str(backup))
-                self._conn = sqlite3.connect(self.path, check_same_thread=False)
-                self._conn.row_factory = sqlite3.Row
+                self._conn = self._connect()
         # 表按生活时间线、用户消息、长期记忆、社交与联网运行态分组；建表本身可重复执行。
         self.conn.executescript(
             """
@@ -210,13 +219,6 @@ class LifeStore:
               user_id TEXT PRIMARY KEY, intent TEXT NOT NULL DEFAULT '',
               unresolved_topics TEXT NOT NULL DEFAULT '[]', updated_at REAL NOT NULL DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS image_summaries(
-              image_hash TEXT PRIMARY KEY, summary TEXT NOT NULL, source_type TEXT NOT NULL,
-              ownership_hint TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
-              created_at REAL NOT NULL, expires_at REAL NOT NULL, current_until REAL NOT NULL DEFAULT 0,
-              source_message_ids TEXT NOT NULL DEFAULT '[]'
-            );
-            CREATE INDEX IF NOT EXISTS idx_image_session_current ON image_summaries(session_id,current_until);
             -- 模型统计、回复防重和撤回关联使用短期运行记录。
             CREATE TABLE IF NOT EXISTS llm_usage_events(
               id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
@@ -395,6 +397,17 @@ class LifeStore:
             );
             CREATE INDEX IF NOT EXISTS idx_search_api_event_time
               ON search_api_events(created_at,provider_type,success);
+            -- 逻辑搜索历史：一次降级链共享一条记录，保存查询词与结果摘要，供本地审计。
+            CREATE TABLE IF NOT EXISTS search_history(
+              id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+              operation TEXT NOT NULL, query TEXT NOT NULL,
+              provider_type TEXT NOT NULL DEFAULT '', success INTEGER NOT NULL,
+              result_count INTEGER NOT NULL DEFAULT 0, error_class TEXT NOT NULL DEFAULT '',
+              duration_ms REAL NOT NULL DEFAULT 0, results TEXT NOT NULL DEFAULT '[]',
+              expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_search_history_time
+              ON search_history(created_at,operation);
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
@@ -406,7 +419,6 @@ class LifeStore:
         self._ensure_column("relay_candidates", "host_task_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("interaction_events", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("rest_backlogs", "source_message_id", "TEXT NOT NULL DEFAULT ''")
-        self._ensure_column("image_summaries", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("important_dates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("date_candidates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("group_observations", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
@@ -434,6 +446,10 @@ class LifeStore:
         if version < 9:
             self.conn.commit()
             self._migrate_to_v9()
+        if version < 10:
+            self._migrate_to_v10()
+        if version < 11:
+            self._migrate_to_v11()
         self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
@@ -470,6 +486,28 @@ class LifeStore:
                     SELECT id,last_diary_day,last_cleanup_at FROM memory_runtime""")
                 conn.execute("DROP TABLE memory_runtime")
                 conn.execute("ALTER TABLE memory_runtime_v9 RENAME TO memory_runtime")
+
+    def _migrate_to_v10(self) -> None:
+        """v10 新增逻辑搜索历史表；新表由 CREATE TABLE IF NOT EXISTS 幂等创建，无需搬运旧数据。"""
+        with self._tx() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS search_history(
+                  id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+                  operation TEXT NOT NULL, query TEXT NOT NULL,
+                  provider_type TEXT NOT NULL DEFAULT '', success INTEGER NOT NULL,
+                  result_count INTEGER NOT NULL DEFAULT 0, error_class TEXT NOT NULL DEFAULT '',
+                  duration_ms REAL NOT NULL DEFAULT 0, results TEXT NOT NULL DEFAULT '[]',
+                  expires_at REAL NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_search_history_time ON search_history(created_at,operation)"
+            )
+
+    def _migrate_to_v11(self) -> None:
+        """移除已废弃的疑难图片视觉摘要表。"""
+        with self._tx() as conn:
+            conn.execute("DROP TABLE IF EXISTS image_summaries")
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
@@ -985,34 +1023,6 @@ class LifeStore:
             )
             self.conn.commit()
 
-    async def save_image_summary(self, image_hash: str, summary: str, source_type: str, ownership_hint: str,
-                                 session_id: str, now: float, expires_at: float, current_until: float,
-                                 source_message_ids: list[str]|None=None) -> None:
-        async with self._lock:
-            self.conn.execute(
-                """INSERT OR REPLACE INTO image_summaries
-                (image_hash,summary,source_type,ownership_hint,session_id,created_at,expires_at,current_until,source_message_ids)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (image_hash,summary[:1000],source_type[:40],ownership_hint[:240],session_id,now,expires_at,current_until,
-                 json.dumps([str(item)[:240] for item in (source_message_ids or []) if str(item).strip()],ensure_ascii=False)),
-            )
-            self.conn.commit()
-
-    async def get_image_summary(self, image_hash: str, now: float) -> dict[str, Any]:
-        async with self._lock:
-            row=self.conn.execute(
-                "SELECT * FROM image_summaries WHERE image_hash=? AND expires_at>?",(image_hash,now)
-            ).fetchone()
-            return dict(row) if row else {}
-
-    async def current_image_summaries(self, session_id: str, now: float, limit: int=3) -> list[dict[str, Any]]:
-        async with self._lock:
-            rows=self.conn.execute(
-                """SELECT * FROM image_summaries WHERE session_id=? AND expires_at>? AND current_until>?
-                ORDER BY created_at DESC LIMIT ?""",(session_id,now,now,limit)
-            ).fetchall()
-            return [dict(row) for row in rows]
-
     async def register_message_turn(self, session_id: str, turn_anchor: str, source_message_ids: list[str],
                                     user_id: str, now: float, expires_at: float) -> None:
         """持久化合并消息与最终回复锚点，热重载后仍能识别撤回轮次。"""
@@ -1150,16 +1160,6 @@ class LifeStore:
                     conn.execute("DELETE FROM proactive_opportunities WHERE framework_id=?",
                                  (f"important-date:{date_id}",))
                 conn.execute("DELETE FROM important_dates WHERE user_id=? AND source_message_id=?",(user_id,message_id))
-                image_rows=conn.execute(
-                    "SELECT image_hash,source_message_ids FROM image_summaries"
-                ).fetchall()
-                remove_hashes=[]
-                for row in image_rows:
-                    try:sources=json.loads(row[1] or "[]")
-                    except (TypeError,json.JSONDecodeError):sources=[]
-                    if message_id in {str(item) for item in sources}:remove_hashes.append(str(row[0]))
-                if remove_hashes:
-                    conn.executemany("DELETE FROM image_summaries WHERE image_hash=?",[(value,) for value in remove_hashes])
 
     async def retract_group_observation_source(self, group_id: str, message_id: str, now: float) -> int:
         """群消息撤回后删除包含该来源的匿名摘要，并取消尚未发送的群转私候选。"""
@@ -1666,7 +1666,6 @@ class LifeStore:
     async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
         async with self._lock:
             with self._tx() as conn:
-                conn.execute("DELETE FROM image_summaries WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM message_turn_sources WHERE expires_at<=?",(now,))
@@ -2095,6 +2094,54 @@ class LifeStore:
                  int(success),int(status_code),float(latency_ms),max(0,int(result_count)),error_class[:80]),
             ); self.conn.commit()
 
+    async def record_search_history(self,*,created_at:float,operation:str,query:str,
+                                    provider_type:str,success:bool,result_count:int,
+                                    error_class:str,duration_ms:float,
+                                    results:list[dict[str,Any]],expires_at:float)->None:
+        """保存一条逻辑搜索历史：一次降级链共享 event_at，含清洗后的查询词与有限结果摘要。"""
+        history_id=hashlib.sha1(
+            f"{float(created_at)}:{operation}:{query}".encode("utf-8","ignore")
+        ).hexdigest()[:20]
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO search_history
+                (id,created_at,operation,query,provider_type,success,result_count,error_class,
+                 duration_ms,results,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (history_id,float(created_at),operation[:40],str(query)[:300],provider_type[:40],
+                 int(success),max(0,int(result_count)),error_class[:80],float(duration_ms),
+                 json.dumps(results[:20],ensure_ascii=False),float(expires_at)),
+            ); self.conn.commit()
+
+    async def recent_search_history(self,now:float,limit:int=20,*,operation:str="")->list[dict[str,Any]]:
+        """按时间倒序读取本地搜索历史；operation 留空时返回全部来源。"""
+        bounded=max(1,min(100,int(limit)))
+        async with self._lock:
+            if operation:
+                rows=self.conn.execute(
+                    """SELECT * FROM search_history WHERE expires_at>? AND operation=?
+                    ORDER BY created_at DESC LIMIT ?""",(float(now),operation[:40],bounded)
+                ).fetchall()
+            else:
+                rows=self.conn.execute(
+                    """SELECT * FROM search_history WHERE expires_at>?
+                    ORDER BY created_at DESC LIMIT ?""",(float(now),bounded)
+                ).fetchall()
+            result=[]
+            for row in rows:
+                item=dict(row)
+                try:item["results"]=json.loads(item.get("results") or "[]")
+                except (TypeError,json.JSONDecodeError):item["results"]=[]
+                result.append(item)
+            return result
+
+    async def search_history_count(self,operation:str,start:float,end:float)->int:
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT COUNT(*) FROM search_history WHERE operation=? AND created_at>=? AND created_at<?""",
+                (operation[:40],float(start),float(end)),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
     async def search_api_summary(self,since:float)->list[dict[str,Any]]:
         async with self._lock:
             rows=self.conn.execute(
@@ -2140,6 +2187,7 @@ class LifeStore:
                 conn.execute("DELETE FROM news_items WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM exploration_notes WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM search_api_events WHERE created_at<=?",(now-90*86400,))
+                conn.execute("DELETE FROM search_history WHERE expires_at<=?",(now,))
 
     # 每个自然日只结算一次关系温度，离线补算时按结算日结束时刻判断冷却。
     async def update_relationships(self, day: str, day_start: float, day_end: float, now: float) -> None:

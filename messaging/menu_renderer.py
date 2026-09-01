@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any,Sequence
 
 import io
+import os
+import subprocess
+import sys
 
 from ..config import PLUGIN_VERSION
 from .command_catalog import CommandSection
@@ -41,58 +44,110 @@ class MaiLifeMenuRenderer:
     @property
     def available(self)->bool:return Image is not None and ImageDraw is not None and ImageFont is not None
 
+    # 期望字体关键词优先级：圆体 → 圆润黑体 → 现代黑体 → 通用无衬线兜底。
+    # 文件名统一小写匹配，顺序靠前的与冰蓝玻璃圆润风格更接近。
+    _FONT_KEYWORD_PRIORITY:tuple[str,...]=(
+        # 圆体（与幼圆/M PLUS Rounded 圆润风格一致）
+        "simyou","youyuan","rounded","mplus",
+        # 文泉驿微米黑（圆润、类微软雅黑）
+        "microhei",
+        # 现代黑体
+        "msyh","yahei","notosanssc","notosanscjk","sourcehansans","sourcehanscjk",
+        "pingfang","harmonyos","misans","opposans",
+        # 文泉驿正黑
+        "zenhei",
+        # 通用黑体/无衬线兜底
+        "simhei","deng","gothic","sans","hei",
+    )
+    _FONT_SUFFIXES:tuple[str,...]=(".ttf",".ttc",".otf",".otc")
+
     @staticmethod
-    def _find_font_paths(explicit:str="")->tuple[str,str]:
-        """依次查找插件字体及 Windows/Linux 常见中文字体，不依赖固定操作系统。"""
+    def _system_font_dirs()->list[Path]:
+        """返回当前系统常见的字体目录，用于目录扫描兜底。"""
+        dirs:list[Path]=[]
+        if sys.platform=="win32" or os.name=="nt":
+            dirs.append(Path(os.environ.get("WINDIR","C:/Windows"))/"Fonts")
+            local=os.environ.get("LOCALAPPDATA")
+            if local:dirs.append(Path(local)/"Microsoft"/"Windows"/"Fonts")
+        elif sys.platform=="darwin":
+            dirs.extend((Path("/System/Library/Fonts"),Path("/Library/Fonts"),Path.home()/"Library"/"Fonts"))
+        else:
+            dirs.extend((
+                Path("/usr/share/fonts"),Path("/usr/local/share/fonts"),
+                Path.home()/".fonts",Path.home()/".local"/"share"/"fonts",
+            ))
+        return dirs
+
+    @classmethod
+    def _scan_font_files(cls)->list[Path]:
+        """动态列出系统可用字体：优先 fc-list（fontconfig，可限定中文），失败回退目录扫描。"""
+        files:list[Path]=[]
+        # 1) fontconfig 能精确返回文件路径，且可限定支持中文的字体（Linux/macOS 通常可用）。
+        try:
+            out=subprocess.run(
+                ["fc-list","--format","%{file}\n",":lang=zh"],
+                capture_output=True,text=True,timeout=3,
+            )
+            if out.returncode==0:
+                files=[Path(line.strip()) for line in out.stdout.splitlines() if line.strip()]
+        except Exception:
+            files=[]
+        if files:
+            return files
+        # 2) 目录扫描兜底：覆盖无 fontconfig 的最小环境与 Windows。
+        for directory in cls._system_font_dirs():
+            try:
+                for suffix in cls._FONT_SUFFIXES:
+                    files.extend(directory.glob(f"*{suffix}"))
+            except Exception:
+                continue
+        return files
+
+    @classmethod
+    def _rank_fonts(cls,files:list[Path])->list[Path]:
+        """按关键词优先级排序字体文件；未知字体排在最后，去重保持顺序。"""
+        def score(path:Path)->int:
+            name=path.name.casefold()
+            for index,keyword in enumerate(cls._FONT_KEYWORD_PRIORITY):
+                if keyword in name:
+                    return index
+            return len(cls._FONT_KEYWORD_PRIORITY)+1
+        seen:set[str]=set(); ranked:list[Path]=[]
+        for path in sorted(set(files),key=score):
+            key=str(path).casefold()
+            if key in seen:continue
+            seen.add(key); ranked.append(path)
+        return ranked
+
+    @classmethod
+    def _find_font_paths(cls,explicit:str="")->tuple[str,str]:
+        """查找可用中文字体：explicit → 插件内置 → 动态扫描 → 已知路径兜底。
+
+        动态扫描优先用 fontconfig 并限定中文，再按“圆体→黑体→无衬线”关键词排序，
+        在保持冰蓝玻璃圆润风格的同时适配 Windows / macOS / 各 Linux 发行版与自定义字体目录。
+        """
         root=Path(__file__).resolve().parents[1]
-        regular_candidates=[
-            Path(explicit) if explicit else Path(),root/"assets"/"font.ttf",
-            Path("C:/Windows/Fonts/SIMYOU.TTF"),Path("C:/Windows/Fonts/simyou.ttf"),
-            Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),Path("C:/Windows/Fonts/msyh.ttc"),
-            Path("C:/Windows/Fonts/Deng.ttf"),Path("C:/Windows/Fonts/simhei.ttf"),
-            # Debian 12+ / Ubuntu 的 fonts-noto-cjk 实际路径（注意是 noto-cjk 不是 noto）
+        explicit_path=Path(explicit) if explicit and explicit.strip() else Path()
+        builtin=[explicit_path,root/"assets"/"font.ttf"]
+        scanned=cls._rank_fonts(cls._scan_font_files())
+        fallback=[
+            Path("C:/Windows/Fonts/SIMYOU.TTF"),Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),
             Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Regular.ttc"),
             Path("/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Regular.ttc"),
-            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJKsc-Regular.otf"),
-            # Arch / 旧发行版的路径
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
-            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
-            # M PLUS Rounded（可选字体）
-            Path("/usr/share/fonts/truetype/mplus/MPLUSRounded1c-Regular.ttf"),
-            Path("/usr/share/fonts/opentype/mplus/MPLUSRounded1c-Regular.ttf"),
-            # 文泉驿正黑（fonts-wqy-zenhei）与微米黑（fonts-wqy-microhei）
-            Path("/usr/share/fonts/truetype/wqy-zenhei/wqy-zenhei.ttc"),
             Path("/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc"),
-            Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
-            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
-            # 文鼎明体/楷体 / IPA（覆盖更小众发行版）
-            Path("/usr/share/fonts/truetype/arphic/uming.ttc"),
-            Path("/usr/share/fonts/truetype/arphic/ukai.ttc"),
-            Path("/usr/share/fonts/opentype/ipafont/ipam.ttf"),
-        ]
-        bold_candidates=[
-            root/"assets"/"font-bold.ttf",Path("C:/Windows/Fonts/SIMYOU.TTF"),Path("C:/Windows/Fonts/simyou.ttf"),
-            Path("C:/Windows/Fonts/msyhbd.ttc"),Path("C:/Windows/Fonts/Dengb.ttf"),
-            Path("C:/Windows/Fonts/simhei.ttf"),
-            # Debian 12+ / Ubuntu 的 Noto CJK Bold 实际路径
-            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Bold.ttc"),
-            Path("/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Bold.ttc"),
-            Path("/usr/share/fonts/opentype/noto-cjk/NotoSansCJKsc-Bold.otf"),
-            # Arch / 旧发行版
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf"),
-            # M PLUS Rounded Bold
-            Path("/usr/share/fonts/truetype/mplus/MPLUSRounded1c-Bold.ttf"),
-            Path("/usr/share/fonts/opentype/mplus/MPLUSRounded1c-Bold.ttf"),
-            Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),
             Path("/usr/share/fonts/truetype/wqy-zenhei/wqy-zenhei.ttc"),
-            Path("/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc"),
-            Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+            Path("/System/Library/Fonts/PingFang.ttc"),
         ]
-        regular=next((str(path) for path in regular_candidates if str(path) not in {"","."} and path.is_file()),"")
-        bold=next((str(path) for path in bold_candidates if path.is_file()),regular)
-        return regular,bold
+        regular=""
+        for path in builtin+scanned+fallback:
+            if str(path) not in {"","."} and path.is_file():
+                regular=str(path); break
+        # bold：优先使用插件内置的独立粗体；否则复用 regular（_draw_text 用描边合成粗体，
+        # 保证标题与正文同字体、风格一致，也避免误用不含中文的粗体字体）。
+        bundled_bold=root/"assets"/"font-bold.ttf"
+        bold=str(bundled_bold) if bundled_bold.is_file() else ""
+        return regular,bold or regular
 
     def _font(self,size:int,*,bold:bool=False)->Any:
         path=self.bold_font_path if bold else self.regular_font_path

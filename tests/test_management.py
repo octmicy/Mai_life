@@ -90,5 +90,18 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         users=await self.service.snapshot("users",self.now,limit="invalid")
         self.assertEqual(len(users["items"]),2)
 
+    async def test_search_scope_renders_history_without_name_error(self):
+        # 回归：search 分支曾引用未定义变量 result，任何有结果的搜索历史都会 NameError。
+        await self.store.record_search_history(
+            created_at=self.now.timestamp(),operation="tool_search",query="北京天气",
+            provider_type="bocha",success=True,result_count=1,error_class="",duration_ms=120.0,
+            results=[{"title":"北京今日天气","url":"https://example.com","snippet":"晴","provider_generated":False}],
+            expires_at=self.now.timestamp()+86400,
+        )
+        text=await self.service.format_text("search",self.now)
+        self.assertIn("北京天气",text)
+        self.assertIn("北京今日天气",text)
+        self.assertIn("成功",text)
+
 
 if __name__=="__main__":unittest.main()

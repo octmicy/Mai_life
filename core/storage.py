@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class LifeStore:
@@ -200,6 +200,12 @@ class LifeStore:
               host_task_id TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_proactive_pending ON proactive_events(stream_id,status,expires_at);
+            -- 主动候选跳过原因统计：按用户、原因、自然日聚合，供 /麦麦管理 主动 诊断。
+            CREATE TABLE IF NOT EXISTS proactive_skip_stats(
+              user_id TEXT NOT NULL, reason TEXT NOT NULL, day TEXT NOT NULL,
+              count INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY(user_id,reason,day)
+            );
             CREATE TABLE IF NOT EXISTS rest_backlogs(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
               created_at REAL NOT NULL, summary TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0,
@@ -443,13 +449,19 @@ class LifeStore:
             (document_id,revision_number,stage,content,model_task,created_at)
             SELECT 'diary:'||day,1,'diary',content,'diary',created_at FROM diary_entries"""
         )
+        # 上面的 bookshelf 迁移是 DML，会在 legacy 模式下隐式开启事务；
+        # 后续迁移统一使用 BEGIN IMMEDIATE，必须先提交，否则嵌套 BEGIN 会抛
+        # "cannot start a transaction within a transaction"，触发 initialize() 误判
+        # 结构不兼容并把整个用户数据库替换为空库（v9/v10 -> v11 升级路径）。
+        self.conn.commit()
         if version < 9:
-            self.conn.commit()
             self._migrate_to_v9()
         if version < 10:
             self._migrate_to_v10()
         if version < 11:
             self._migrate_to_v11()
+        if version < 12:
+            self._migrate_to_v12()
         self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
@@ -508,6 +520,17 @@ class LifeStore:
         """移除已废弃的疑难图片视觉摘要表。"""
         with self._tx() as conn:
             conn.execute("DROP TABLE IF EXISTS image_summaries")
+
+    def _migrate_to_v12(self) -> None:
+        """v12 新增主动候选跳过原因统计表；新表由 CREATE TABLE IF NOT EXISTS 幂等创建。"""
+        with self._tx() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS proactive_skip_stats(
+                  user_id TEXT NOT NULL, reason TEXT NOT NULL, day TEXT NOT NULL,
+                  count INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(user_id,reason,day)
+                )"""
+            )
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
@@ -677,15 +700,16 @@ class LifeStore:
             self.conn.execute("UPDATE detailed_scenes SET applied=1 WHERE framework_id=?", (framework_id,))
             self.conn.commit()
 
-    async def add_opportunity(self, item: dict[str, Any]) -> None:
+    async def add_opportunity(self, item: dict[str, Any]) -> bool:
         async with self._lock:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT OR IGNORE INTO proactive_opportunities
                 (id,framework_id,topic,motive,weight,privacy,target_user_id,expires_at) VALUES(?,?,?,?,?,?,?,?)""",
                 (item["id"],item["framework_id"],item["topic"],item["motive"],item["weight"],item.get("privacy","normal"),
                  item.get("target_user_id",""),item["expires_at"]),
             )
             self.conn.commit()
+            return cur.rowcount == 1
 
     async def active_opportunities(self, now: float) -> list[dict[str, Any]]:
         async with self._lock:
@@ -917,18 +941,31 @@ class LifeStore:
             return dict(row) if row else {}
 
     # 只有 send_service.after_send 确认平台发送成功后，才增加实际主动额度。
-    async def mark_pending_sent(self, stream_id: str, now: float, day: str = "", *, event_id: str = "") -> bool:
-        """提交已成功发送的主动候选；精确 event_id 优先于旧版会话兜底。"""
+    async def mark_pending_sent(self, stream_id: str, now: float, day: str = "", *,
+                                event_id: str = "", host_task_id: str = "") -> bool:
+        """提交已成功发送的主动候选；event_id 优先，其次 host_task_id，最后会话兜底。
+
+        不要求 status='pending'：发送确认可能跨越 120 秒过期边界，只要事件尚未结算
+        （sent_at=0）就按平台实际发送结果结算，避免"发送成功但事件 expired"。
+        sent_at=0 同时保证幂等——同一事件不会重复累计主动额度。
+        """
         async with self._lock:
             # 普通被动回复没有 pending 记录，只读查询不会创建 SQLite journal。
             if event_id:
                 row=self.conn.execute(
                     """SELECT id,user_id,opportunity_id FROM proactive_events
-                    WHERE id=? AND stream_id=? AND status='pending'""",
+                    WHERE id=? AND stream_id=? AND sent_at=0""",
                     (event_id,stream_id),
                 ).fetchone()
+            elif host_task_id:
+                row=self.conn.execute(
+                    """SELECT id,user_id,opportunity_id FROM proactive_events
+                    WHERE stream_id=? AND host_task_id=? AND sent_at=0
+                    ORDER BY created_at DESC LIMIT 1""",
+                    (stream_id,host_task_id),
+                ).fetchone()
             else:
-                # 保留 v1 API 的会话兜底；插件主链使用 event_id 做精确确认。
+                # 保留 v1 API 的会话兜底；插件主链使用 event_id/host_task_id 做精确确认。
                 row=self.conn.execute(
                     "SELECT id,user_id,opportunity_id FROM proactive_events WHERE stream_id=? AND status='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1",
                     (stream_id,now),
@@ -953,9 +990,66 @@ class LifeStore:
                                  (relay[0],"sent","proactive_after_send",now))
                 return True
 
-    async def expire_pending(self, now: float) -> None:
+    async def expire_pending(self, now: float, *, max_retries: int = 2) -> None:
+        """把过期的 pending 事件标记为 expired，并释放尚未发送成功的对应机会以便重试。
+
+        同一机会最多重试 max_retries 次（按历史 expired 事件计数），超过后机会自然过期，
+        避免 Planner 持续沉默时无限重复触发。sent_at>0 的已发送事件不会被误判为失败。
+        """
         async with self._lock:
-            self.conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,)); self.conn.commit()
+            rows=self.conn.execute(
+                """SELECT id,opportunity_id,user_id FROM proactive_events
+                WHERE status='pending' AND expires_at<=? AND sent_at=0""",
+                (now,),
+            ).fetchall()
+            day=time.strftime("%Y-%m-%d",time.localtime(now))
+            for row in rows:
+                event_id=str(row[0]); opportunity_id=str(row[1]); user_id=str(row[2] or "")
+                fail_count=self.conn.execute(
+                    """SELECT COUNT(*) FROM proactive_events
+                    WHERE opportunity_id=? AND status IN ('expired','cancelled','failed')""",
+                    (opportunity_id,),
+                ).fetchone()[0]
+                if int(fail_count) < max(0,int(max_retries)):
+                    # 释放机会，让它在后续巡检中重新进入候选池。
+                    self.conn.execute(
+                        "UPDATE proactive_opportunities SET consumed_by='',consumed_at=0 WHERE id=?",
+                        (opportunity_id,),
+                    )
+                self.conn.execute(
+                    "UPDATE proactive_events SET status='expired' WHERE id=?",
+                    (event_id,),
+                )
+                # Planner 沉默或超时导致事件过期：记录一次跳过，便于诊断主动发言偏低。
+                self.conn.execute(
+                    """INSERT INTO proactive_skip_stats(user_id,reason,day,count) VALUES(?,?,?,1)
+                    ON CONFLICT(user_id,reason,day) DO UPDATE SET count=count+1""",
+                    (user_id,"planner_no_reply",day),
+                )
+            self.conn.commit()
+
+    async def record_proactive_skip(self, user_id: str, reason: str, now: float) -> None:
+        """按用户、原因、自然日聚合累计一次主动候选跳过，供诊断与 /麦麦管理 主动 查看。"""
+        if not reason:
+            return
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        async with self._lock:
+            self.conn.execute(
+                """INSERT INTO proactive_skip_stats(user_id,reason,day,count) VALUES(?,?,?,1)
+                ON CONFLICT(user_id,reason,day) DO UPDATE SET count=count+1""",
+                (str(user_id or ""), str(reason)[:32], day),
+            )
+            self.conn.commit()
+
+    async def proactive_skip_summary(self, since_day: str, limit: int = 50) -> list[dict[str, Any]]:
+        """按原因聚合主动候选跳过次数（默认统计最近一个自然日），返回原因与次数。"""
+        async with self._lock:
+            rows = self.conn.execute(
+                """SELECT reason,SUM(count) AS total,COUNT(DISTINCT user_id) AS users
+                FROM proactive_skip_stats WHERE day>=? GROUP BY reason ORDER BY total DESC LIMIT ?""",
+                (since_day, max(1, min(200, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     async def pending_proactive_users(self, now: float) -> set[str]:
         """返回仍在等待 Planner/平台确认的用户，防止额度在发送前被并发穿透。"""

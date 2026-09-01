@@ -1,4 +1,4 @@
-"""Mai_life v1.11.0 插件入口。"""
+"""Mai_life v1.13.1 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 
 from .config import MaiLifeSettings,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
@@ -857,6 +858,14 @@ class MaiLifePlugin(MaiBotPlugin):
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
         return {"action":"continue","modified_kwargs":kwargs}
 
+    @staticmethod
+    def _suppress_response(kwargs:dict[str,Any],reason:str)->dict[str,Any]:
+        """统一清空 Replyer 输出并附带取消原因，让上游与日志能区分“插件抑制”与“模型空回复”。"""
+        kwargs["response"]=""
+        kwargs["mai_life_suppressed"]=True
+        kwargs["mai_life_suppress_reason"]=reason
+        return {"action":"continue","modified_kwargs":kwargs}
+
     @HookHandler("maisaka.replyer.after_response",mode=HookMode.BLOCKING)
     async def on_replyer_after(self,**kwargs:Any)->dict[str,Any]:
         """发送前收口撤回/过期/重复回复，执行朋友边界并建立发送确认记录。"""
@@ -871,13 +880,11 @@ class MaiLifePlugin(MaiBotPlugin):
         recall_turn_anchor=str(turn_runtime.get("message_id") or "") if not active else ""
         # 第一阶段先拒绝已撤回或已被新群轮次取代的输出，避免继续创建发送预留。
         if response and await self._is_recalled(session,anchor,recall_turn_anchor,*recall_sources):
-            kwargs["response"]=""
-            self._get_logger().info(f"[MaiLife] 已撤回轮次的 Replyer 输出已取消 session={session} anchor={anchor}")
-            return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=recalled session={session} anchor={anchor}")
+            return self._suppress_response(kwargs,"recalled")
         if response and group_turn and not self._is_latest_group_turn(group_turn):
-            kwargs["response"]=""
-            self._get_logger().info(f"[MaiLife] 同一群发送者的旧轮次回复已取消 session={session} anchor={anchor}")
-            return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=stale_group_turn session={session} anchor={anchor}")
+            return self._suppress_response(kwargs,"stale_group_turn")
         if response and not active and recall_sources and anchor and self._recall:
             try:
                 await self._recall.register_reply_anchor(
@@ -896,26 +903,28 @@ class MaiLifePlugin(MaiBotPlugin):
                 total_tokens=int(kwargs.get("total_tokens") or 0),success=bool(response))
         if not response:return {"action":"continue"}
         if active and active.sent:
-            kwargs["response"]=""
-            self._get_logger().info(f"[MaiLife] 主动任务后续 Replyer 已收口 session={session} task={active.task_id}")
-            return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=active_task_already_sent session={session} task={active.task_id}")
+            return self._suppress_response(kwargs,"active_task_already_sent")
         if own_task and not relay_task and not proactive:
             # RPC 在热重载时可能已排队但来不及写回 task_id；无关联任务一律静默，避免失控发送。
-            kwargs["response"]=""; return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=missing_attribution session={session}")
+            return self._suppress_response(kwargs,"missing_attribution")
         # 主动和转述输出必须能对应仍有效的持久层候选；无法归因的 Host 主动轮一律静默。
         proactive_pending=bool(proactive and str(proactive.get("status") or "")=="pending"
                                and float(proactive.get("expires_at") or 0)>now)
         if proactive and not proactive_pending:
             if str(proactive.get("status") or "")=="pending" and self._store:
                 await self._store.set_proactive_event_status(str(proactive["id"]),"expired")
-            kwargs["response"]=""; return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=proactive_expired session={session}")
+            return self._suppress_response(kwargs,"proactive_expired")
         relay_status=str(relay_task.get("status") or "")
         relay_expired=bool(relay_task and relay_status in {"pending","sending"}
                            and float(relay_task.get("expires_at") or 0)<=now)
         if relay_expired and self._store:
             await self._store.set_relay_status(str(relay_task["id"]),"expired",now,"reply_after_expiry")
         if relay_task and (relay_expired or relay_status in {"superseded","failed","expired","cancelled","sent"}):
-            kwargs["response"]=""; return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=relay_expired session={session}")
+            return self._suppress_response(kwargs,"relay_expired")
         cancel_proactive=bool(proactive and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.proactive.enabled))
         cancel_relay=bool(relay_task and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.social.enabled))
         if cancel_proactive:
@@ -924,7 +933,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if cancel_relay:
             await self._store.set_relay_status(str(relay_task["id"]),"cancelled",now,"plugin_disabled")
         if cancel_proactive or cancel_relay:
-            kwargs["response"]=""; return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=plugin_disabled session={session}")
+            return self._suppress_response(kwargs,"plugin_disabled")
         if not self.config.plugin.enabled:return {"action":"continue"}
         # 朋友边界仅做一次本地词表复核：可重试则要求重生成，否则宁可静默。
         if user and str(user.get("role") or "friend")=="friend":
@@ -935,7 +945,10 @@ class MaiLifePlugin(MaiBotPlugin):
                     kwargs.update({"retry":True,"retry_reason":"当前对象是普通朋友，禁止主人/恋人专属称呼和私密上下文。",
                                    "matched_regex":"mai_life_friend_boundary","matched_regex_pattern":matched,
                                    "matched_regex_description":"朋友关系边界"})
-                else:kwargs.update({"response":"","retry":False})
+                else:
+                    kwargs.update({"response":"","retry":False,"mai_life_suppressed":True,
+                                   "mai_life_suppress_reason":"friend_boundary_retry_exhausted"})
+                    self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=friend_boundary_retry_exhausted session={session}")
                 return {"action":"continue","modified_kwargs":kwargs}
         # 持久层轮次锁负责跨热重载防重；活动任务锁再限制同一主动任务只产生一轮回复。
         turn_anchor=task_id if active else anchor
@@ -946,13 +959,12 @@ class MaiLifePlugin(MaiBotPlugin):
                 turn_scope,turn_anchor,time.time(),time.time()+int(self.config.debounce.turn_expire_seconds),
             )
             if not turn_reserved:
-                kwargs["response"]=""
-                self._get_logger().info(f"[MaiLife] 同轮重复 Replyer 已收口 session={session} anchor={turn_anchor}")
-                return {"action":"continue","modified_kwargs":kwargs}
+                self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=duplicate_turn session={session} anchor={turn_anchor}")
+                return self._suppress_response(kwargs,"duplicate_turn")
         if active and not await self._active_tasks.reserve_reply(session,active.task_id,anchor,now):
             if turn_reserved and self._store:await self._store.release_reply_turn(turn_scope,turn_anchor)
-            kwargs["response"]=""
-            return {"action":"continue","modified_kwargs":kwargs}
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=reply_reserve_failed session={session} task={active.task_id}")
+            return self._suppress_response(kwargs,"reply_reserve_failed")
         expiry=max(20,int(self.config.debounce.turn_expire_seconds))
         self._reply_confirmations={key:value for key,value in self._reply_confirmations.items()
                                    if now-float(value.get("created_at") or 0)<expiry}
@@ -1079,6 +1091,21 @@ class MaiLifePlugin(MaiBotPlugin):
             proactive=await self._store.proactive_for_task(session,task_id)
         # before_send 已完成过期检查；平台 I/O 跨过截止秒时仍应按实际发送结果结算。
         proactive_pending=bool(proactive and str(proactive.get("status") or "")=="pending")
+        # 主动任务结算：平台确认成功即按 event_id/host_task_id 精确结算，不依赖 confirmation 是否命中，
+        # 也不要求事件仍处于 pending（发送确认可能跨越 120 秒过期边界，此时事件已被 expire_pending 标记）。
+        if sent and self._store and self._env:
+            settle_event=str((confirmation or {}).get("proactive_event_id") or proactive.get("id") or "")
+            settle_host=tagged_task_id
+            if settle_event or settle_host:
+                now=self._env.now()
+                settled=await self._store.mark_pending_sent(
+                    session,now.timestamp(),now.strftime("%Y-%m-%d"),
+                    event_id=settle_event,host_task_id=settle_host,
+                )
+                if settled:
+                    self._get_logger().info(f"[MaiLife] 主动发送已结算 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
+                else:
+                    self._get_logger().warning(f"[MaiLife] 主动发送结算未命中 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
         if not confirmation and not proactive_pending:
             # 无锚点发送无法安全归因；不能因此误叫醒正在休息的麦麦。
             if not tagged_task_id and anchor and sent and self._env and self._rest:
@@ -1111,11 +1138,7 @@ class MaiLifePlugin(MaiBotPlugin):
             await self._rest.commit_for_send(
                 session,self._env.now(),str(confirmation.get("wake_message_id") or anchor),
             )
-        if self._store and self._env:
-            event_id=str(confirmation.get("proactive_event_id") or "")
-            if event_id:
-                now=self._env.now()
-                await self._store.mark_pending_sent(session,now.timestamp(),now.strftime("%Y-%m-%d"),event_id=event_id)
+        # 主动发送结算已在上方统一处理（覆盖 confirmation 未命中、事件已过期等情况），此处不再重复。
 
     @Tool(
         "mai_life_web_search",
@@ -1595,10 +1618,11 @@ class MaiLifePlugin(MaiBotPlugin):
         except (TypeError,ValueError):clean_weight=0.5
         try:ttl=max(1,min(1440,int(expires_minutes)))
         except (TypeError,ValueError):ttl=120
-        oid=hashlib.sha1(f"api:{now.timestamp()}:{clean_topic}".encode()).hexdigest()[:20]
-        await self._store.add_opportunity({"id":oid,"framework_id":current["id"],"topic":clean_topic,
+        oid=hashlib.sha1(f"api:{now.timestamp()}:{uuid.uuid4().hex}:{clean_topic}".encode()).hexdigest()[:20]
+        inserted=await self._store.add_opportunity({"id":oid,"framework_id":current["id"],"topic":clean_topic,
             "motive":clean_motive or "外部生活事件值得分享","weight":clean_weight,"privacy":"external",
             "expires_at":now.timestamp()+ttl*60})
+        if not inserted:return {"success":False,"error":"opportunity_id_conflict"}
         return {"success":True,"opportunity_id":oid}
 
     @API(name="admin_snapshot",description="获取 Mai_life 私有管理摘要",version="1",public=False)

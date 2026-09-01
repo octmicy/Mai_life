@@ -1,5 +1,22 @@
 # 更新日志
 
+## [1.13.1] - 2026-09-01
+
+### 修复
+
+- 修复 Schema v9/v10 → v11 升级时数据库被静默替换为空库：`_create_schema` 中 bookshelf 迁移的 DML 在 legacy 事务模式下隐式开启事务，未提交即进入后续迁移的 `BEGIN IMMEDIATE`，触发嵌套事务错误，被 `initialize()` 误判为库不兼容而重建空库（生活状态、书柜、搜索 Key 健康度全部"归零"，原数据仅存于 `.incompatible.*.db` 备份文件）。迁移前改为无条件提交，并补充 v9/v10 升级回归测试。
+- 修复 `/麦麦管理 搜索` 在存在搜索历史时崩溃：`format_text` 的 search 分支引用了未定义变量，任何成功搜索记录都会触发 NameError。改为正确读取结果首项标题，并补充回归测试。
+- 修复联网搜索达到单次尝试上限时提前返回、漏写本地搜索历史的问题，与失败路径统一落库。
+- 修复群聊观察与重要日期分析中，模型返回非数字 `score`/`confidence` 时抛 ValueError 导致整条结果丢失的问题，改为容错回退。
+- 修复公共 API `create_proactive_opportunity` 在秒级时间戳下同主题重复调用产生 ID 冲突、且插入失败仍返回成功的问题：ID 引入随机盐，`add_opportunity` 改为返回插入结果。
+- 修复 `LLMService.generate` 传入消息列表时 `system` 参数被静默丢弃的问题：列表无 system 消息时自动补入。
+- 修复主动消息发送成功但数据库状态落成 `expired/sent_at=0` 的结算丢失问题：`mark_pending_sent` 改为按 `event_id`/`host_task_id` 精确结算且不要求事件仍处于 pending（`sent_at=0` 保证幂等），`on_send_after` 在平台确认成功时用 `mai_life_active_task_id` 兜底归因，覆盖 confirmation 未命中、事件已过期等情况，并增加结算结果日志。
+- 修复 Planner 沉默或超时后生活契机被永久消费的问题：`expire_pending` 对过期且未发送的事件释放对应 opportunity 重新入队，并新增 `max_retries_per_opportunity`（默认 2）限制重试次数，避免无限重复触发。
+- 新增主动候选跳过原因统计（`proactive_skip_stats` 表，Schema v12）：记录 `quiet`/`interval`/`silence`/`daily_limit`/`low_energy`/`low_score`/`planner_no_reply`，`/麦麦管理 主动` 可查看当日分布，用于诊断主动发言偏少。
+- 修复群聊「同一发送者新轮次取代旧轮次」导致 replyer 输出被静默清空的问题：统一封装带取消原因的抑制函数（`recalled`/`stale_group_turn`/`duplicate_turn`/`active_task_already_sent`/`proactive_expired`/`relay_expired`/`plugin_disabled`/`missing_attribution`/`friend_boundary_retry_exhausted` 等），日志明确区分「插件抑制输出」与「模型返回空内容」。
+- 明确 `daily_proactive_max` 语义为「每日最多 N 次」的硬上限（非目标次数），并在配置说明与 README 中说明实际次数常低于该值属正常。
+- 在 `_manifest.json` 的 `dependencies` 中声明 `playwright`（`>=1.49,<2`）为 Python 包依赖，MaiBot 加载插件时自动安装 pip 包；Chromium 浏览器二进制仍需手动 `python -m playwright install chromium`。
+
 ## [1.13.0] - 2026-08-30
 
 ### 主要功能

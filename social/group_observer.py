@@ -133,7 +133,8 @@ class GroupObserver:
         if not isinstance(data,dict):return fallback
         topic=" ".join(str(data.get("topic") or "").split())[:120]
         topic=re.sub(r"@\S+|https?://\S+|(?<!\d)\d{5,}(?!\d)","[已隐去]",topic)
-        score=max(0,min(1,float(data.get("score") or 0)))
+        try:score=max(0,min(1,float(data.get("score") or 0)))
+        except (TypeError,ValueError):score=0.0
         public=bool(data.get("public"))
         if not public or _SENSITIVE_RE.search(topic):return {"public":False,"score":score,"topic":"","summary":""}
         summary=f"群里出现了一段关于{topic or '一个公开话题'}的公开讨论，约有 {len(snippets)} 条连续消息。"

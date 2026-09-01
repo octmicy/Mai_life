@@ -107,8 +107,15 @@ class LLMService:
         """统一调用 Host 模型并记录插件侧用量；失败时返回空串供业务规则降级。"""
         task=self.task_for(task_kind)
         messages: str | list[dict[str, Any]] = prompt
-        if isinstance(prompt,str) and system:
-            messages=[{"role":"system","content":system},{"role":"user","content":prompt}]
+        if system:
+            if isinstance(prompt,str):
+                messages=[{"role":"system","content":system},{"role":"user","content":prompt}]
+            elif isinstance(prompt,list):
+                # 列表消息已自带 system 时保留调用方意图；否则在列表前补一条 system，
+                # 避免调用方按“消息列表”传参时 system 被静默丢弃。
+                has_system=any(isinstance(item,dict) and str(item.get("role") or "").casefold()=="system"
+                               for item in prompt)
+                messages=prompt if has_system else [{"role":"system","content":system},*prompt]
         started=time.perf_counter(); result:dict[str,Any]={}
         try:
             result=await self.ctx.llm.generate(

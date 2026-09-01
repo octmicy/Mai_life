@@ -429,7 +429,7 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HttpRequestError):HttpClient.validate_public_url(self.base+"/article")
         self.assertEqual(readable_text("<script>bad()</script><p>useful article paragraph</p>",100),"useful article paragraph")
 
-    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,11)
+    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,12)
 
     def test_provider_strategy_registry_orders_playwright_before_api(self):
         self.assertEqual(PROVIDER_STRATEGIES,(PlaywrightProvider,ApiProvider))

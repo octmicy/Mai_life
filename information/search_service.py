@@ -285,6 +285,7 @@ class SearchService:
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
         now=time.time(); event_time=float(event_at or now); search_started=time.perf_counter()
+        attempt_limit_reached=False
         for provider_id,provider in self.providers():
             if not provider.enabled:continue
             strategy=self._strategy_for(provider)
@@ -295,7 +296,7 @@ class SearchService:
                       for fingerprint in strategy.fingerprints(provider)}
             for fingerprint,key in strategy.available(provider,runtimes,now):
                 if attempts>=maximum:
-                    self.last_error_class="attempt_limit"; return SearchResponse([])
+                    self.last_error_class="attempt_limit"; attempt_limit_reached=True; break
                 attempts+=1; started=time.perf_counter()
                 try:
                     parsed=await strategy.attempt(provider_id,provider,fingerprint,key,query,freshness)
@@ -318,6 +319,8 @@ class SearchService:
                     (time.perf_counter()-search_started)*1000,
                 )
                 return parsed
+            if attempt_limit_reached:
+                break
         await self._record_history(
             query,operation,event_time,SearchResponse([]),
             (time.perf_counter()-search_started)*1000,error_class=self.last_error_class or "no_available_provider",

@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.13.0"
+PLUGIN_VERSION = "1.13.1"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -172,10 +172,10 @@ class UserProfile(PluginConfigBase):
     )
     daily_proactive_max: int = Field(
         default=1, ge=0, le=20,
-        description="该用户每天实际收到的主动消息上限。",
+        description="该用户每天最多实际收到的主动消息次数（硬上限，不是目标次数）。",
         json_schema_extra=_ui(
-            "用户每日主动上限", "直接填写 0～20；0 表示禁止主动消息，主人通常设置为 2，朋友通常设置为 1。", 4,
-            label_en="Per-user Daily Proactive Limit", hint_en="Set an explicit value from 0 to 20. Zero disables proactive messages.",
+            "用户每日主动上限", "每日最多主动发送 N 次（硬上限，非目标次数）。实际次数常少于该值：受免打扰、冷却、精力、候选评分和 Planner 自主决策约束。0 表示禁止主动消息；主人通常填 2，朋友通常填 1。", 4,
+            label_en="Per-user Daily Proactive Limit", hint_en="Hard cap of proactive messages per day (not a target). Actual count is often lower due to quiet hours, cooldown, energy, scoring and Planner decisions. Zero disables proactive messages.",
         ),
     )
     initial_temperature: int = Field(
@@ -1019,6 +1019,14 @@ class ProactiveSettings(PluginConfigBase):
         json_schema_extra=_ui(
             "主动回复确认窗口（秒）", "用于判断 Planner 是否真的生成了主动回复。通常无需修改。", 4,
             label_en="Proactive Confirmation Window (sec)", hint_en="Window used to correlate a Planner trigger with an actual Replyer response.",
+        ),
+    )
+    max_retries_per_opportunity: int = Field(
+        default=2, ge=0, le=5,
+        description="主动候选过期或 Planner 沉默后，同一生活契机最多重新进入候选池的次数。",
+        json_schema_extra=_ui(
+            "契机重试次数", "Planner 沉默或超时后，同一契机最多重试这么多次；超过后不再重复触发，避免反复打扰。0 表示不重试。", 5,
+            label_en="Opportunity Retry Limit", hint_en="How many times one opportunity re-enters the candidate pool after Planner silence or timeout.",
         ),
     )
     minimum_energy: int = Field(

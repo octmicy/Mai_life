@@ -60,7 +60,9 @@ class AdminService:
             return {"scope":normalized,"items":await self.store.management_bookshelf(limit),
                     "creation_runs":await self.store.management_creation_runs(limit)}
         if normalized=="tokens":return {"scope":normalized,**await self._tokens(now)}
-        if normalized=="proactive":return {"scope":normalized,"items":await self.store.management_proactive_candidates(limit)}
+        if normalized=="proactive":
+            return {"scope":normalized,"items":await self.store.management_proactive_candidates(limit),
+                    "skip_stats":await self.store.proactive_skip_summary(str(now.date()),50)}
         if normalized=="search":
             return {"scope":normalized,"items":await self.store.recent_search_history(now.timestamp(),limit)}
         return await self._overview(now)
@@ -162,11 +164,19 @@ class AdminService:
             for item in data["items"]:
                 when=datetime.fromtimestamp(float(item["created_at"])).strftime("%m-%d %H:%M")
                 status="成功" if item["success"] else f"失败({item['error_class'] or '未知'})"
-                first=" ".join(str(result.get("title") or "").split())[:60] if item["results"] else ""
+                results=item.get("results") if isinstance(item.get("results"),list) else []
+                first_title=str((results[0] if results and isinstance(results[0],dict) else {}).get("title") or "")
+                first=" ".join(first_title.split())[:60]
                 line=f"{when}｜{labels.get(item['operation'],item['operation'])}｜{item['query'][:60]}｜{item['provider_type'] or '-'}｜{status}｜{item['result_count']} 条"
                 if first:line+=f"｜{first}"
                 lines.append(line)
         else:
             lines=["近期主动候选"]+[f"{item['user_id']}｜{item.get('topic') or item['opportunity_id']}｜{item['status']}" for item in data["items"]]
+            skip=data.get("skip_stats") if isinstance(data,dict) else []
+            if skip:
+                labels={"quiet":"免打扰时段","interval":"主动最小间隔","silence":"用户刚发言","daily_limit":"每日额度用尽",
+                        "low_energy":"精力不足","low_score":"候选分不足","planner_no_reply":"Planner 沉默或超时"}
+                lines.append("\n今日主动候选跳过原因")
+                lines.extend(f"{labels.get(item['reason'],item['reason'])}：{item['total']} 次" for item in skip)
         if len(lines)==1:lines.append("暂无记录。")
         return "\n".join(lines)

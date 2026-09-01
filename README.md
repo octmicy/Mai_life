@@ -1,6 +1,6 @@
 # 麦麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.12.0**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.13.1**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
 
 ## 快速配置
 
@@ -8,7 +8,7 @@
 
 1. 在“私聊用户”中填写真实 QQ 号，并启用该用户。
 2. 最多设置一个 `owner`，其他用户使用 `friend`。
-3. 为每个用户明确填写每日主动上限。建议主人 `2`，朋友 `1`，填 `0` 表示禁止主动私聊。
+3. 为每个用户明确填写每日主动上限。这是「每日最多 N 次」的硬上限，不是目标次数——实际主动次数常少于该值（受免打扰、冷却、精力、候选评分和 Planner 自主决策约束）。建议主人 `2`，朋友 `1`，填 `0` 表示禁止主动私聊。
 4. 在“环境与天气”中填写城市。插件会自动解析坐标，不需要经纬度。
 5. 保存配置并重载插件，使用 `/麦麦状态` 检查任务和模型状态。
 
@@ -19,6 +19,28 @@
 状态、日程、关系、管理摘要和错误提示等指令结果也会在本地渲染成同主题图片。长内容会自动分页发送；Pillow、字体或适配器图片能力不可用时，仅对失败部分降级为纯文本。该过程不调用生图模型，不额外消耗模型 Token。
 
 用户、管理员、关系权限和群聊目标都只按 QQ 号判断。昵称与群名称由 MaiBot 会话自动读取，仅用于状态展示；改名不会改变身份或权限。
+
+### 安装 Chromium（可选，仅联网搜索需要）
+
+`playwright` 这个 Python 包已写入 `_manifest.json` 的 `dependencies`，MaiBot 加载插件时会自动安装；但 Chromium 浏览器二进制不属于 pip 包，**仍需手动装一次**。
+
+关键：用哪个 `python` 运行 MaiBot，就用同一个 `python` 安装 Chromium，确保浏览器装进插件运行时能看到的环境。
+
+如果 MaiBot 运行在虚拟环境（例如 Linux 上的 `.venv`），要进到 MaiBot 目录、用虚拟环境里的 `python` 执行，而不是系统 `python`：
+
+```bash
+cd /root/maimai/MaiBot
+.venv/bin/python -m playwright install chromium
+```
+
+如果 MaiBot 用系统 Python 直接运行，则直接执行：
+
+```bash
+python -m playwright install chromium
+```
+
+- 服务器无外网或下载失败时，可先在有网的机器上装好 Chromium，再把浏览器缓存目录整体拷贝过去：Windows 默认 `%USERPROFILE%\AppData\Local\ms-playwright`，Linux 默认 `~/.cache/ms-playwright`。
+- 不装 Chromium 不会阻止插件加载；联网搜索会记录 `browser_unavailable` 错误，并自动降级到后续 API 备援服务。
 
 ### 推荐开关
 
@@ -54,7 +76,7 @@
 | Responses `openai_responses` | Key、地址、模型名 | 使用带 `web_search` 工具的兼容接口，可接支持该协议的中转 |
 | Chat `openai_chat` | Key、地址、模型名 | 模型本身必须具有联网能力，插件无法强制普通模型联网 |
 
-Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文；安装依赖后还需要执行 `python -m playwright install chromium`。验证码、搜索页结构变化、浏览器缺失或网络失败会记录为明确的服务错误，并按列表继续尝试 API 备援。自定义地址可以填写 API 基础地址，也可以填写完整的 `/responses` 或 `/chat/completions` 地址。插件不内置公共 Key、代理或中转地址。
+Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文。`playwright` 这个 Python 包已写入 `_manifest.json` 的 `dependencies`，MaiBot 加载插件时会自动安装；但 **Chromium 浏览器二进制仍需手动执行一次 `python -m playwright install chromium`**（它不属于 pip 包，无法自动安装）。验证码、搜索页结构变化、浏览器缺失或网络失败会记录为明确的服务错误，并按列表继续尝试 API 备援。自定义地址可以填写 API 基础地址，也可以填写完整的 `/responses` 或 `/chat/completions` 地址。插件不内置公共 Key、代理或中转地址。
 
 每个服务可按优先级填写多个 Key，第一个为主 Key：
 
@@ -92,7 +114,7 @@ v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映�
 
 ### 主动与社交
 
-- 每个 QQ 用户拥有独立的关系温度、活跃时段、免打扰和明确每日主动额度。
+- 每个 QQ 用户拥有独立的关系温度、活跃时段、免打扰和明确的每日主动额度（硬上限，实际主动次数可能低于该值，属正常）。
 - 主动契机先经过规则筛选，再交给 Planner 决定是否开口；Planner 沉默不消耗实际发送额度。
 - 群聊观察只保存匿名短摘要，不保存群聊原文。
 - `/麦麦转述 群QQ号 内容` 只触发目标群 Planner，不构造 `@`，也不解析群名、昵称或别名。
@@ -178,4 +200,4 @@ python -m compileall Mai_life
 python -m playwright install chromium
 ```
 
-`playwright` 是联网搜索的运行依赖；浏览器二进制需单独安装 Chromium。`chinese-calendar`、`lunar-python` 和 `Pillow` 均可离线降级；未安装 Pillow 或系统缺少可用中文字体时，图片指令菜单会降级为纯文本，不会阻止插件加载。
+`playwright` 是联网搜索的运行依赖，Chromium 安装方法见上方「安装 Chromium」小节。`chinese-calendar`、`lunar-python` 和 `Pillow` 均可离线降级；未安装 Pillow 或系统缺少可用中文字体时，图片指令菜单会降级为纯文本，不会阻止插件加载。

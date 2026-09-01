@@ -2,7 +2,7 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-  "version":  "1.13.0",
+  "version":  "1.13.1",
     "description":  "让麦麦拥有持续生活、消息体验、低频联网见闻以及自己的书柜与创作",
     "author":  {
                    "name":  "octmicy",
@@ -18,7 +18,11 @@
                 "max_version":  "2.99.99"
             },
     "dependencies":  [
-
+                         {
+                             "type":  "python_package",
+                             "name":  "playwright",
+                             "version_spec":  ">=1.49,<2"
+                         }
                      ],
     "plugin_type":  "tool",
     "capabilities":  [

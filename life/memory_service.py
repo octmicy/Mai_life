@@ -100,7 +100,8 @@ class MemoryService:
         name=str(result.get("event_name") or "重要安排")[:80]
         date_text=str(result.get("date_text") or "未明确")[:120]
         suggested=str(result.get("suggested_date") or "")[:10]
-        confidence=max(0,min(1,float(result.get("confidence") or 0)))
+        try:confidence=max(0,min(1,float(result.get("confidence") or 0)))
+        except (TypeError,ValueError):confidence=0.0
         parsed=self._parse_date(suggested)
         if parsed and confidence>=0.86:
             recurrence="annual" if str(result.get("recurrence"))=="annual" else "none"

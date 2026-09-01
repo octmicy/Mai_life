@@ -151,6 +151,45 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.mark_pending_sent("s1",now+1,event_id="e1"))
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
 
+    async def test_expired_event_still_settles_by_host_task_id(self):
+        """发送确认跨越过期边界（事件已被 expire_pending 标记）后仍能按 host_task_id 结算。"""
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time()
+        await self.store.add_opportunity({"id":"o1","framework_id":"f","topic":"t","motive":"m","weight":0.5,"expires_at":now+3600})
+        await self.store.consume_opportunity("o1","1",now)
+        await self.store.add_proactive_pending("e1","1","o1","s1",now,now+0.01)
+        await self.store.set_proactive_task_id("e1","proactive:test:1")
+        await self.store.expire_pending(now+1,max_retries=2)
+        self.assertEqual(self.store.conn.execute("SELECT status FROM proactive_events WHERE id='e1'").fetchone()[0],"expired")
+        self.assertEqual(self.store.conn.execute("SELECT consumed_at FROM proactive_opportunities WHERE id='o1'").fetchone()[0],0)
+        self.assertTrue(await self.store.mark_pending_sent("s1",now+2,host_task_id="proactive:test:1"))
+        self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+        # 幂等：sent_at>0 后不再重复结算。
+        self.assertFalse(await self.store.mark_pending_sent("s1",now+3,host_task_id="proactive:test:1"))
+        self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
+
+    async def test_expire_pending_stops_releasing_after_retry_limit(self):
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time()
+        await self.store.add_opportunity({"id":"o1","framework_id":"f","topic":"t","motive":"m","weight":0.5,"expires_at":now+3600})
+        await self.store.consume_opportunity("o1","1",now)
+        await self.store.add_proactive_pending("e1","1","o1","s1",now,now+0.01)
+        await self.store.expire_pending(now+1,max_retries=1)
+        self.assertEqual(self.store.conn.execute("SELECT consumed_at FROM proactive_opportunities WHERE id='o1'").fetchone()[0],0)
+        # 第二次触发并再次过期：历史 expired 数已达上限，机会不再释放。
+        await self.store.consume_opportunity("o1","1",now+10)
+        await self.store.add_proactive_pending("e2","1","o1","s1",now+10,now+10.01)
+        await self.store.expire_pending(now+11,max_retries=1)
+        self.assertNotEqual(self.store.conn.execute("SELECT consumed_at FROM proactive_opportunities WHERE id='o1'").fetchone()[0],0)
+
+    async def test_proactive_skip_stats_aggregate_by_reason(self):
+        await self.store.record_proactive_skip("1","quiet",time.time())
+        await self.store.record_proactive_skip("1","quiet",time.time())
+        await self.store.record_proactive_skip("1","low_score",time.time())
+        summary=await self.store.proactive_skip_summary(time.strftime("%Y-%m-%d"))
+        by_reason={item["reason"]:item["total"] for item in summary}
+        self.assertEqual(by_reason["quiet"],2); self.assertEqual(by_reason["low_score"],1)
+
     async def test_wake_candidate_requires_matching_message(self):
         now=time.time(); await self.store.set_wake_candidate("s1","1","m1","wake",now,now+120)
         self.assertEqual(await self.store.pop_wake_candidate("s1",now+1,"m2"),{})
@@ -215,7 +254,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
         self.assertEqual(len(backups),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"11")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
         await upgraded.close(); other.cleanup()
 
     async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
@@ -223,7 +262,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"not-a-sqlite-database")
         upgraded=LifeStore(other.name); await upgraded.initialize()
         self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"11")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
         await upgraded.close(); other.cleanup()
 
     async def test_v8_to_v9_drops_skills_aliases_and_converts_legacy_quota(self):
@@ -252,6 +291,34 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("last_skill_day",columns); self.assertEqual(user["daily_proactive_max"],2)
         self.assertEqual(user["display_name"],""); self.assertEqual(user["temperature"],35)
         await upgraded.close(); other.cleanup()
+
+    async def test_v9_and_v10_upgrade_keeps_user_data_without_rebuild(self):
+        """v9/v10 -> v11 升级曾因 DML 隐式事务嵌套炸库，导致整库被误替换为空库。"""
+        for legacy_version,drop_search_history in ((9,True),(10,False)):
+            with self.subTest(version=legacy_version):
+                other=tempfile.TemporaryDirectory(); path=Path(other.name)/"mai_life.db"
+                seeded=LifeStore(other.name); await seeded.initialize(); await seeded.close()
+                conn=sqlite3.connect(path)
+                if drop_search_history:
+                    conn.execute("DROP TABLE IF EXISTS search_history")
+                conn.execute("UPDATE meta SET value=? WHERE key='schema_version'",(str(legacy_version),))
+                conn.execute(
+                    "INSERT OR IGNORE INTO users(user_id,enabled,proactive_enabled,display_name,temperature,"
+                    "role,daily_proactive_max,quiet_start,quiet_end) "
+                    "VALUES('10086',1,1,'升级前昵称',66.5,'owner',2,'00:00','08:00')")
+                conn.execute(
+                    "INSERT OR IGNORE INTO diary_entries(day,title,content,mood_summary,created_at) "
+                    "VALUES('2026-08-01','升级前日记','升级前的日记正文','平静',1754000000)")
+                conn.commit(); conn.close()
+                upgraded=LifeStore(other.name); await upgraded.initialize()
+                self.assertEqual(
+                    upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
+                self.assertEqual([],list(Path(other.name).glob("mai_life.incompatible.*.db")))
+                user=await upgraded.get_user("10086")
+                self.assertEqual(user["display_name"],"升级前昵称"); self.assertEqual(user["temperature"],66.5)
+                diary=upgraded.conn.execute("SELECT title FROM diary_entries WHERE day='2026-08-01'").fetchone()
+                self.assertEqual(diary[0],"升级前日记")
+                await upgraded.close(); other.cleanup()
 
 
 class ScheduleTests(unittest.IsolatedAsyncioTestCase):

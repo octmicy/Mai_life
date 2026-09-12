@@ -29,6 +29,25 @@ class BookshelfService:
             document_id,allow_private=self.allow_private(user,is_admin),
         )
 
+    async def resolve_reference(self,reference:str,user:dict[str,Any],*,is_admin:bool=False,
+                                limit:int=20)->str:
+        """把 /麦麦阅读 的输入解析为文档 ID。
+
+        纯数字按与 /麦麦书柜 相同的权限、排序和上限取列表序号；超出范围或列表为空
+        返回空串。其余输入视为完整文档 ID 原样返回——现有 ID 形如
+        work-…/diary:…/reading:…，不会是纯数字，因此两种输入没有歧义。
+        """
+        ref=str(reference or "").strip()
+        if not ref:
+            return ""
+        if not ref.isdigit():
+            return ref
+        rows=await self.list_for_user(user,limit,is_admin=is_admin)
+        index=int(ref)
+        if 1<=index<=len(rows):
+            return str(rows[index-1]["id"])
+        return ""
+
     async def context_for_user(self,user:dict[str,Any],limit:int=3)->dict[str,Any]:
         rows=await self.list_for_user(user,limit)
         return {"items":[{"id":item["id"],"type":_TYPE_LABELS.get(item.get("work_type"),item.get("doc_type","文本")),

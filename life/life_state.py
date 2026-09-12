@@ -1,9 +1,15 @@
 """Deterministic life-state simulation with narrative dreams."""
 from __future__ import annotations
 
+import math
 import time
 from datetime import date, datetime
 from typing import Any
+
+# 心情基线回归参数：把心情温和拉回中性偏正的基线（约 40%/天），
+# 防止纯积分器在健康日程下钉死 +1、在重负荷/少餐日程下阴跌钉死 -1。
+MOOD_BASELINE = 0.15
+MOOD_REGRESSION_PER_HOUR = 0.0175
 
 
 class LifeStateEngine:
@@ -70,6 +76,8 @@ class LifeStateEngine:
         mood=float(state.get("mood_valence",0))
         mood += (-0.03*elapsed if energy<30 else 0.01*elapsed if energy>70 else 0)
         mood += -0.04*elapsed if hunger>75 else 0
+        # 指数式基线回归：离线长时段补算时既不欠账也不会过冲穿越基线。
+        mood += (MOOD_BASELINE - mood) * (1.0 - math.exp(-MOOD_REGRESSION_PER_HOUR * elapsed))
         state["mood_valence"]=self._clamp(mood,-1,1)
         if energy<20:
             state["health_status"]="tired"; state["health_note"]="精力很低，需要休息"

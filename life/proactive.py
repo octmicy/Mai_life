@@ -38,13 +38,15 @@ class ProactiveEngine:
     async def patrol(self, now: Any, state: dict[str,Any]) -> bool:
         """先执行额度、休息和间隔硬过滤，再将最高分候选交给 Planner 终审。"""
         cfg=self.config.proactive
+        # 自然日按配置时区计算并贯穿全部跳过统计，避免服务器时区不同导致落错日期桶。
+        current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
         await self.store.expire_pending(
-            now.timestamp(),max_retries=int(getattr(cfg,"max_retries_per_opportunity",2) or 0),
+            now.timestamp(),max_retries=int(getattr(cfg,"max_retries_per_opportunity",2) or 0),day=day,
         )
         if not cfg.enabled or str(state.get("sleep_phase")) in {"falling_asleep","light_sleep","deep_sleep"}: return False
         if float(state.get("energy",0))<cfg.minimum_energy:
             # 精力不足属于全局跳过（不区分用户），记一次便于诊断主动发言偏低。
-            await self.store.record_proactive_skip("", "low_energy", now.timestamp())
+            await self.store.record_proactive_skip("", "low_energy", now.timestamp(), day=day)
             return False
         opportunities=await self.store.active_opportunities(now.timestamp())
         if not opportunities:return False
@@ -57,7 +59,6 @@ class ProactiveEngine:
             (str(user.get("user_id") or "") for user in users),
         )
         pending_users=await self.store.pending_proactive_users(now.timestamp())
-        current=now.strftime("%H:%M"); day=now.strftime("%Y-%m-%d")
         # 候选按用户独立过滤；定向契机不会进入其他 QQ 用户的评分集合。
         candidates=[]
         for user in users:
@@ -66,17 +67,17 @@ class ProactiveEngine:
             stream=str(user.get("stream_id") or "")
             if not stream:continue
             if self._in_window(user["quiet_start"],user["quiet_end"],current):
-                await self.store.record_proactive_skip(user_id,"quiet",now.timestamp()); continue
+                await self.store.record_proactive_skip(user_id,"quiet",now.timestamp(),day=day); continue
             count=int(user.get("proactive_count",0)) if user.get("proactive_day")==day else 0
             # v1.7 起每日额度只由该 QQ 用户档案提供，不再继承全局上限。
             daily_limit=max(0,min(20,int(user.get("daily_proactive_max") or 0)))
             if daily_limit<=0 or count>=daily_limit:
-                await self.store.record_proactive_skip(user_id,"daily_limit",now.timestamp()); continue
+                await self.store.record_proactive_skip(user_id,"daily_limit",now.timestamp(),day=day); continue
             last_pro=float(user.get("last_proactive_at",0)); last_user=float(user.get("last_user_message_at",0))
             if last_pro and now.timestamp()-last_pro<cfg.min_interval_minutes*60:
-                await self.store.record_proactive_skip(user_id,"interval",now.timestamp()); continue
+                await self.store.record_proactive_skip(user_id,"interval",now.timestamp(),day=day); continue
             if last_user and now.timestamp()-last_user<cfg.recent_user_silence_minutes*60:
-                await self.store.record_proactive_skip(user_id,"silence",now.timestamp()); continue
+                await self.store.record_proactive_skip(user_id,"silence",now.timestamp(),day=day); continue
             matched=0; added=False
             for opportunity in opportunities:
                 target=str(opportunity.get("target_user_id") or "")
@@ -88,7 +89,7 @@ class ProactiveEngine:
                     candidates.append((score,user,opportunity)); added=True
             if matched and not added:
                 # 有匹配该用户的机会，但评分都未达阈值。
-                await self.store.record_proactive_skip(user_id,"low_score",now.timestamp())
+                await self.store.record_proactive_skip(user_id,"low_score",now.timestamp(),day=day)
         if not candidates:return False
         candidates.sort(key=lambda x:x[0],reverse=True); score,user,opportunity=candidates[0]
         # 原子消费防止并发巡检把同一生活事件复制给多人。

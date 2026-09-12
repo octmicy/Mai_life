@@ -111,6 +111,8 @@ class CreationService:
                                                         summary=summary,privacy=privacy,status="archived",now=now.timestamp())
             await self.store.mark_creation_inspiration(str(inspiration["id"]),"consumed")
             await self.store.finish_creation_run(run_id,"archived",now.timestamp())
+            try:await self.store.record_mood_event("creation_archived",now)
+            except Exception as exc:self.logger.debug(f"[MaiLife] 心情事件记录失败: {exc}")
             await self._share_opportunity(document_id,str(outline.get("title") or "未命名作品"),privacy,now)
             return {"status":"archived","document_id":document_id,"title":outline.get("title"),"privacy":privacy}
         except asyncio.CancelledError:

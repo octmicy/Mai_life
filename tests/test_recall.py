@@ -109,7 +109,7 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await self.store.is_recalled_turn("private-1","m2",now+1))
         await self.store.initialize()
-        self.assertEqual(SCHEMA_VERSION,12)
+        self.assertEqual(SCHEMA_VERSION,13)
         columns={row[1] for row in self.store.conn.execute("PRAGMA table_info(recall_events)")}
         self.assertIn("summary_expires_at",columns)
 

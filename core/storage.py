@@ -12,7 +12,20 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
+# 长期运行记录（互动、主动事件、契机、转述候选/事件、跳过统计）的保留天数。
+# 这些表没有过期字段驱动的外部清理，超期行必须在 cleanup_runtime_records 中删除，
+# 否则只会无限增长；pending 与在途行永远保留，避免打断正在结算的引用。
+RECORD_RETENTION_DAYS = 90
+# 心情事件规则：kind -> (每次幅度, 每日上限次数)。让心情对真实互动有响应，
+# 上限保证重度聊天日也不会把心情顶满。
+MOOD_EVENT_RULES = {
+    "passive_reply": (0.02, 3),
+    "proactive_reply": (0.03, 2),
+    "creation_archived": (0.05, 1),
+}
+# 心情事件与状态快照的保留天数：这是动力学分析的数据源，比运行记录保留更久。
+STATE_HISTORY_RETENTION_DAYS = 180
 
 
 class LifeStore:
@@ -205,6 +218,17 @@ class LifeStore:
               user_id TEXT NOT NULL, reason TEXT NOT NULL, day TEXT NOT NULL,
               count INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY(user_id,reason,day)
+            );
+            -- 心情事件流与逐小时状态快照：互动加分的账本和长期动力学分析的数据源。
+            CREATE TABLE IF NOT EXISTS mood_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
+              day TEXT NOT NULL, kind TEXT NOT NULL, delta REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mood_events_day ON mood_events(day,kind);
+            CREATE TABLE IF NOT EXISTS state_snapshots(
+              ts REAL PRIMARY KEY, energy REAL NOT NULL, hunger REAL NOT NULL,
+              mood_valence REAL NOT NULL, mood_arousal REAL NOT NULL,
+              sleep_phase TEXT NOT NULL, current_activity TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS rest_backlogs(
               id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
@@ -462,6 +486,8 @@ class LifeStore:
             self._migrate_to_v11()
         if version < 12:
             self._migrate_to_v12()
+        if version < 13:
+            self._migrate_to_v13()
         self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
@@ -532,6 +558,22 @@ class LifeStore:
                 )"""
             )
 
+    def _migrate_to_v13(self) -> None:
+        """v13 新增心情事件流与逐小时状态快照表；均为幂等新建，不改动任何旧数据（含书柜）。"""
+        with self._tx() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS mood_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
+                day TEXT NOT NULL, kind TEXT NOT NULL, delta REAL NOT NULL)"""
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mood_events_day ON mood_events(day,kind)")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS state_snapshots(
+                ts REAL PRIMARY KEY, energy REAL NOT NULL, hunger REAL NOT NULL,
+                mood_valence REAL NOT NULL, mood_arousal REAL NOT NULL,
+                sleep_phase TEXT NOT NULL, current_activity TEXT NOT NULL DEFAULT '')"""
+            )
+
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
         columns = {str(row[1]) for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -563,6 +605,49 @@ class LifeStore:
                         "body_cycle","last_updated_at"
                     )),
                 )
+
+    # 心情事件：单条 SQL 原子加分，避免与状态推进的读改写竞争；当日次数超限直接跳过。
+    async def record_mood_event(self, kind: str, now: Any) -> float:
+        """记录一次心情事件并原子加分，返回实际加分值；超过当日上限或规则缺失返回 0.0。
+
+        now 使用环境时区的 datetime，day 归属与跳过统计保持一致。
+        只更新 mood_valence，不触碰 last_updated_at，避免干扰状态推进的时间游标。
+        """
+        rule = MOOD_EVENT_RULES.get(str(kind or ""))
+        if not rule:
+            return 0.0
+        delta, cap = float(rule[0]), max(0, int(rule[1]))
+        day = now.strftime("%Y-%m-%d")
+        async with self._lock:
+            with self._tx() as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM mood_events WHERE kind=? AND day=?", (kind, day)
+                ).fetchone()[0]
+                if count >= cap:
+                    return 0.0
+                conn.execute(
+                    "INSERT INTO mood_events(created_at,day,kind,delta) VALUES(?,?,?,?)",
+                    (float(now.timestamp()), day, kind[:32], delta),
+                )
+                conn.execute(
+                    "UPDATE global_state SET mood_valence=MAX(-1.0,MIN(1.0,mood_valence+?)) WHERE id=1",
+                    (delta,),
+                )
+                return delta
+
+    # 逐小时状态快照：主键按整点取整天然幂等，运行期间每小时留下一条轨迹。
+    async def save_state_snapshot(self, ts: float, state: dict[str, Any]) -> None:
+        bucket = float(int(float(ts) // 3600) * 3600)
+        async with self._lock:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO state_snapshots
+                (ts,energy,hunger,mood_valence,mood_arousal,sleep_phase,current_activity)
+                VALUES(?,?,?,?,?,?,?)""",
+                (bucket, float(state.get("energy") or 0), float(state.get("hunger") or 0),
+                 float(state.get("mood_valence") or 0), float(state.get("mood_arousal") or 0),
+                 str(state.get("sleep_phase") or "")[:32], str(state.get("current_activity") or "")[:120]),
+            )
+            self.conn.commit()
 
     async def get_sleep_runtime(self) -> dict[str, Any]:
         async with self._lock:
@@ -990,11 +1075,13 @@ class LifeStore:
                                  (relay[0],"sent","proactive_after_send",now))
                 return True
 
-    async def expire_pending(self, now: float, *, max_retries: int = 2) -> None:
+    async def expire_pending(self, now: float, *, max_retries: int = 2, day: str = "") -> None:
         """把过期的 pending 事件标记为 expired，并释放尚未发送成功的对应机会以便重试。
 
         同一机会最多重试 max_retries 次（按历史 expired 事件计数），超过后机会自然过期，
         避免 Planner 持续沉默时无限重复触发。sent_at>0 的已发送事件不会被误判为失败。
+        day 是跳过统计归属的自然日（YYYY-MM-DD），由调用方按配置时区传入；
+        留空时退回服务器本地日期，仅兼容旧调用方。
         """
         async with self._lock:
             rows=self.conn.execute(
@@ -1002,7 +1089,7 @@ class LifeStore:
                 WHERE status='pending' AND expires_at<=? AND sent_at=0""",
                 (now,),
             ).fetchall()
-            day=time.strftime("%Y-%m-%d",time.localtime(now))
+            day=day or time.strftime("%Y-%m-%d",time.localtime(now))
             for row in rows:
                 event_id=str(row[0]); opportunity_id=str(row[1]); user_id=str(row[2] or "")
                 fail_count=self.conn.execute(
@@ -1028,11 +1115,15 @@ class LifeStore:
                 )
             self.conn.commit()
 
-    async def record_proactive_skip(self, user_id: str, reason: str, now: float) -> None:
-        """按用户、原因、自然日聚合累计一次主动候选跳过，供诊断与 /麦麦管理 主动 查看。"""
+    async def record_proactive_skip(self, user_id: str, reason: str, now: float, day: str = "") -> None:
+        """按用户、原因、自然日聚合累计一次主动候选跳过，供诊断与 /麦麦管理 主动 查看。
+
+        day 由调用方按配置时区传入，避免服务器时区与配置时区不一致时落错日期桶；
+        留空时退回服务器本地日期，仅兼容旧调用方。
+        """
         if not reason:
             return
-        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        day = day or time.strftime("%Y-%m-%d", time.localtime(now))
         async with self._lock:
             self.conn.execute(
                 """INSERT INTO proactive_skip_stats(user_id,reason,day,count) VALUES(?,?,?,1)
@@ -1757,7 +1848,9 @@ class LifeStore:
             ).fetchone()
             return {key:int(row[key] or 0) for key in row.keys()} if row else {}
 
-    async def cleanup_runtime_records(self, now: float, usage_before: float) -> None:
+    async def cleanup_runtime_records(self, now: float, usage_before: float, *,
+                                      records_before: float = 0) -> None:
+        """清理运行态记录；records_before 提供长期记录的保留截止时间，0 表示本轮跳过长期清理。"""
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
@@ -1773,6 +1866,30 @@ class LifeStore:
                 conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
                 conn.execute("UPDATE relay_candidates SET status='expired' WHERE expires_at<=? AND status IN ('pending','sending','queued')",(now,))
                 conn.execute("UPDATE creation_inspirations SET status='expired' WHERE status IN ('pending','creating') AND expires_at<=?",(now,))
+                if records_before>0:
+                    # 只删终态行；已发送按 sent_at 计龄，未发送的终态按 expires_at 计龄。
+                    conn.execute(
+                        """DELETE FROM proactive_events WHERE status!='pending'
+                        AND (CASE WHEN sent_at>0 THEN sent_at ELSE expires_at END)<=?""",
+                        (records_before,),
+                    )
+                    # 契机都有有限 expires_at；pending 事件引用的旧契机不可能存在
+                    # （pending 事件 120 秒内必然被 expire_pending 转为终态）。
+                    conn.execute("DELETE FROM proactive_opportunities WHERE expires_at<=?",(records_before,))
+                    conn.execute("DELETE FROM interaction_events WHERE created_at<?",(records_before,))
+                    conn.execute(
+                        """DELETE FROM relay_candidates WHERE status NOT IN ('pending','sending','queued')
+                        AND (CASE WHEN sent_at>0 THEN sent_at ELSE expires_at END)<=?""",
+                        (records_before,),
+                    )
+                    conn.execute("DELETE FROM relay_events WHERE created_at<?",(records_before,))
+                    # day 是 YYYY-MM-DD 文本，按本地日期换算截止日即可（偏移至多一天）。
+                    day_cut=time.strftime("%Y-%m-%d",time.localtime(records_before))
+                    conn.execute("DELETE FROM proactive_skip_stats WHERE day<?",(day_cut,))
+                    # 心情事件与状态快照是动力学分析数据源，保留期比运行记录更长。
+                    history_before=now-STATE_HISTORY_RETENTION_DAYS*86400
+                    conn.execute("DELETE FROM state_snapshots WHERE ts<=?",(history_before,))
+                    conn.execute("DELETE FROM mood_events WHERE created_at<=?",(history_before,))
 
     async def record_llm_usage(self, *, created_at: float, source: str, task_name: str, model_name: str,
                                request_type: str, prompt_tokens: int, completion_tokens: int,

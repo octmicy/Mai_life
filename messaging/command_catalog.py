@@ -35,7 +35,7 @@ COMMAND_SECTIONS:tuple[CommandSection,...]=(
         CommandItem("/麦麦新闻","近期新闻见闻（主人或管理员）"),
         CommandItem("/麦麦探索","主动搜索笔记（主人或管理员）"),
         CommandItem("/麦麦书柜","当前关系可见的书柜"),
-        CommandItem("/麦麦阅读 文本编号","阅读有权限访问的文本"),
+        CommandItem("/麦麦阅读 序号或编号","阅读书柜文本；序号来自 /麦麦书柜 列表"),
         CommandItem("/麦麦转述 群QQ号 内容","向白名单群发起简单转述"),
     )),
     CommandSection("管理与诊断",(

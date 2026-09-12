@@ -121,6 +121,27 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         work=[item for item in opportunities if item.get("privacy")=="owner_only"]
         self.assertEqual(len(work),1); self.assertEqual(work[0]["target_user_id"],"1")
 
+    async def test_read_reference_accepts_list_index_and_full_id(self):
+        """书柜阅读支持 /麦麦书柜 同源列表的序号；完整 ID 与权限过滤不受影响。"""
+        shelf=BookshelfService(self.store,self.config)
+        owner=UserProfile(user_id="1",role="owner"); friend=UserProfile(user_id="2",role="friend")
+        self.config.users.profiles=[owner]; await self.store.sync_users([owner])
+        await self.store.create_bookshelf_document({"id":"work-public","doc_type":"work","work_type":"essay",
+            "title":"公开作品","privacy":"public","status":"archived","created_at":1.0})
+        await self.store.save_diary("2026-07-12","普通的一天","内容","平稳","digest",3.0)
+        user=await self.store.get_user("1")
+        # 列表按最近更新排序，与 /麦麦书柜 展示一致：日记(3.0) 在前。
+        rows=await shelf.list_for_user(user,20)
+        self.assertEqual([row["id"] for row in rows],["diary:2026-07-12","work-public"])
+        self.assertEqual(await shelf.resolve_reference("1",user),"diary:2026-07-12")
+        self.assertEqual(await shelf.resolve_reference("2",user),"work-public")
+        self.assertEqual(await shelf.resolve_reference("9",user),"")
+        self.assertEqual(await shelf.resolve_reference(" work-public ",user),"work-public")
+        # 朋友视角列表不含私人日记，同一序号映射到可见列表的第一本。
+        self.config.users.profiles=[owner,friend]; await self.store.sync_users([owner,friend])
+        friend_user=await self.store.get_user("2")
+        self.assertEqual(await shelf.resolve_reference("1",friend_user),"work-public")
+
     async def test_rejected_review_without_revision_is_not_archived(self):
         self.config.creation.enabled=True; self.config.creation.plaintext_storage_acknowledged=True
         await self.add_inspiration()
@@ -167,7 +188,7 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await upgraded.close(); other.cleanup()
 
-    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,12)
+    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,13)
 
 
 if __name__=="__main__":unittest.main()

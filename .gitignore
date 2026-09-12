@@ -26,3 +26,6 @@ Thumbs.db
 
 # Playwright CLI runtime snapshots
 /.playwright-cli/
+
+# Local handover notes
+HANDOVER.md

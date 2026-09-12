@@ -1,4 +1,4 @@
-"""Mai_life v1.13.2 插件入口。"""
+"""Mai_life v1.14.0 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -18,7 +18,7 @@ from .config import MaiLifeSettings,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
 from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
-from .core.storage import LifeStore
+from .core.storage import LifeStore,RECORD_RETENTION_DAYS
 from .information.information_service import InformationService
 from .life.continuity import ContinuityService
 from .life.life_state import LifeStateEngine
@@ -291,9 +291,14 @@ class MaiLifePlugin(MaiBotPlugin):
             # 离线推进按日程边界切片，睡眠、进餐和场景增量才能按真实顺序应用。
             timeline=await self._schedule.state_timeline(simulation_start,now)
             await self._state.advance_timeline(now,timeline,context.get("current"),context.get("scene"))
+            # 逐小时状态快照：INSERT OR IGNORE 保证每小时只落一条，供长期动力学统计。
+            await self._store.save_state_snapshot(now.timestamp(),await self._store.get_state())
             await self._memory.ensure_daily(now)
             await self._settle_relationships(now)
-            await self._store.cleanup_runtime_records(now.timestamp(),now.timestamp()-int(self.config.usage.retention_days)*86400)
+            await self._store.cleanup_runtime_records(
+                now.timestamp(),now.timestamp()-int(self.config.usage.retention_days)*86400,
+                records_before=now.timestamp()-RECORD_RETENTION_DAYS*86400,
+            )
 
     async def _settle_relationships(self,now:datetime)->None:
         """按自然日补算离线期间关系变化，最多回看一年即可覆盖温度下限。"""
@@ -310,6 +315,12 @@ class MaiLifePlugin(MaiBotPlugin):
             end=datetime.combine(current+timedelta(days=1),datetime.min.time(),tzinfo=now.tzinfo)
             await self._store.update_relationships(current.isoformat(),start.timestamp(),end.timestamp(),end.timestamp())
             current+=timedelta(days=1)
+
+    async def _record_mood_event(self,kind:str)->None:
+        """心情事件统一入口：按环境时区记日，统计失败不影响发送主链。"""
+        if not self._store or not self._env:return
+        try:await self._store.record_mood_event(kind,self._env.now())
+        except Exception as exc:self._get_logger().debug(f"[MaiLife] 心情事件记录失败 kind={kind}: {exc}")
 
     async def _refresh_personality(self)->None:
         try:self._personality=str(await self.ctx.config.get("personality.personality","") or "")
@@ -1106,10 +1117,12 @@ class MaiLifePlugin(MaiBotPlugin):
                     self._get_logger().info(f"[MaiLife] 主动发送已结算 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
                 else:
                     self._get_logger().warning(f"[MaiLife] 主动发送结算未命中 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
+                await self._record_mood_event("proactive_reply")
         if not confirmation and not proactive_pending:
             # 无锚点发送无法安全归因；不能因此误叫醒正在休息的麦麦。
             if not tagged_task_id and anchor and sent and self._env and self._rest:
                 await self._rest.commit_for_send(session,self._env.now(),anchor)
+                await self._record_mood_event("passive_reply")
             elif not tagged_task_id and anchor and not sent and self._store:
                 await self._store.clear_wake_candidate(session,anchor)
             return
@@ -1138,6 +1151,7 @@ class MaiLifePlugin(MaiBotPlugin):
             await self._rest.commit_for_send(
                 session,self._env.now(),str(confirmation.get("wake_message_id") or anchor),
             )
+            await self._record_mood_event("passive_reply")
         # 主动发送结算已在上方统一处理（覆盖 confirmation 未命中、事件已过期等情况），此处不再重复。
 
     @Tool(
@@ -1178,11 +1192,14 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @Tool(
         "mai_life_browse_web",
-        brief_description="打开网页并截图发送给当前用户",
-        description=("当麦麦需要展示某个网页的实际内容，或用户要求查看某个网址时使用。"
-                     "会使用 Playwright 打开网页、截图，并把截图作为图片发送给当前对话的用户。"),
-        detailed_description=("仅支持公网 http/https 地址，会拒绝内网地址。打开失败、截图失败或发送失败会返回失败说明。"
-                              "不要对同一网页重复截图。"),
+        brief_description="按用户明确要求打开网页并截图发送",
+        description=("仅在用户明确要求打开、查看或截图某个网址时使用。"
+                     "不要主动对搜索结果或聊天中提到的网页截图；不确定时只用文字回答或改用联网搜索。"
+                     "调用后会打开网页、截图，并把截图作为图片发送给当前对话的用户。"),
+        detailed_description=("截图会作为可见图片直接发给用户，触发必须来自用户的明确请求，"
+                              "不要用猜测或好意代替用户要求。仅支持公网 http/https 地址，会拒绝内网地址；"
+                              "打开失败、截图失败或发送失败会返回失败说明。不要对同一网页重复截图，"
+                              "也不要在一轮对话中连续截多张网页图。"),
         parameters=[
             ToolParameterInfo(
                 name="url",param_type=ToolParamType.STRING,required=True,
@@ -1422,20 +1439,28 @@ class MaiLifePlugin(MaiBotPlugin):
         viewer=user or {"user_id":uid,"enabled":True,"role":"admin"}
         rows=await self._bookshelf.list_for_user(viewer,20,is_admin=self._is_admin(uid))
         if not rows:return await self._send_command(kwargs,"当前关系可见的书柜还是空的。")
-        lines=["麦麦书柜"]
-        for item in rows:
-            lines.append(f"{item['id']}｜{self._bookshelf.type_label(str(item.get('work_type') or item.get('doc_type')))}｜"
+        lines=["麦麦书柜（按最近更新排序，最多显示 20 本）"]
+        for index,item in enumerate(rows,1):
+            lines.append(f"{index}｜{self._bookshelf.type_label(str(item.get('work_type') or item.get('doc_type')))}｜"
                          f"{item['title']}｜{item['privacy']}")
+        lines.append("用 /麦麦阅读 序号 或完整编号 阅读对应文本。")
         return await self._send_command(kwargs,"\n".join(lines))
 
     @Command(name="/麦麦阅读",pattern=r"^(?:/麦麦阅读|/mai_read)\s+(?P<document_id>\S+)$",description="阅读有权限访问的书柜文本")
     async def cmd_read(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); user=await self._command_user(kwargs)
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
-        document_id=str(groups.get("document_id") or "")
+        reference=str(groups.get("document_id") or "").strip()
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
+        if not self._bookshelf:return await self._send_command(kwargs,"书柜尚未初始化。")
         viewer=user or {"user_id":uid,"enabled":True,"role":"admin"}
-        item=await self._bookshelf.read_for_user(document_id,viewer,is_admin=self._is_admin(uid)) if self._bookshelf else {}
+        # 序号解析与 /麦麦书柜 使用同一份权限过滤后的列表，保证用户看到的编号可直接输入。
+        document_id=await self._bookshelf.resolve_reference(reference,viewer,is_admin=self._is_admin(uid))
+        if not document_id:
+            notice=("序号超出书柜列表范围，请先用 /麦麦书柜 查看有效序号。" if reference.isdigit()
+                    else "没有找到该文本，或当前关系无权读取。")
+            return await self._send_command(kwargs,notice)
+        item=await self._bookshelf.read_for_user(document_id,viewer,is_admin=self._is_admin(uid))
         if not item:return await self._send_command(kwargs,"没有找到该文本，或当前关系无权读取。")
         text=f"{item['title']}｜{item['privacy']}\n\n{str(item.get('content') or '')[:12000]}"
         return await self._send_command(kwargs,text)

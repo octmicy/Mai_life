@@ -190,6 +190,110 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         by_reason={item["reason"]:item["total"] for item in summary}
         self.assertEqual(by_reason["quiet"],2); self.assertEqual(by_reason["low_score"],1)
 
+    async def test_mood_events_cap_daily_and_apply_atomically(self):
+        """心情事件按日限额原子加分；只动 mood_valence，不影响状态推进游标。"""
+        now=datetime(2026,9,13,12,0,tzinfo=timezone.utc)
+        before=(await self.store.get_state())
+        self.assertAlmostEqual(float(before["mood_valence"]),0.0)
+        for _ in range(3):
+            self.assertAlmostEqual(await self.store.record_mood_event("passive_reply",now),0.02)
+        self.assertEqual(await self.store.record_mood_event("passive_reply",now),0.0)
+        self.assertAlmostEqual(await self.store.record_mood_event("proactive_reply",now),0.03)
+        state=await self.store.get_state()
+        self.assertAlmostEqual(float(state["mood_valence"]),0.09)
+        self.assertEqual(float(state["last_updated_at"]),float(before["last_updated_at"]))
+        # 次日限额重新计数。
+        self.assertAlmostEqual(await self.store.record_mood_event("passive_reply",now+timedelta(days=1)),0.02)
+        # 未知事件类型不加分。
+        self.assertEqual(await self.store.record_mood_event("unknown_kind",now),0.0)
+
+    async def test_state_snapshot_is_hourly_idempotent(self):
+        state={"energy":70.0,"hunger":20.0,"mood_valence":0.1,"mood_arousal":0.6,
+               "sleep_phase":"awake","current_activity":"自由活动"}
+        base=datetime(2026,9,13,9,5,tzinfo=timezone.utc).timestamp()
+        await self.store.save_state_snapshot(base,state)
+        await self.store.save_state_snapshot(base+600,state)
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0],1)
+        await self.store.save_state_snapshot(base+3600,state)
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0],2)
+        row=self.store.conn.execute("SELECT * FROM state_snapshots ORDER BY ts").fetchone()
+        self.assertAlmostEqual(float(row["energy"]),70.0); self.assertEqual(row["sleep_phase"],"awake")
+
+    async def test_v12_database_upgrades_to_v13_without_data_loss(self):
+        """模拟生产库 v12 → v13 原地升级：书柜、日记等旧数据完整保留。"""
+        await self.store.sync_users([UserProfile(user_id="1")])
+        await self.store.record_interaction("1","历史消息",time.time(),9)
+        await self.store.save_diary("2026-09-01","旧日记","内容","平稳","digest",time.time())
+        self.store.conn.execute("UPDATE meta SET value='12' WHERE key='schema_version'")
+        self.store.conn.commit()
+        data_dir=str(self.store.path.parent); await self.store.close()
+        reopened=LifeStore(data_dir); await reopened.initialize()
+        try:
+            self.assertEqual(reopened.conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
+            # 新表可用且为空。
+            self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM mood_events").fetchone()[0],0)
+            self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0],0)
+            # 旧数据完整：互动、日记、书柜（含日记书柜化）全部保留。
+            self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM interaction_events").fetchone()[0],1)
+            self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM diary_entries").fetchone()[0],1)
+            self.assertEqual(reopened.conn.execute(
+                "SELECT COUNT(*) FROM bookshelf_documents WHERE doc_type='diary'").fetchone()[0],1)
+            self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],1)
+        finally:
+            await reopened.close()
+
+    async def test_proactive_skip_stats_respect_explicit_day(self):
+        """调用方按配置时区传入自然日；服务器时区不同也不会落错日期桶。"""
+        now=time.time()
+        await self.store.record_proactive_skip("1","quiet",now,day="2026-08-01")
+        await self.store.record_proactive_skip("1","quiet",now,day="2026-08-01")
+        await self.store.record_proactive_skip("1","quiet",now,day="2026-08-02")
+        # proactive_skip_summary 是“day>=since”的累计口径：08-02 只含当天，08-01 含两天。
+        self.assertEqual({item["reason"]:item["total"] for item in await self.store.proactive_skip_summary("2026-08-02")},{"quiet":1})
+        self.assertEqual({item["reason"]:item["total"] for item in await self.store.proactive_skip_summary("2026-08-01")},{"quiet":3})
+
+    async def test_expire_pending_records_skip_under_explicit_day(self):
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time()
+        await self.store.add_opportunity({"id":"o1","framework_id":"f","topic":"t","motive":"m","weight":0.5,"expires_at":now+3600})
+        await self.store.consume_opportunity("o1","1",now)
+        await self.store.add_proactive_pending("e1","1","o1","s1",now,now+0.01)
+        await self.store.expire_pending(now+1,max_retries=2,day="2026-08-01")
+        summary=await self.store.proactive_skip_summary("2026-08-01")
+        self.assertEqual([item["reason"] for item in summary],["planner_no_reply"])
+
+    async def test_cleanup_purges_stale_operational_records(self):
+        """长期运行记录按保留期清理终态行；pending 与近期行不受影响。"""
+        await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
+        now=time.time(); old=now-200*86400
+        await self.store.add_opportunity({"id":"o-old","framework_id":"f","topic":"t","motive":"m","weight":0.5,"expires_at":old})
+        await self.store.add_opportunity({"id":"o-new","framework_id":"f","topic":"t","motive":"m","weight":0.5,"expires_at":now+3600})
+        await self.store.add_proactive_pending("e-old","1","o-old","s1",old,old+120)
+        await self.store.add_proactive_pending("e-pending","1","o-new","s1",now,now+120)
+        self.assertTrue(await self.store.mark_pending_sent("s1",old,event_id="e-old"))
+        await self.store.record_interaction("1","旧消息",old,9)
+        await self.store.record_interaction("1","新消息",now-3600,9)
+        await self.store.create_relay_candidate({"id":"r-old","kind":"group_to_private","target_user_id":"1",
+            "target_stream_id":"s1","summary":"s","status":"pending","created_at":old,"expires_at":old+7200})
+        await self.store.set_relay_status("r-old","expired",old+3600,"test")
+        await self.store.create_relay_candidate({"id":"r-new","kind":"group_to_private","target_user_id":"1",
+            "target_stream_id":"s1","summary":"s","status":"pending","created_at":now,"expires_at":now+7200})
+        await self.store.record_proactive_skip("1","quiet",old,day=time.strftime("%Y-%m-%d",time.localtime(old)))
+        await self.store.record_proactive_skip("1","quiet",now,day=time.strftime("%Y-%m-%d"))
+        await self.store.cleanup_runtime_records(now,now,records_before=now-90*86400)
+        conn=self.store.conn
+        self.assertIsNone(conn.execute("SELECT 1 FROM proactive_events WHERE id='e-old'").fetchone())
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM proactive_events WHERE id='e-pending'").fetchone())
+        self.assertIsNone(conn.execute("SELECT 1 FROM proactive_opportunities WHERE id='o-old'").fetchone())
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM proactive_opportunities WHERE id='o-new'").fetchone())
+        self.assertEqual([str(row[0]) for row in conn.execute("SELECT content_summary FROM interaction_events")],["新消息"])
+        self.assertIsNone(conn.execute("SELECT 1 FROM relay_candidates WHERE id='r-old'").fetchone())
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM relay_candidates WHERE id='r-new'").fetchone())
+        self.assertIsNone(conn.execute("SELECT 1 FROM relay_events WHERE relay_id='r-old'").fetchone())
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM relay_events WHERE relay_id='r-new'").fetchone())
+        self.assertEqual([str(row[0]) for row in conn.execute("SELECT day FROM proactive_skip_stats")],[time.strftime("%Y-%m-%d")])
+
     async def test_wake_candidate_requires_matching_message(self):
         now=time.time(); await self.store.set_wake_candidate("s1","1","m1","wake",now,now+120)
         self.assertEqual(await self.store.pop_wake_candidate("s1",now+1,"m2"),{})
@@ -254,7 +358,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
         self.assertEqual(len(backups),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
         await upgraded.close(); other.cleanup()
 
     async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
@@ -262,7 +366,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"not-a-sqlite-database")
         upgraded=LifeStore(other.name); await upgraded.initialize()
         self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
         await upgraded.close(); other.cleanup()
 
     async def test_v8_to_v9_drops_skills_aliases_and_converts_legacy_quota(self):
@@ -312,7 +416,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
                 conn.commit(); conn.close()
                 upgraded=LifeStore(other.name); await upgraded.initialize()
                 self.assertEqual(
-                    upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"12")
+                    upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
                 self.assertEqual([],list(Path(other.name).glob("mai_life.incompatible.*.db")))
                 user=await upgraded.get_user("10086")
                 self.assertEqual(user["display_name"],"升级前昵称"); self.assertEqual(user["temperature"],66.5)

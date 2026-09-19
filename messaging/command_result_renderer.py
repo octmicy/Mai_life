@@ -73,7 +73,7 @@ class MaiLifeCommandResultRenderer(MaiLifeMenuRenderer):
         for x,color in ((78,"#F35F60"),(108,"#F4BF4F"),(138,"#4FC26B")):
             draw.ellipse((x-10,72,x+10,92),fill=color)
         self._draw_text(draw,(margin,132),"MAI LIFE  /  COMMAND RESULT",font=fonts["eyebrow"],fill=accent)
-        self._draw_text(draw,(margin,171),title,font=fonts["title"],fill=self._PALETTE["title"],stroke_width=2)
+        self._draw_text(draw,(margin,171),title,font=fonts["title"],fill=self._PALETTE["title"],stroke_width=1)
         self._draw_text(draw,(margin,229),"本地渲染 · 不调用生图模型",font=fonts["subtitle"],fill=self._PALETTE["muted"])
 
         badge=f"{page_index + 1} / {page_count}"

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from Mai_life.config import MaiLifeSettings, UserProfile
+from Mai_life.core.llm_service import LLMService
 from Mai_life.core.storage import LifeStore
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.rest_gate import RestGate
@@ -477,6 +478,36 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.latest_dream())
 
 
+    async def test_ensure_day_prompt_carries_variety_context(self):
+        """日程生成提示词必须携带变化源：最近几天、历法、兴趣素材与具体化约束。"""
+        class CapturingLLM:
+            def __init__(self):self.prompt=""
+            def task_available(self,kind):return kind=="schedule"
+            def task_for(self,kind):return "planner"
+            async def generate_json(self,prompt,system,fallback,**kwargs):
+                self.prompt=prompt; return fallback
+        now=datetime(2026,9,19,3,0,tzinfo=timezone(timedelta(hours=8)))
+        yesterday=(now-timedelta(days=1)).date().isoformat()
+        await self.store.replace_framework(yesterday,self.service._fallback(yesterday,False))
+        await self.store.save_exploration_note({"id":"n1","topic":"深海火山","query":"q","summary":"s",
+            "source_urls":[],"created_at":now.timestamp(),"relevance_score":0.5,
+            "relevance_reason":"","opportunity_id":"","expires_at":now.timestamp()+86400})
+        await self.store.create_bookshelf_document({"id":"w1","doc_type":"work","work_type":"essay",
+            "title":"旧作","privacy":"public","status":"archived","created_at":1.0})
+        llm=CapturingLLM()
+        service=ScheduleService(self.store,self.config,llm,str(Path(__file__).parents[1]),DummyLogger())
+        nodes=await service.ensure_day(now,"人格","晴",force=True,
+            environment={"day_type":"周六","holiday":"","lunar":"七廿八","solar_term":"白露"})
+        self.assertTrue(nodes)
+        prompt=llm.prompt
+        self.assertIn("最近几天的安排",prompt)
+        self.assertIn("短暂午休",prompt)
+        self.assertIn("今日历法",prompt); self.assertIn("白露",prompt)
+        self.assertIn("活动灵感",prompt); self.assertIn("深海火山",prompt); self.assertIn("《旧作》",prompt)
+        self.assertIn("禁止'处理自己的事情'",prompt)
+        self.assertEqual(await self.store.get_framework(now.date().isoformat()),nodes)
+
+
 class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
@@ -676,6 +707,42 @@ class DebounceTests(unittest.IsolatedAsyncioTestCase):
     def test_local_intent_classifier(self):
         self.assertEqual(classify_intent("这张图里是什么",["image"]),"询问当前图片")
         self.assertEqual(classify_intent("醒醒，有急事",["text"]),"安全或紧急需要")
+
+
+class LLMRouteTests(unittest.TestCase):
+    """SDK 2.8.1 任务路由契约：签名含 task_name 时显式传任务名；旧 SDK 用 model 传任务名。"""
+
+    @staticmethod
+    def _make_service(llm):
+        class Ctx:
+            pass
+        ctx = Ctx(); ctx.llm = llm; ctx.logger = DummyLogger()
+        return LLMService(ctx, MaiLifeSettings(), store=None)
+
+    def test_new_sdk_routes_by_task_name(self):
+        captured = {}
+        class NewSDKLLM:
+            async def generate(self, prompt, model="", temperature=None, max_tokens=None,
+                               *, task_name="utils", model_name="", **kwargs):
+                captured.update({"model": model, "task_name": task_name, "prompt": prompt})
+                return {"success": True, "response": "ok"}
+            async def get_available_models(self): return ["planner"]
+        service = self._make_service(NewSDKLLM())
+        self.assertEqual(asyncio.run(service.generate("你好", task_kind="reasoning")), "ok")
+        self.assertEqual(captured["task_name"], "planner")
+        self.assertEqual(captured["model"], "")
+
+    def test_old_sdk_routes_by_model_field(self):
+        captured = {}
+        class OldSDKLLM:
+            async def generate(self, prompt, model="", temperature=None, max_tokens=None, **kwargs):
+                captured.update({"model": model, "prompt": prompt, "extra": set(kwargs)})
+                return {"success": True, "response": "ok"}
+            async def get_available_models(self): return ["planner"]
+        service = self._make_service(OldSDKLLM())
+        self.assertEqual(asyncio.run(service.generate("你好", task_kind="reasoning")), "ok")
+        self.assertEqual(captured["model"], "planner")
+        self.assertNotIn("task_name", captured["extra"])
 
 
 if __name__=="__main__": unittest.main()

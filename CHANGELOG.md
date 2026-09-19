@@ -1,5 +1,21 @@
 # 更新日志
 
+## [1.14.1] - 2026-09-19
+
+### 适配 MaiBot 1.2.5 / Plugin SDK 2.8.x（OneKey 桌面版运行时）
+
+- 数据目录迁移到统一持久化目录：优先使用 SDK 2.6+ 的 `ctx.paths.data_dir`（即 `<MaiBot>/data/plugins/maibot-community.mai-life/`），旧 SDK 无该属性时回退插件内 `data/`；首次切换时自动把旧库（含 journal 与损坏备份）整体搬迁，避免升级后数据"消失"。
+- Planner Hook 双兼容 MaiBot 1.2.0 的 Item-first 契约：`maisaka.planner.before_request` 载荷从 `messages` 改为 `items`（旧版 `extra_prompt`/`messages` 不再提供，老写法注入静默失效）。现在按 kwargs 实际存在的键判断：items 模式把背景追加到最后一条 SystemMessageItem 的 text part（无 system item 时插入新 item，item_id 唯一、logical_turn_id 键存在、timestamp 合法）；主动任务标记解析与撤回消息改写同步支持两种载荷；注入失败时安全放行不修改。已用主程序真实反序列化函数 + `validate_context_items` 完成 17 项契约校验。
+- 修复 SDK 2.8.1 `llm.generate` 任务路由 bug：2.8.1 无条件发送 `task_name="utils"`，Host 1.2.5 因此把 `model` 当具体模型名解析而报"未找到模型"，插件所有 LLM 调用静默退到兜底。现按 SDK 签名特征自动选择：新版显式传 `task_name`（`model` 留空），旧版继续用 `model` 传任务名，两个 SDK 版本均正确。
+
+### 修复
+
+- 修复指令菜单/结果卡片小字号文字描边糊字：v1.13.2 起所有文字用同色描边合成粗体，20-27px 的汉字笔画被描边粘连。现在仅大标题与分组标题保留 1px 描边，正文、命令与描述恢复常规字重。
+
+### 改进
+
+- 日程生成多样化：提示词新增三个变化源——最近 5 天日程摘要（要求具体内容明显错开）、今日历法（节假日/农历/节气，此前环境快照已计算但未接入日程）、随机抽取的兴趣素材（近期探索话题与书柜作品标题）；模板骨架降级为"仅参考时间结构，禁止照抄描述"，并硬性要求 summary 具体到"正在做什么"，禁止"处理自己的事情"等空泛描述。
+
 ## [1.14.0] - 2026-09-13
 
 ### 主要功能

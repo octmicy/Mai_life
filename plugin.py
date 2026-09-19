@@ -1,4 +1,4 @@
-"""Mai_life v1.14.0 插件入口。"""
+"""Mai_life v1.14.1 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import time
 import uuid
 
@@ -87,12 +88,33 @@ class MaiLifePlugin(MaiBotPlugin):
                     self._debouncer,self._continuity,self._memory,self._information,
                     self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall))
 
+    def _resolve_data_dir(self,plugin_root:str)->str:
+        """数据目录：SDK 2.6+ 优先使用统一持久化目录 ctx.paths.data_dir。
+
+        旧 SDK 没有该属性时回退插件内 data/。切换到统一目录的首次加载会把
+        旧 data/ 下的数据库整体搬迁过去，避免升级后看起来"数据丢失"。
+        """
+        data_dir=str(getattr(getattr(self.ctx,"paths",None),"data_dir","") or "").strip()
+        if not data_dir:
+            return os.path.join(plugin_root,"data")
+        os.makedirs(data_dir,exist_ok=True)
+        legacy=os.path.join(plugin_root,"data")
+        target_db=os.path.join(data_dir,"mai_life.db")
+        if os.path.isdir(legacy) and not os.path.exists(target_db):
+            for name in sorted(os.listdir(legacy)):
+                # 覆盖 mai_life.db、-journal 和 .corrupt/.incompatible 备份；库本体先于日志移动。
+                if name.startswith("mai_life.db"):
+                    try:shutil.move(os.path.join(legacy,name),os.path.join(data_dir,name))
+                    except OSError:pass
+        return data_dir
+
     async def on_load(self)->None:
         """初始化存储和全部服务，恢复中断状态后再启动后台循环。"""
         self._stopping=False
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         await self._active_tasks.reset()
-        root=os.path.dirname(os.path.abspath(__file__)); self._store=LifeStore(os.path.join(root,"data"),journal_mode="delete")
+        root=os.path.dirname(os.path.abspath(__file__))
+        self._store=LifeStore(self._resolve_data_dir(root),journal_mode="delete")
         await self._store.initialize()
         if not self.config.recall.enabled or not self.config.recall.cache_summary_enabled:
             await self._store.clear_recall_summaries()
@@ -227,7 +249,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 weather=await self._env.refresh_weather()
                 current=self._env.now(); memory_context=await self._memory.schedule_context(current)
                 await self._schedule.ensure_day(current,self._personality,self._env.weather_text(weather),force=True,
-                                                memory_context=memory_context)
+                                                memory_context=memory_context,environment=self._env.snapshot(current))
             except asyncio.CancelledError:raise
             except Exception as exc:self.ctx.logger.error(f"[MaiLife] 每日日程生成异常: {exc}")
 
@@ -283,7 +305,8 @@ class MaiLifePlugin(MaiBotPlugin):
             assert self._env and self._schedule and self._store and self._state and self._memory
             now=self._env.now(); weather=await self._env.refresh_weather(force=force_weather,allow_network=allow_weather_network)
             memory_context=await self._memory.schedule_context(now)
-            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),memory_context=memory_context)
+            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),memory_context=memory_context,
+                                                  environment=self._env.snapshot(now))
             context=await self._schedule.context(now); state=await self._store.get_state()
             await self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)); context=await self._schedule.context(now)
             last_updated=float(state.get("last_updated_at") or now.timestamp())
@@ -777,6 +800,49 @@ class MaiLifePlugin(MaiBotPlugin):
                 "bookshelf":await self._bookshelf.context_for_user(user)}
 
     @staticmethod
+    def _planner_payload(kwargs:dict[str,Any])->Any:
+        """planner 上下文载荷：1.2.0+ 是 items，旧版是 messages。"""
+        items=kwargs.get("items")
+        return items if isinstance(items,list) else kwargs.get("messages")
+
+    @staticmethod
+    def _append_item_text(items:list[Any],note:str)->bool:
+        """把提示并入 Context Items：优先追加到最后一条 SystemMessageItem 的 text part。
+
+        就地修改 items；没有 system item 时插入新的（item_id 必须唯一、
+        logical_turn_id 键必须存在、timestamp 必须可被 datetime.fromisoformat 解析）。
+        """
+        for item in reversed(items):
+            if not isinstance(item,dict) or item.get("item_type")!="SystemMessageItem":continue
+            parts=item.get("parts")
+            if not isinstance(parts,list):
+                item["parts"]=[{"type":"text","text":note}]; return True
+            if parts and isinstance(parts[-1],dict) and parts[-1].get("type")=="text":
+                parts[-1]["text"]=f"{parts[-1].get('text') or ''}\n\n{note}"
+            else:
+                parts.append({"type":"text","text":note})
+            return True
+        items.insert(0,{"item_type":"SystemMessageItem",
+                        "meta":{"item_id":f"mai-life-{uuid.uuid4().hex}","logical_turn_id":None,
+                                "timestamp":datetime.now().isoformat()},
+                        "parts":[{"type":"text","text":note}]})
+        return True
+
+    @classmethod
+    def _inject_planner_context(cls,kwargs:dict[str,Any],suffix:str)->dict[str,Any]:
+        """按载荷类型注入：items（1.2.0+）就地追加 text part；messages（旧版）并入 system。"""
+        items=kwargs.get("items")
+        if isinstance(items,list):
+            cls._append_item_text(items,suffix)
+            return {"action":"continue","modified_kwargs":kwargs}
+        messages=kwargs.get("messages")
+        if isinstance(messages,list):
+            kwargs["messages"]=cls._planner_messages_with_context(messages,suffix)
+            return {"action":"continue","modified_kwargs":kwargs}
+        # 两个键都不存在：契约再次变化，宁可放弃本次注入也不改坏载荷。
+        return {"action":"continue"}
+
+    @staticmethod
     def _planner_messages_with_context(messages:Any,suffix:str)->list[dict[str,Any]]:
         """Planner Hook 只接受 messages；把背景并入 system 消息而不覆盖其他插件内容。"""
         result=[dict(item) for item in messages if isinstance(item,dict)] if isinstance(messages,list) else []
@@ -789,20 +855,39 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @staticmethod
     def _neutralize_recalled_latest_user(messages:Any)->list[dict[str,Any]]:
-        """把最后一条用户消息改写为撤回提示，让 Planner 不再尝试回复已被撤回的入站消息。"""
-        result=[dict(item) for item in messages if isinstance(item,dict)] if isinstance(messages,list) else []
+        """把最后一条用户消息改写为撤回提示（纯函数，不改动输入列表）。"""
+        result=[dict(item) if isinstance(item,dict) else item for item in messages]
         for item in reversed(result):
-            if str(item.get("role") or "").lower()=="user" and isinstance(item.get("content"),str):
+            if isinstance(item,dict) and str(item.get("role") or "").lower()=="user" \
+                    and isinstance(item.get("content"),str):
                 item["content"]="[该消息已被用户撤回，本轮无需回复，请直接结束思考]"
                 break
         return result
+
+    @classmethod
+    def _neutralize_recalled_latest_payload(cls,kwargs:dict[str,Any])->None:
+        """按载荷类型改写最后一条用户消息；items 就地改 text part，messages 走纯函数替换。"""
+        items=kwargs.get("items")
+        if isinstance(items,list):
+            for item in reversed(items):
+                if not isinstance(item,dict) or item.get("item_type")!="UserMessageItem":continue
+                parts=item.get("parts")
+                if not isinstance(parts,list):continue
+                for part in reversed(parts):
+                    if isinstance(part,dict) and part.get("type")=="text":
+                        part["text"]="[该消息已被用户撤回，本轮无需回复，请直接结束思考]"
+                        return
+            return
+        messages=kwargs.get("messages")
+        if isinstance(messages,list):
+            kwargs["messages"]=cls._neutralize_recalled_latest_user(messages)
 
     @HookHandler("maisaka.planner.before_request",mode=HookMode.BLOCKING)
     async def on_planner(self,**kwargs:Any)->dict[str,Any]:
         """识别插件主动任务，并向目标私聊 Planner 追加生活、撤回和转述边界。"""
         if self._stopping or self._reloading or not self.config.plugin.enabled:return {"action":"continue"}
         session=str(kwargs.get("session_id") or ""); suffix=""
-        active=await self._activate_planner_task(session,kwargs.get("messages"))
+        active=await self._activate_planner_task(session,self._planner_payload(kwargs))
         group_passive=bool(not active and self.config.debounce.group_enabled and self._has_recent_group_turn(session))
         if self.config.context.enabled and not group_passive:
             payload=await self._prompt_payload(session)
@@ -822,15 +907,14 @@ class MaiLifePlugin(MaiBotPlugin):
             latest_mid=str(runtime.get("message_id") or "")
             latest_recalled=bool(runtime.get("recalled")) or (bool(latest_mid) and await self._is_recalled(session,latest_mid))
             if latest_recalled and not active and not group_passive:
-                kwargs["messages"]=self._neutralize_recalled_latest_user(kwargs.get("messages"))
+                self._neutralize_recalled_latest_payload(kwargs)
                 suffix+=("\n【撤回处理】用户已撤回本轮要回复的最后一条消息。该消息视为不存在，"
                          "不要调用 reply 或任何发送类工具，直接结束本轮思考即可。\n")
         if active:suffix+=self._active_tasks.planner_instruction(active)
         if active and active.kind=="relay" and self._relay and self.config.social.enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)
         if not suffix:return {"action":"continue"}
-        kwargs["messages"]=self._planner_messages_with_context(kwargs.get("messages"),suffix)
-        return {"action":"continue","modified_kwargs":kwargs}
+        return self._inject_planner_context(kwargs,suffix)
 
     @HookHandler("maisaka.planner.after_response",mode=HookMode.OBSERVE)
     async def on_planner_after(self,**kwargs:Any)->None:
@@ -1535,7 +1619,8 @@ class MaiLifePlugin(MaiBotPlugin):
         assert self._env and self._schedule and self._memory and self._store
         now=self._env.now(); weather=await self._store.get_weather() or {"description":"天气未知"}
         memory_context=await self._memory.schedule_context(now)
-        nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True,memory_context=memory_context)
+        nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True,memory_context=memory_context,
+                                              environment=self._env.snapshot(now))
         return await self._send_command(kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
 
     @Command(name="/麦麦休息测试",pattern=r"^(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")

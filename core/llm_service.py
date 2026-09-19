@@ -1,6 +1,7 @@
 """统一模型路由、结构化生成和插件 Token 统计。"""
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from typing import Any
@@ -15,9 +16,28 @@ class LLMService:
         self.store = store
         self.available_tasks: set[str] = set()
         self.health_error = "尚未检查"
+        self._supports_task_name: bool | None = None
 
     def update_config(self, config: Any) -> None:
         self.config = config
+
+    def _generate_call(self, task: str, messages: Any, temperature: float, max_tokens: int) -> dict[str, Any]:
+        """构造 llm.generate 调用参数，兼容新旧 SDK 的任务路由契约。
+
+        SDK 2.8.1 起签名含 task_name 且缺省无条件发送 ``utils``，导致 Host 把
+        ``model`` 当具体模型名解析而报"未找到模型"；必须显式传 task_name。
+        更旧的 SDK 没有该参数，``model`` 即任务名（Host 兼容分支仍支持）。
+        """
+        if self._supports_task_name is None:
+            try:
+                params = inspect.signature(self.ctx.llm.generate).parameters
+                self._supports_task_name = "task_name" in params
+            except (TypeError, ValueError):
+                self._supports_task_name = False
+        if self._supports_task_name:
+            return {"prompt": messages, "model": "", "temperature": temperature,
+                    "max_tokens": max_tokens, "task_name": task}
+        return {"prompt": messages, "model": task, "temperature": temperature, "max_tokens": max_tokens}
 
     def task_for(self, kind: str) -> str:
         """解析具体任务覆盖与基础角色回退，最终返回 MaiBot 的模型任务名。"""
@@ -118,9 +138,7 @@ class LLMService:
                 messages=prompt if has_system else [{"role":"system","content":system},*prompt]
         started=time.perf_counter(); result:dict[str,Any]={}
         try:
-            result=await self.ctx.llm.generate(
-                prompt=messages, model=task, temperature=temperature, max_tokens=max_tokens,
-            )
+            result=await self.ctx.llm.generate(**self._generate_call(task,messages,temperature,max_tokens))
             success=bool(isinstance(result,dict) and result.get("success") and result.get("response"))
             failure_reason=str(result.get("error") or "empty_response") if isinstance(result,dict) else "invalid_result"
             await self._record(result=result if isinstance(result,dict) else {},task=task,

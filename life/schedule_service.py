@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -121,17 +122,60 @@ class ScheduleService:
                 "mood_valence":0.03 if kind=="leisure" else 0.0,"mood_arousal":0.0}
 
     # LLM 失败或结果不合格时使用模板骨架，保证日程服务始终可用。
+    # 生成前收集三个变化源：最近几天日程、历法背景、兴趣素材；避免每天照抄模板。
+    async def _variety_context(self, now: datetime) -> str:
+        blocks: list[str] = []
+        recent: list[str] = []
+        for offset in range(1, 6):
+            past = (now - timedelta(days=offset)).date().isoformat()
+            nodes = await self.store.get_framework(past)
+            if not nodes: continue
+            text = "；".join(str(node.get("summary") or "")[:40] for node in nodes
+                            if node.get("kind") not in {"sleep"})[:400]
+            if text: recent.append(f"{past}：{text}")
+        if recent:
+            blocks.append("最近几天的安排（时间结构可以相似，具体内容必须明显错开）：\n"+"\n".join(recent))
+        return "\n".join(blocks)
+
     async def ensure_day(self, now: datetime, personality: str, weather_text: str, force: bool=False,
-                         memory_context: dict[str,Any]|None=None) -> list[dict[str, Any]]:
+                         memory_context: dict[str,Any]|None=None,
+                         environment: dict[str,Any]|None=None) -> list[dict[str, Any]]:
         day=now.strftime("%Y-%m-%d"); existing=await self.store.get_framework(day)
         if existing and not force: return existing
         weekend=now.weekday()>=5; fallback=self._apply_memory_hints(day,self._fallback(day,weekend),memory_context)
+        variety=await self._variety_context(now)
+        calendar_bits=[str(environment.get(key)) for key in ("day_type","holiday","lunar","solar_term")
+                       if environment and environment.get(key) and environment.get(key)!="无"]
+        if calendar_bits:
+            variety=(variety+"\n今日历法："+ "，".join(calendar_bits[:4])).strip()
+        ideas: list[str] = []
+        try:
+            for note in await self.store.recent_exploration_notes(now.timestamp(),5):
+                topic=str(note.get("topic") or "").strip()
+                if topic: ideas.append(topic[:40])
+        except Exception: pass
+        try:
+            for doc in await self.store.list_bookshelf_documents(allow_private=True,limit=5):
+                title=str(doc.get("title") or "").strip()
+                if title and title!="未命名": ideas.append(f"自己的作品《{title[:30]}》")
+        except Exception: pass
+        picked=random.sample(ideas,min(3,len(ideas))) if ideas else []
+        if picked:
+            variety=(variety+"\n今天可以考虑的活动灵感（自由选用，不要硬塞）："+ "、".join(picked)).strip()
         prompt=(f"为虚拟网友麦麦生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
-                f"人格：{personality or '自然、独立、有自己的生活'}\n模板骨架：{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
-                f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁；"
-                "日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项。\n"
+                f"人格：{personality or '自然、独立、有自己的生活'}\n"
+                f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："
+                f"{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
+                f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁。"
+                f"{variety}\n"
+                "要求：\n"
+                "1) 每个节点的 summary 必须具体到'正在做什么'（例如'给连载小说写第三章''玩两把新出的游戏''整理相册并修图'），"
+                "禁止'处理自己的事情''放松、看东西和随便逛逛'这类空泛描述；\n"
+                "2) 工作/学习段写清楚主题方向，休闲段每天至少有一件事与最近几天不同；\n"
+                "3) 节假日、节气、农历和天气要自然反映在活动里；\n"
+                "4) 日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项，时间不重叠，包含夜间睡眠和至少两顿饭。\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
-                "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。时间不重叠，包含夜间睡眠和至少两顿饭。")
+                "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         raw=fallback
         if self.llm.task_available("schedule"):
             raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=2200,task_kind="schedule",request_type="daily_schedule")

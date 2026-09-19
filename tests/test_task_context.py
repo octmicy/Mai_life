@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -260,6 +261,101 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(result),3); self.assertEqual(await self.store.list_important_dates("10001"),[])
         self.assertIn("私聊用户或私聊管理员",context.send.calls[0]["text"])
+
+
+class ItemFirstContractTests(unittest.TestCase):
+    """MaiBot 1.2.0+ Item-first 契约：标记解析、items 注入与撤回改写的双兼容行为。"""
+
+    @staticmethod
+    def _planner_items(task_id:str,metadata:dict[str,str])->list[dict[str,object]]:
+        body=(f'<plugin_proactive_task id="{task_id}" plugin_id="maibot-community.mai-life">\n'
+              "插件请求你主动处理一轮聊天：mai_life_proactive\n"
+              f"附加信息：{json.dumps(metadata,ensure_ascii=False)}\n"
+              "</plugin_proactive_task>")
+        meta=lambda item_id,ts:{"item_id":item_id,"logical_turn_id":None,"timestamp":ts}
+        return [
+            {"item_type":"SystemMessageItem","meta":meta("sys-1","2026-09-18T12:00:00"),
+             "parts":[{"type":"text","text":"你是麦麦。"}]},
+            {"item_type":"UserMessageItem","meta":meta("u-1","2026-09-18T12:00:01"),
+             "parts":[{"type":"text","text":"在吗"}]},
+            {"item_type":"UserMessageItem","meta":meta("u-2","2026-09-18T12:00:02"),
+             "parts":[{"type":"text","text":body}]},
+        ]
+
+    def test_marker_parses_from_item_first_payload(self):
+        task_id=f"{HOST_TASK_PREFIX}300"
+        marker=latest_plugin_task_marker(self._planner_items(task_id,{"mai_life_event_id":"evt-9"}))
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker.task_id,task_id)
+        self.assertEqual(marker.metadata["mai_life_event_id"],"evt-9")
+        self.assertIsNone(latest_plugin_task_marker(
+            [item for item in self._planner_items(task_id,{}) if item.get("item_type")!="UserMessageItem"]))
+
+    def test_append_item_text_prefers_last_system_item(self):
+        items=self._planner_items(f"{HOST_TASK_PREFIX}1",{})
+        self.assertTrue(MaiLifePlugin._append_item_text(items,"【背景】hello"))
+        sys_item=next(item for item in items if item.get("item_type")=="SystemMessageItem")
+        self.assertIn("【背景】hello",sys_item["parts"][-1]["text"])
+        self.assertIn("你是麦麦。",sys_item["parts"][-1]["text"])
+        # system item 没有文本 part 时新增 part。
+        bare={"item_type":"SystemMessageItem",
+              "meta":{"item_id":"s","logical_turn_id":None,"timestamp":"2026-09-18T12:00:00"},"parts":[]}
+        items2=[bare,self._planner_items(f"{HOST_TASK_PREFIX}1",{})[1]]
+        self.assertTrue(MaiLifePlugin._append_item_text(items2,"note"))
+        self.assertEqual(items2[0]["parts"][-1],{"type":"text","text":"note"})
+        # 没有 system item 时插入新 item。
+        only=[self._planner_items(f"{HOST_TASK_PREFIX}1",{})[1]]
+        self.assertTrue(MaiLifePlugin._append_item_text(only,"note2"))
+        self.assertEqual(only[0]["item_type"],"SystemMessageItem")
+        self.assertEqual(only[0]["parts"][0]["text"],"note2")
+        self.assertTrue(only[0]["meta"]["item_id"].startswith("mai-life-"))
+        self.assertIn("logical_turn_id",only[0]["meta"])
+
+    def test_inject_planner_context_supports_both_contracts(self):
+        kw={"items":self._planner_items(f"{HOST_TASK_PREFIX}1",{}),"session_id":"s"}
+        res=MaiLifePlugin._inject_planner_context(kw,"note")
+        self.assertEqual(res["action"],"continue")
+        self.assertIn("note",res["modified_kwargs"]["items"][0]["parts"][-1]["text"])
+        kw={"messages":[{"role":"user","content":"hi"}]}
+        res=MaiLifePlugin._inject_planner_context(kw,"note")
+        self.assertEqual(res["modified_kwargs"]["messages"][0]["role"],"system")
+        self.assertEqual(MaiLifePlugin._inject_planner_context({"session_id":"s"},"note"),
+                         {"action":"continue"})
+
+    def test_neutralize_recalled_latest_payload_supports_both_contracts(self):
+        kw={"items":self._planner_items(f"{HOST_TASK_PREFIX}1",{})}
+        MaiLifePlugin._neutralize_recalled_latest_payload(kw)
+        user_items=[item for item in kw["items"] if item.get("item_type")=="UserMessageItem"]
+        self.assertIn("已被用户撤回",user_items[-1]["parts"][0]["text"])
+        self.assertEqual(user_items[0]["parts"][0]["text"],"在吗")
+        kw={"messages":[{"role":"user","content":"hi"}]}
+        MaiLifePlugin._neutralize_recalled_latest_payload(kw)
+        self.assertIn("已被用户撤回",kw["messages"][0]["content"])
+
+    def test_resolve_data_dir_prefers_ctx_paths_and_migrates_legacy(self):
+        tmp=tempfile.TemporaryDirectory()
+        try:
+            unified=os.path.join(tmp.name,"unified")
+            legacy=os.path.join(tmp.name,"plugin-root","data")
+            os.makedirs(legacy)
+            with open(os.path.join(legacy,"mai_life.db"),"wb") as handle:handle.write(b"legacy")
+            plugin=MaiLifePlugin()
+            class Paths:data_dir=unified
+            class Ctx:paths=Paths()
+            plugin._set_context(Ctx())
+            resolved=plugin._resolve_data_dir(os.path.join(tmp.name,"plugin-root"))
+            self.assertEqual(resolved,unified)
+            self.assertTrue(os.path.exists(os.path.join(unified,"mai_life.db")))
+            self.assertFalse(os.path.exists(os.path.join(legacy,"mai_life.db")))
+        finally:
+            tmp.cleanup()
+
+    def test_resolve_data_dir_falls_back_without_ctx_paths(self):
+        plugin=MaiLifePlugin()
+        class Ctx:paths=None
+        plugin._set_context(Ctx())
+        root=os.path.join("somewhere","Mai_life")
+        self.assertEqual(plugin._resolve_data_dir(root),os.path.join(root,"data"))
 
 
 if __name__=="__main__":unittest.main()

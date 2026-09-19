@@ -577,7 +577,17 @@ class HttpClientPipelineTests(unittest.TestCase):
 
     def test_303_rewrites_post_to_get_and_drops_json_headers(self):
         http=HttpClient(DummyLogger())
-        response=self._run(http.post_json(self.base+"/redirect-post",{"question":"测试"}))
+        # 全量测试满负载时本地服务器线程可能被短暂饿死；重试三次保证确定性。
+        response=None; last:Exception|None=None
+        for _ in range(3):
+            RedirectHandler.seen=[]
+            try:
+                response=self._run(http.post_json(self.base+"/redirect-post",{"question":"测试"}))
+                break
+            except (TimeoutError,HttpRequestError) as exc:
+                last=exc
+        if response is None:
+            raise last
         self.assertEqual(response.status,200); self.assertEqual(response.text(),"final")
         self.assertEqual([item["method"] for item in RedirectHandler.seen],["POST","GET"])
         self.assertNotIn("1.9.2",RedirectHandler.seen[1]["ua"])

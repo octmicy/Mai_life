@@ -161,9 +161,12 @@ class MaiLifeMenuRenderer:
         return max(0,int(box[2]-box[0]))
 
     @staticmethod
-    def _draw_text(draw:Any,position:tuple[int,int],text:str,*,font:Any,fill:Any,stroke_width:int=1)->None:
-        """使用同色描边合成粗体；幼圆没有独立 Bold 字体时也能保持足够字重。"""
-        draw.text(position,text,font=font,fill=fill,stroke_width=max(1,int(stroke_width)),stroke_fill=fill)
+    def _draw_text(draw:Any,position:tuple[int,int],text:str,*,font:Any,fill:Any,stroke_width:int=0)->None:
+        """描边合成粗体只适合大字号；小字号下描边会让汉字笔画糊在一起，默认不加。"""
+        if stroke_width>0:
+            draw.text(position,text,font=font,fill=fill,stroke_width=int(stroke_width),stroke_fill=fill)
+        else:
+            draw.text(position,text,font=font,fill=fill)
 
     @classmethod
     def _wrap(cls,text:str,font:Any,max_width:int)->list[str]:
@@ -240,7 +243,7 @@ class MaiLifeMenuRenderer:
         )
         draw=ImageDraw.Draw(image); x1,y1,x2,_y2=box
         draw.rounded_rectangle((x1+18,y1+22,x1+23,y1+54),radius=3,fill=accent)
-        self._draw_text(draw,(x1+34,y1+20),section.title,font=fonts["section"],fill=self._PALETTE["title"])
+        self._draw_text(draw,(x1+34,y1+20),section.title,font=fonts["section"],fill=self._PALETTE["title"],stroke_width=1)
         y=y1+66
         command_h=self._line_height(fonts["command"],3); description_h=self._line_height(fonts["description"],4)
         for index,(item,values) in enumerate(zip(section.items,layout)):
@@ -288,7 +291,7 @@ class MaiLifeMenuRenderer:
             for x,color in ((78,"#F35F60"),(108,"#F4BF4F"),(138,"#4FC26B")):
                 draw.ellipse((x-10,72,x+10,92),fill=color)
             self._draw_text(draw,(margin,132),"MAI LIFE  /  LOCAL COMMAND MENU",font=fonts["eyebrow"],fill=self._PALETTE["accent"])
-            self._draw_text(draw,(margin,166),str(title or "麦麦生活 · 指令中心"),font=fonts["title"],fill=self._PALETTE["title"],stroke_width=2)
+            self._draw_text(draw,(margin,166),str(title or "麦麦生活 · 指令中心"),font=fonts["title"],fill=self._PALETTE["title"],stroke_width=1)
             self._draw_text(draw,(margin,226),"同一条生活时间线，安静记录每一天",font=fonts["subtitle"],fill=self._PALETTE["muted"])
             badge_width=120
             draw.rounded_rectangle((self.WIDTH-margin-badge_width,144,self.WIDTH-margin,188),radius=12,

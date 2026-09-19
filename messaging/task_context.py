@@ -5,7 +5,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 
 PLUGIN_ID = "maibot-community.mai-life"
@@ -59,17 +59,39 @@ class PluginTaskMarker:
     metadata: dict[str, Any]
 
 
-def latest_plugin_task_marker(messages: Any) -> PluginTaskMarker | None:
-    """读取最后一条由 Host 直接放入历史的完整主动任务标记。"""
-    if not isinstance(messages, list):
-        return None
-    latest: PluginTaskMarker | None = None
-    for message in messages:
+def _iter_context_texts(payload: Any) -> Iterator[str]:
+    """遍历上下文载荷中的文本块，兼容两种契约。
+
+    旧版（≤1.1.x）：messages 列表，文本在 ``content``；
+    1.2.0+（Item-first）：items 列表，文本在 ``parts`` 的 text part 里。
+    """
+    if not isinstance(payload, list):
+        return
+    for message in payload:
         if not isinstance(message, Mapping):
             continue
-        # Host 虚拟任务正文以标签开头；不扫描普通聊天正文，避免用户文本伪造任务标签。
-        text = _content_text(message.get("content")).lstrip()
-        match = _TASK_BLOCK_RE.match(text)
+        parts = message.get("parts")
+        if isinstance(parts, list) and (message.get("item_type") or "parts" in message):
+            for part in parts:
+                if isinstance(part, Mapping) and str(part.get("type") or "").lower() == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        yield text
+        else:
+            yield _content_text(message.get("content"))
+
+
+def latest_plugin_task_marker(payload: Any) -> PluginTaskMarker | None:
+    """读取最后一个由 Host 直接放入上下文的完整主动任务标记。
+
+    ``payload`` 可以是旧版 messages 或 1.2.0+ items，由 :func:`_iter_context_texts`
+    统一提取文本；只认以标签开头的文本块，不扫描普通聊天正文，避免用户文本伪造任务标签。
+    """
+    if not isinstance(payload, list):
+        return None
+    latest: PluginTaskMarker | None = None
+    for text in _iter_context_texts(payload):
+        match = _TASK_BLOCK_RE.match(text.lstrip())
         if not match:
             continue
         attrs = {item.group("name"): item.group("value") for item in _ATTRIBUTE_RE.finditer(match.group("attrs"))}

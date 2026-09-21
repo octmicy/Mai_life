@@ -23,16 +23,29 @@ class LifeStateEngine:
     def _clamp(value: float, low: float, high: float) -> float:
         return max(low,min(high,value))
 
+    def _cycle_offset(self, now: datetime) -> int | None:
+        """返回距周期起始日的天数（取模周期长度）；未启用或未配置时返回 None。"""
+        cfg=self.config.state
+        if not cfg.body_cycle_enabled: return None
+        try: start=date.fromisoformat(cfg.body_cycle_start_date)
+        except ValueError: return None
+        return (now.date()-start).days % cfg.body_cycle_length_days
+
     def _body_cycle(self, now: datetime) -> str:
         cfg=self.config.state
         if not cfg.body_cycle_enabled: return "未启用"
         try:
-            start=date.fromisoformat(cfg.body_cycle_start_date)
+            date.fromisoformat(cfg.body_cycle_start_date)
         except ValueError:
             return "已启用但未配置起始日期"
-        offset=(now.date()-start).days % cfg.body_cycle_length_days
+        offset=self._cycle_offset(now)
         if offset<cfg.body_cycle_period_days: return f"周期第{offset+1}天"
         return f"周期第{offset+1}天，非经期"
+
+    def _in_period(self, now: datetime) -> bool:
+        """是否处于经期；经期内只做轻度状态修正（精力消耗略增、心情轻抑）。"""
+        offset=self._cycle_offset(now)
+        return offset is not None and offset<self.config.state.body_cycle_period_days
 
     # 状态数值由确定性规则推进，LLM 不得直接改写核心数值。
     async def advance(self, now: datetime, segment: dict[str, Any] | None, scene: dict[str, Any] | None) -> dict[str, Any]:
@@ -45,22 +58,26 @@ class LifeStateEngine:
         grace=float(runtime.get("awake_grace_until",0))>now_ts
         old_phase=str(runtime.get("phase") or "awake")
         old_sleep_started=float(runtime.get("started_at",now_ts))
-        old_sleep_event=str(runtime.get("last_event") or "")
+        # 睡眠段类型从 last_event 还原（睡眠段内逐次同步），午休不做梦。
+        old_sleep_kind=str(runtime.get("last_event") or "").removeprefix("进入")
+        in_period=self._in_period(now)
         effective_sleep=scheduled_sleep and not grace
         woke=False; sleep_duration=0.0
         # 睡眠恢复与清醒消耗分支互斥，避免同一时间段重复计算。
         if effective_sleep:
             new_phase="deep_sleep" if kind=="sleep" and elapsed>=0.5 else "light_sleep"
-            if old_phase not in {"falling_asleep","light_sleep","deep_sleep","sleeping_again"}:
-                runtime.update({"phase":"falling_asleep","started_at":min(now_ts,float(state.get("last_updated_at",now_ts))),"last_event":f"进入{kind}"})
+            if old_phase not in {"falling_asleep","light_sleep","deep_sleep"}:
+                runtime.update({"phase":"falling_asleep","started_at":min(now_ts,float(state.get("last_updated_at",now_ts)))})
                 new_phase="falling_asleep"
             runtime["phase"]=new_phase
-            recover=(8.0 if kind=="sleep" else 4.0)*elapsed
+            # 睡眠段延续时也同步类型：nap 紧接 sleep 时升级为 sleep，避免整晚睡眠被误判为午休。
+            runtime["last_event"]=f"进入{kind}"
+            recover=(2.5 if kind=="sleep" else 1.4)*elapsed
             state["energy"]=self._clamp(float(state.get("energy",70))+recover,0,100)
             state["hunger"]=self._clamp(float(state.get("hunger",20))+1.0*elapsed,0,100)
             state["mood_arousal"]=self._clamp(float(state.get("mood_arousal",0.6))-0.2*elapsed,0,1)
         else:
-            if old_phase in {"falling_asleep","light_sleep","deep_sleep","sleeping_again"}:
+            if old_phase in {"falling_asleep","light_sleep","deep_sleep"}:
                 sleep_duration=max(0,(now_ts-float(runtime.get("started_at",now_ts)))/3600)
                 woke=True; runtime.update({"phase":"awake","started_at":now_ts,"last_event":"自然醒来"})
             elif grace:
@@ -68,6 +85,7 @@ class LifeStateEngine:
             else:
                 runtime["phase"]="awake"
             load={"work":2.1,"study":1.8,"travel":1.4,"leisure":1.0,"meal":0.5,"rest":0.3}.get(kind,1.1)
+            if in_period: load*=1.1
             state["energy"]=self._clamp(float(state.get("energy",70))-load*elapsed,0,100)
             state["hunger"]=self._clamp(float(state.get("hunger",20))+5.0*elapsed,0,100)
             state["mood_arousal"]=self._clamp(float(state.get("mood_arousal",0.6))+0.05*elapsed,0,1)
@@ -76,8 +94,11 @@ class LifeStateEngine:
         mood=float(state.get("mood_valence",0))
         mood += (-0.03*elapsed if energy<30 else 0.01*elapsed if energy>70 else 0)
         mood += -0.04*elapsed if hunger>75 else 0
+        if in_period: mood += -0.004*elapsed
         # 指数式基线回归：离线长时段补算时既不欠账也不会过冲穿越基线。
-        mood += (MOOD_BASELINE - mood) * (1.0 - math.exp(-MOOD_REGRESSION_PER_HOUR * elapsed))
+        # 饥饿/精力持续负面驱动时回归翻倍，避免平衡点钉死在 -1 钳位边界。
+        rate=MOOD_REGRESSION_PER_HOUR*2 if (hunger>75 or energy<30) else MOOD_REGRESSION_PER_HOUR
+        mood += (MOOD_BASELINE - mood) * (1.0 - math.exp(-rate * elapsed))
         state["mood_valence"]=self._clamp(mood,-1,1)
         if energy<20:
             state["health_status"]="tired"; state["health_note"]="精力很低，需要休息"
@@ -92,7 +113,7 @@ class LifeStateEngine:
         state["last_updated_at"]=now_ts
         runtime["last_event"]=runtime.get("last_event","")
         await self.store.save_state(state); await self.store.save_sleep_runtime(runtime)
-        if self.config.memory.enabled and woke and sleep_duration>=3 and "nap" not in old_sleep_event:
+        if self.config.memory.enabled and woke and sleep_duration>=3 and old_sleep_kind!="nap":
             await self.generate_dream(state, old_sleep_started, sleep_duration,now)
         return {"state":state,"woke":woke,"sleep_duration":sleep_duration}
 

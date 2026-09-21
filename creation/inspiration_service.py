@@ -23,7 +23,8 @@ class InspirationService:
         text=" ".join(value.replace("\x00","").split())
         if text.lower().startswith("data:"):return ""
         compact="".join(text.split())
-        if len(compact)>512 and re.fullmatch(r"[A-Za-z0-9+/=_-]+",compact):return ""
+        # 纯 base64 特征串（无空白的连续 base64 字符）超过 64 字符即视为二进制载荷，拒绝进入灵感链。
+        if len(compact)>64 and re.fullmatch(r"[A-Za-z0-9+/=_-]+",compact):return ""
         return text[:limit]
 
     async def collect(self,now:Any)->int:

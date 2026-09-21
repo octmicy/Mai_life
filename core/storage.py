@@ -29,14 +29,25 @@ STATE_HISTORY_RETENTION_DAYS = 180
 
 
 class LifeStore:
-    def __init__(self, data_dir: str, *, journal_mode: str = "memory") -> None:
+    def __init__(self, data_dir: str, *, journal_mode: str = "memory",
+                 logger: Any = None) -> None:
         self.data_dir = Path(data_dir)
         self.path = self.data_dir / "mai_life.db"
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = asyncio.Lock()
+        self._logger = logger
         # 测试用临时库默认 memory（回滚日志放内存，不落盘，避免 -journal 文件残留）；
         # 生产 data 库由 plugin.py 显式传入 delete，保留崩溃回滚保护。
         self._journal_mode = str(journal_mode or "memory").strip().casefold() or "memory"
+
+    def _log_error(self, message: str) -> None:
+        """库级告警（如整库替换）必须留痕，避免用户数据被静默降级成备份文件。"""
+        if self._logger is None:
+            return
+        try:
+            self._logger.error(f"[MaiLife] {message}")
+        except Exception:
+            pass
 
     # 初始化可重复调用；同一 Runner 内不会重复打开 SQLite 连接。
     async def initialize(self) -> None:
@@ -46,8 +57,9 @@ class LifeStore:
                 self._open_checked()
             try:
                 self._create_schema()
-            except sqlite3.DatabaseError:
-                # 结构无法兼容时保留原库，再用当前 Schema 建立新库。
+            except sqlite3.DatabaseError as exc:
+                # 结构无法兼容时保留原库，再用当前 Schema 建立新库；必须留痕。
+                self._log_error(f"数据库结构不兼容，将保留原库备份并重建（原因: {exc}）")
                 self._replace_incompatible_database()
                 self._create_schema()
 
@@ -60,6 +72,7 @@ class LifeStore:
             while backup.exists():
                 backup=self.path.with_suffix(f".incompatible.{stamp}.{counter}.db"); counter+=1
             shutil.move(str(self.path),str(backup))
+            self._log_error(f"原数据库已备份为 {backup.name}，请检查后决定是否迁回数据")
         self._conn=self._connect()
 
     def _connect(self) -> sqlite3.Connection:
@@ -454,6 +467,13 @@ class LifeStore:
         self._ensure_column("group_observations", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("recall_events", "summary_expires_at", "REAL NOT NULL DEFAULT 0")
         self._ensure_column("group_user_activity", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        # 状态表同样可能缺列（旧库没有 mood_arousal/body_cycle 等）；缺列时末尾的
+        # 种子 INSERT 会失败并被误判为库不兼容而整库重置，必须先补列。
+        self._ensure_column("global_state", "mood_arousal", "REAL NOT NULL DEFAULT 0.65")
+        self._ensure_column("global_state", "body_cycle", "TEXT NOT NULL DEFAULT '未启用'")
+        self._ensure_column("sleep_runtime", "awake_grace_until", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column("sleep_runtime", "woken_count", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("sleep_runtime", "last_event", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_proactive_host_task ON proactive_events(host_task_id,status)"
         )
@@ -491,12 +511,16 @@ class LifeStore:
         self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
-            """INSERT OR IGNORE INTO global_state VALUES
-            (1,70,20,0,0.65,'normal','状态正常','awake','家里','自由活动','未启用',?)""",
+            """INSERT OR IGNORE INTO global_state
+            (id,energy,hunger,mood_valence,mood_arousal,health_status,health_note,
+             sleep_phase,current_location,current_activity,body_cycle,last_updated_at)
+            VALUES(1,70,20,0,0.65,'normal','状态正常','awake','家里','自由活动','未启用',?)""",
             (now,),
         )
         self.conn.execute(
-            "INSERT OR IGNORE INTO sleep_runtime VALUES(1,'awake',?,0,0,'初始化')",
+            """INSERT OR IGNORE INTO sleep_runtime
+            (id,phase,started_at,awake_grace_until,woken_count,last_event)
+            VALUES(1,'awake',?,0,0,'初始化')""",
             (now,),
         )
         self.conn.execute("INSERT OR IGNORE INTO memory_runtime(id) VALUES(1)")
@@ -769,17 +793,6 @@ class LifeStore:
                 result[str(data["framework_id"])]=data
         return result
 
-    async def completed_unapplied_scenes(self, day: str, minute: int) -> list[dict[str, Any]]:
-        async with self._lock:
-            rows = self.conn.execute(
-                """SELECT s.*,f.end_minute FROM detailed_scenes s JOIN daily_framework f ON f.id=s.framework_id
-                WHERE f.day=? AND f.end_minute<=? AND s.applied=0""", (day, minute)
-            ).fetchall()
-            result=[]
-            for row in rows:
-                item=dict(row); item["state_deltas"]=json.loads(item["state_deltas"] or "{}"); result.append(item)
-            return result
-
     async def mark_scene_applied(self, framework_id: str) -> None:
         async with self._lock:
             self.conn.execute("UPDATE detailed_scenes SET applied=1 WHERE framework_id=?", (framework_id,))
@@ -919,14 +932,22 @@ class LifeStore:
                 result[str(row[0])][int(row[1])]=int(row[2])
         return result
 
-    async def recent_interactions(self, user_id: str, limit: int=8) -> list[str]:
+    async def recent_interactions(self, user_id: str, limit: int=8, *, within_days: float=14) -> list[str]:
+        """最近互动摘要；within_days 限制时效，避免把很久以前的话题当“最近消息”。"""
         async with self._lock:
             rows=self.conn.execute(
                 """SELECT content_summary FROM interaction_events
-                WHERE user_id=? AND kind='message' ORDER BY created_at DESC LIMIT ?""",
-                (user_id,limit),
+                WHERE user_id=? AND kind='message' AND created_at>? ORDER BY created_at DESC LIMIT ?""",
+                (user_id,time.time()-max(0.0,float(within_days))*86400,limit),
             ).fetchall()
             return [str(row[0]) for row in reversed(rows) if str(row[0]).strip()]
+
+    @staticmethod
+    def _backlog_label(summary: str, created_at: float, now: float) -> str:
+        """积压摘要加相对时间，避免模型把几小时前的消息当成刚发生的。"""
+        hours=(now-float(created_at or 0))/3600
+        prefix=f"约{max(1,round(hours))}小时前：" if hours>=1 else ""
+        return prefix+str(summary or "")
 
     async def add_rest_backlog(self, user_id: str, summary: str, now: float,
                                source_message_id: str="") -> None:
@@ -940,15 +961,17 @@ class LifeStore:
     async def consume_rest_backlogs(self, user_id: str) -> list[str]:
         async with self._lock:
             with self._tx() as conn:
-                rows=conn.execute("SELECT id,summary FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 3",(user_id,)).fetchall()
+                rows=conn.execute("SELECT id,summary,created_at FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 5",(user_id,)).fetchall()
                 if rows:
                     conn.executemany("UPDATE rest_backlogs SET consumed=1 WHERE id=?",[(r[0],) for r in rows])
-                return [str(r[1]) for r in rows]
+                now=time.time()
+                return [self._backlog_label(str(r[1]),float(r[2]),now) for r in rows]
 
     async def peek_rest_backlogs(self, user_id: str) -> list[str]:
         async with self._lock:
-            rows=self.conn.execute("SELECT summary FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 3",(user_id,)).fetchall()
-            return [str(r[0]) for r in rows]
+            rows=self.conn.execute("SELECT summary,created_at FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 5",(user_id,)).fetchall()
+            now=time.time()
+            return [self._backlog_label(str(r[0]),float(r[1]),now) for r in rows]
 
     # 批量版本使用窗口函数保留“每用户最多 3 条、按创建时间排序”的原有语义。
     async def peek_rest_backlogs_batch(self, user_ids: Iterable[str]) -> dict[str, list[str]]:
@@ -959,14 +982,15 @@ class LifeStore:
         marks=",".join("?" for _ in ids)
         async with self._lock:
             rows=self.conn.execute(
-                f"""SELECT user_id,summary FROM (
-                    SELECT user_id,summary,ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) rn
+                f"""SELECT user_id,summary,created_at FROM (
+                    SELECT user_id,summary,created_at,ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) rn
                     FROM rest_backlogs WHERE user_id IN ({marks}) AND consumed=0
-                ) WHERE rn<=3 ORDER BY user_id""",
+                ) WHERE rn<=5 ORDER BY user_id""",
                 ids,
             ).fetchall()
+            now=time.time()
             for row in rows:
-                result[str(row[0])].append(str(row[1]))
+                result[str(row[0])].append(self._backlog_label(str(row[1]),float(row[2]),now))
         return result
 
     async def add_proactive_pending(self, event_id: str, user_id: str, opportunity_id: str, stream_id: str, now: float, expires_at: float) -> None:
@@ -1422,6 +1446,16 @@ class LifeStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def list_group_member_names(self,limit:int=200)->list[str]:
+        """群成员昵称去重列表（按最近活跃排序）——供搜索查询词隐私清洗。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT DISTINCT display_name FROM group_user_activity "
+                "WHERE display_name!='' ORDER BY last_active_at DESC LIMIT ?",
+                (max(1,min(500,int(limit))),),
+            ).fetchall()
+            return [" ".join(str(row[0] or "").split())[:120] for row in rows if str(row[0] or "").strip()]
+
     async def unique_group_for_stream(self,stream_id:str)->str:
         async with self._lock:
             rows=self.conn.execute(
@@ -1854,6 +1888,8 @@ class LifeStore:
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
+                # 休息积压按 7 天保留期清理，避免关闭增强或长期静默后无界堆积。
+                conn.execute("DELETE FROM rest_backlogs WHERE created_at<=?",(now-7*86400,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
                 conn.execute("DELETE FROM message_turn_sources WHERE expires_at<=?",(now,))
                 conn.execute(
@@ -2098,6 +2134,15 @@ class LifeStore:
         async with self._lock:
             row=self.conn.execute("SELECT * FROM memory_runtime WHERE id=1").fetchone()
             return dict(row) if row else {}
+
+    async def has_date_trigger(self, date_id: int, occurrence_date: str) -> bool:
+        """该日期的某次发生是否已生成过任何提醒（用于错过当天的补算判断）。"""
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT 1 FROM date_trigger_events WHERE date_id=? AND occurrence_date=? LIMIT 1",
+                (int(date_id),str(occurrence_date)),
+            ).fetchone()
+            return row is not None
 
     async def reserve_date_trigger(self, date_id: int, occurrence_date: str,
                                    lead_days: int, now: float) -> bool:
@@ -2424,11 +2469,27 @@ class LifeStore:
                         (user["user_id"],day_end),
                     ).fetchone()[0]
                     if msg_count==0 and latest_before and day_end-float(latest_before)>7*86400:
-                        delta=-0.25
+                        delta=-0.4
                     current_temperature=float(user["temperature"])
-                    floor=min(20.0,current_temperature) if delta<0 else 0.0
+                    floor=min(10.0,current_temperature) if delta<0 else 0.0
                     temperature=max(floor,min(100.0,current_temperature+delta))
                     conn.execute("UPDATE users SET temperature=?,last_relation_day=? WHERE user_id=?",(temperature,day,user["user_id"]))
+
+    async def first_interaction_day(self, user_id: str) -> str:
+        """该用户最早一条互动所在的自然日（YYYY-MM-DD）；无互动返回空串。
+
+        供关系补算回看到建档/首次互动日，避免新用户前几天的增益永久丢失。
+        """
+        if not user_id:
+            return ""
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT MIN(created_at) FROM interaction_events WHERE user_id=? AND kind='message'",
+                (str(user_id),),
+            ).fetchone()
+            if not row or not row[0]:
+                return ""
+            return time.strftime("%Y-%m-%d", time.localtime(float(row[0])))
 
     async def get_weather(self) -> dict[str, Any]:
         async with self._lock:

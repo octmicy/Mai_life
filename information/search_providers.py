@@ -53,6 +53,9 @@ class SearchProvider(ABC):
 class PlaywrightProvider(SearchProvider):
     """浏览器搜索策略：无 Key、单条目 "browser"，空结果与内部异常不惩罚。"""
 
+    # 验证码拦截与浏览器侧故障不冷却浏览器条目，仅网络与超时惩罚。
+    _NO_PENALTY=frozenset({"blocked","browser_error","playwright_unavailable","internal"})
+
     @staticmethod
     def matches(provider_type:str)->bool:
         return provider_type=="playwright"
@@ -80,7 +83,9 @@ class PlaywrightProvider(SearchProvider):
                 max_results=int(self.service.config.search_api.max_results),
             )
         except SearchBackendError as exc:
-            raise SearchAttemptError(str(exc),error_class=str(exc.error_class or "network")) from exc
+            error_class=str(exc.error_class or "network")
+            raise SearchAttemptError(str(exc),error_class=error_class,
+                penalize=error_class not in self._NO_PENALTY) from exc
         except Exception:
             raise SearchAttemptError("浏览器搜索内部异常",error_class="internal",penalize=False)
         if not parsed.results:

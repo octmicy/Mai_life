@@ -1,4 +1,4 @@
-"""Mai_life v1.14.1 插件入口。"""
+"""Mai_life v1.14.2 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -25,7 +25,7 @@ from .life.continuity import ContinuityService
 from .life.life_state import LifeStateEngine
 from .life.memory_service import MemoryService
 from .life.proactive import ProactiveEngine
-from .life.rest_gate import RestGate
+from .life.rest_gate import BLOCK_REASON,RestGate
 from .life.schedule_service import ScheduleService,hhmm
 from .messaging.adapter_compat import adapter_name,group_identity,recall_notice,sender_identity
 from .messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
@@ -45,6 +45,17 @@ ADMIN_SCOPE_ALIASES:dict[str,str]={
     "来源":"sources","书柜":"bookshelf","统计":"tokens","主动":"proactive","搜索":"search",
 }
 PRIVATE_COMMAND_ACCESS_DENIED="该指令仅对已配置并启用的私聊用户或私聊管理员开放。"
+
+_SLEEP_PHASE_ZH={"awake":"清醒","woken":"被叫醒","falling_asleep":"入睡中",
+                 "light_sleep":"浅睡","deep_sleep":"深睡"}
+
+def _mood_label(value:float)->str:
+    """心情效价值翻译为中文档位，避免用户面对 -1~+1 的裸浮点。"""
+    if value<=-0.5:return "低落"
+    if value<=-0.15:return "有些闷"
+    if value<0.25:return "平静"
+    if value<0.6:return "不错"
+    return "很好"
 
 
 class MaiLifePlugin(MaiBotPlugin):
@@ -77,6 +88,7 @@ class MaiLifePlugin(MaiBotPlugin):
         # 以下运行态只保存短期归因，不替代 SQLite 中可跨热重载恢复的事实记录。
         self._session_runtime:dict[str,dict[str,Any]]={}
         self._group_turns:dict[tuple[str,str],dict[str,Any]]={}
+        self._group_sessions:set[str]=set()
         self._group_turn_generation=0
         self._reply_confirmations:dict[tuple[str,str],dict[str,Any]]={}
         self._active_tasks=ActiveTaskRegistry()
@@ -87,6 +99,18 @@ class MaiLifePlugin(MaiBotPlugin):
         return all((self._store,self._env,self._llm,self._state,self._schedule,self._rest,self._proactive,
                     self._debouncer,self._continuity,self._memory,self._information,
                     self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall))
+
+    def get_components(self)->list[dict[str,Any]]:
+        """组件聊天作用域：截图会直接向当前会话发图，mai_life_browse_web 仅限私聊。
+
+        chat_scope 必须写在组件声明顶层（Host 注册时顶层优先于 metadata），
+        与 @Tool 装饰器参数无关，唯一可靠方式是重写本方法。
+        """
+        components=super().get_components()
+        for component in components:
+            if str(component.get("name") or "")=="mai_life_browse_web":
+                component["chat_scope"]="private"
+        return components
 
     def _resolve_data_dir(self,plugin_root:str)->str:
         """数据目录：SDK 2.6+ 优先使用统一持久化目录 ctx.paths.data_dir。
@@ -114,7 +138,8 @@ class MaiLifePlugin(MaiBotPlugin):
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         await self._active_tasks.reset()
         root=os.path.dirname(os.path.abspath(__file__))
-        self._store=LifeStore(self._resolve_data_dir(root),journal_mode="delete")
+        self._store=LifeStore(self._resolve_data_dir(root),journal_mode="delete",
+                              logger=getattr(self.ctx,"logger",None))
         await self._store.initialize()
         if not self.config.recall.enabled or not self.config.recall.cache_summary_enabled:
             await self._store.clear_recall_summaries()
@@ -158,6 +183,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._information:await self._information.close()
         if self._recall:self._recall.clear()
         self._session_runtime.clear(); self._group_turns.clear(); self._group_turn_generation=0
+        self._group_sessions.clear()
         self._reply_confirmations.clear(); self._message_tasks.clear()
         if self._store:await self._store.close()
         self._command_replies=None
@@ -176,6 +202,7 @@ class MaiLifePlugin(MaiBotPlugin):
         await self._active_tasks.reset()
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         self._reply_confirmations.clear(); self._group_turns.clear(); self._group_turn_generation=0
+        self._group_sessions.clear()
         if self._group_observer:await self._group_observer.reset()
         # 热更新按 scope 分发到各服务：只有 self 会替换插件配置实例，此时才全量下发；
         # bot 只重载人格，model 只刷新模型健康，其他服务继续持有同一个已校验实例。
@@ -324,13 +351,23 @@ class MaiLifePlugin(MaiBotPlugin):
             )
 
     async def _settle_relationships(self,now:datetime)->None:
-        """按自然日补算离线期间关系变化，最多回看一年即可覆盖温度下限。"""
+        """按自然日补算离线期间关系变化，最多回看一年即可覆盖温度下限。
+
+        last_relation_day 为空的用户（新建档案或升级用户）回看到其首次互动日，
+        避免加入后前几天的互动增益永久丢失。
+        """
         if not self._store:return
         users=await self._store.list_users()
         if not users:return
         target=now.date()-timedelta(days=1); starts=[]
         for user in users:
-            try:starts.append(date.fromisoformat(str(user.get("last_relation_day") or ""))+timedelta(days=1))
+            raw=str(user.get("last_relation_day") or "")
+            if raw:
+                try:
+                    starts.append(date.fromisoformat(raw)+timedelta(days=1)); continue
+                except ValueError:pass
+            first=await self._store.first_interaction_day(str(user.get("user_id") or ""))
+            try:starts.append(date.fromisoformat(first))
             except ValueError:starts.append(target)
         current=max(target-timedelta(days=365),min(starts))
         while current<=target:
@@ -652,6 +689,7 @@ class MaiLifePlugin(MaiBotPlugin):
     async def _process_group_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
                                      initial_sources:list[str])->dict[str,Any]:
         """群聊管线：目录登记、可选防抖、撤回关联和后台公共话题观察（不注入私聊关系或生活隐私）。"""
+        if session:self._group_sessions.add(session)
         group_id,group_name=group_identity(message)
         if group_id:
             await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
@@ -707,20 +745,11 @@ class MaiLifePlugin(MaiBotPlugin):
     async def _process_private_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
                                        initial_sources:list[str])->dict[str,Any]:
         """私聊管线：建立本轮运行态、防抖收口、互动记录与休息闸门。"""
-        # 私聊新入站会结束旧主动任务归因，并建立本轮的轻量意图/媒介上下文。
+        # 运行态（意图/媒介/消息 ID）只对真正进入主链的消息写入；
+        # 被闸门阻断/命令/未配置用户的消息不写，避免覆写上一轮的待发送归因。
         media_hint:list[str]|None=None
         if session:
             initial_text=direct_text(message); initial_media=media_types(message); media_hint=initial_media
-            self._session_runtime[session]={
-                "user_id":uid,"message_id":mid,"source_message_ids":initial_sources,
-                "intent":classify_intent(initial_text,initial_media),"recall_query":is_recall_query(initial_text),
-                "media":initial_media,"platform":str(message.get("platform") or "qq"),
-                "adapter":adapter_name(message),"chat_type":"private","updated_at":time.time(),
-            }
-            # 私聊 stream 不会被 Focus 合并，可以按 session 取消上一轮待发送内容。
-            await self._cancel_reply_confirmations(session)
-            previous=await self._active_tasks.note_inbound(session,time.time())
-            await self._supersede_active_task(previous)
         if not uid or is_command(message):
             return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
         user=await self._store.get_user(uid)
@@ -748,10 +777,6 @@ class MaiLifePlugin(MaiBotPlugin):
         except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 合并撤回轮次注册失败，消息继续处理: {exc}")
         if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
         intent=classify_intent(text,media)
-        self._session_runtime[session]={"user_id":uid,"message_id":mid,"source_message_ids":source_ids,
-                                        "intent":intent,"recall_query":is_recall_query(text),"media":media,
-                                        "platform":str(merged.get("platform") or "qq"),"adapter":adapter_name(merged),
-                                        "chat_type":"private","updated_at":time.time()}
         await self._store.record_interaction(
             uid,text or f"发送了{','.join(media) or '一条消息'}",
             self._env.now().timestamp(),self._env.now().hour,source_message_id=mid,
@@ -768,17 +793,34 @@ class MaiLifePlugin(MaiBotPlugin):
         gate_allowed,gate_reason=await self._rest.decide(uid,text,self._env.now(),context.get("current"),session_id=session,message_id=mid)
         if not gate_allowed:
             if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
-            await self._store.add_rest_backlog(
-                uid,text or f"发送了{','.join(media) or '一条消息'}",
-                self._env.now().timestamp(),source_message_id=mid,
-            )
+            if gate_reason!=BLOCK_REASON:
+                # 明确勿扰的消息不进 backlog，避免次日回复主动提起用户的勿扰表达。
+                await self._store.add_rest_backlog(
+                    uid,text or f"发送了{','.join(media) or '一条消息'}",
+                    self._env.now().timestamp(),source_message_id=mid,
+                )
             await self._discard_recalled_private_turn(session,uid,mid,source_ids)
             self.ctx.logger.info(f"[MaiLife] 休息闸门阻断 user={uid} reason={gate_reason}")
             return {"action":"abort"}
         if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
+        # 只有真正进入主链的消息才写入运行态、取消上一轮待发送内容并取代旧主动任务归因；
+        # 被闸门阻断/命令/未配置用户的消息不写，避免“急事回复被静默丢弃”与醒来提交错归因。
+        if session:
+            self._session_runtime[session]={"user_id":uid,"message_id":mid,"source_message_ids":source_ids,
+                                            "intent":intent,"recall_query":is_recall_query(text),"media":media,
+                                            "platform":str(merged.get("platform") or "qq"),"adapter":adapter_name(merged),
+                                            "chat_type":"private","updated_at":time.time()}
+            await self._cancel_reply_confirmations(session)
+            previous=await self._active_tasks.note_inbound(session,time.time())
+            await self._supersede_active_task(previous)
         kwargs["message"]=merged
         self.ctx.logger.debug(f"[MaiLife] 消息收口完成 session={session} {reason} media={media}")
         return {"action":"continue","modified_kwargs":kwargs}
+
+    def _is_group_session(self,session_id:str)->bool:
+        """会话是否为群聊：来自群消息管线登记或 Focus 共享 session 的群轮次。"""
+        if not session_id:return False
+        return session_id in self._group_sessions or any(key[0]==session_id for key in self._group_turns)
 
     async def _prompt_payload(self,session_id:str,consume_backlog:bool=False)->dict[str,Any]|None:
         """只为已配置私聊组装背景，并按调用阶段选择读取或消费休息积压。"""
@@ -789,12 +831,16 @@ class MaiLifePlugin(MaiBotPlugin):
             self.ctx.logger.debug(f"[MaiLife] 被动回复增强跳过：session={session_id} 未匹配到已启用私聊用户（请检查「私聊用户」配置）")
             return None
         now=self._env.now(); runtime=self._session_runtime.get(session_id) or {}
+        continuity=await self._store.get_continuity(user["user_id"])
+        # 连续话题有时效：超过 14 天未互动的话题视为已结束，不作为“未完话题”注入。
+        if continuity and now.timestamp()-float(continuity.get("updated_at") or 0)>14*86400:
+            continuity=dict(continuity); continuity["unresolved_topics"]=[]
         backlogs=await (self._store.consume_rest_backlogs(user["user_id"]) if consume_backlog else self._store.peek_rest_backlogs(user["user_id"]))
         return {"state":await self._store.get_state(),"weather":await self._store.get_weather() or {"description":"天气未知"},
                 "context":await self._schedule.context(now),"user":user,"dream":await self._store.latest_dream(),"backlogs":backlogs,
                 "environment":self._env.snapshot(now,platform=str(runtime.get("platform") or "qq"),adapter=str(runtime.get("adapter") or "unknown"),
                                                  chat_type="private",media=runtime.get("media") or ["text"]),
-                "continuity":await self._store.get_continuity(user["user_id"]),"intent":str(runtime.get("intent") or ""),
+                "continuity":continuity,"intent":str(runtime.get("intent") or ""),
                 "memory":await self._memory.context_for_user(user,now),
                 "information":await self._information.context(now),
                 "bookshelf":await self._bookshelf.context_for_user(user)}
@@ -897,7 +943,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                              int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
                                              bookshelf=payload["bookshelf"])
         if self._recall and self.config.recall.enabled:
-            suffix+=await self._recall.planner_context(session)
+            suffix+=await self._recall.planner_context(session,include_ids=not self._is_group_session(session))
             runtime=self._session_runtime.get(session) or {}
             if runtime.get("recall_query"):
                 user=await self._user_by_session(session)
@@ -942,7 +988,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                              min(2400,int(self.config.context.prompt_max_chars)),memory=payload["memory"],information=payload["information"],
                                              bookshelf=payload["bookshelf"])
         if self._recall and self.config.recall.enabled:
-            suffix+=await self._recall.planner_context(session)
+            suffix+=await self._recall.planner_context(session,include_ids=not self._is_group_session(session))
             runtime=self._session_runtime.get(session) or {}
             if runtime.get("recall_query"):
                 user=await self._user_by_session(session)
@@ -1307,7 +1353,14 @@ class MaiLifePlugin(MaiBotPlugin):
             image_bytes=await self._information.browse_screenshot(url)
         except Exception as exc:
             self.ctx.logger.warning(f"[MaiLife] 网页截图失败: {exc}")
-            return {"success":False,"content":"网页打开或截图失败，可能无法访问或页面较复杂。"}
+            # 透传后端错误类别，避免“未装 Chromium/地址不允许”被吞成笼统文案。
+            error_class=str(getattr(exc,"error_class","") or "")
+            content={"playwright_unavailable":"Playwright 依赖未安装，请 pip install playwright。",
+                     "browser_unavailable":"Chromium 浏览器不可用，请运行 python -m playwright install chromium。",
+                     "invalid_response":"网页地址无效或不满足访问要求（仅公网 http/https）。",
+                     "network":"网页打开超时或网络不可达，请稍后重试。",
+                     }.get(error_class,"网页打开或截图失败，可能无法访问或页面较复杂。")
+            return {"success":False,"content":content}
         if not image_bytes:
             return {"success":False,"content":"网页截图内容为空。"}
         sent=await self._command_replies.send_image_bytes_with_fallback(
@@ -1425,8 +1478,10 @@ class MaiLifePlugin(MaiBotPlugin):
         uid=str(kwargs.get("user_id") or "")
         user=await self._command_user(kwargs)
         if not user:return await self._send_command(kwargs,self._profile_required_notice(uid))
-        text=(f"关系角色：{user.get('role','friend')}\n关系温度：{float(user['temperature']):.1f}/100\n"
-              f"关系阶段：{relationship_stage(float(user['temperature']))}\n每日主动上限：{user.get('daily_proactive_max',1)}")
+        temperature=float(user['temperature'])
+        peak="（已顶峰）" if temperature>=99.9 else ""
+        text=(f"关系角色：{user.get('role','friend')}\n关系温度：{temperature:.1f}/100{peak}\n"
+              f"关系阶段：{relationship_stage(temperature)}\n每日主动上限：{user.get('daily_proactive_max',1)}")
         return await self._send_command(kwargs,text)
 
     @Command(name="/麦麦撤回",pattern=r"^(?:/麦麦撤回|/mai_recalled)(?=\s|$)",description="查询本人私聊的最近撤回摘要")
@@ -1645,14 +1700,21 @@ class MaiLifePlugin(MaiBotPlugin):
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
-        return (f"麦麦生活 v{PLUGIN_VERSION}\n精力：{state.get('energy',0):.0f}/100  饥饿：{state.get('hunger',0):.0f}/100\n"
-                f"心情：{state.get('mood_valence',0):.2f}  睡眠：{state.get('sleep_phase')}\n"
-                f"场景：{state.get('current_activity')}\n日程：{(context.get('current') or {}).get('summary','无')}\n"
-                f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
+        segment=str((context.get("current") or {}).get("summary") or "无")
+        activity=str(state.get("current_activity") or "自由活动")
+        mood=float(state.get("mood_valence",0))
+        diary_text=f"最近一篇 {diaries[0]['day']}" if diaries else "暂无"
+        return (f"麦麦生活 v{PLUGIN_VERSION}\n精力：{float(state.get('energy',0)):.0f}/100（0 耗尽、100 满电）  "
+                f"饥饿：{float(state.get('hunger',0)):.0f}/100（0 刚吃饱、100 非常饿）\n"
+                f"心情：{mood:+.2f}（{_mood_label(mood)}）  "
+                f"睡眠：{_SLEEP_PHASE_ZH.get(str(state.get('sleep_phase') or ''),str(state.get('sleep_phase') or '未知'))}\n"
+                f"场景：{activity}\n"
+                + (f"日程：{segment}\n" if segment!=activity else "")
+                + f"天气：{self._env.weather_text(weather)}\n消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}（活跃 {self._debouncer.active_bursts}）\n"
                 f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}，本人摘要缓存 {'开启' if self.config.recall.cache_summary_enabled else '关闭'}\n"
                 f"私聊用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
                 f"可用模型任务：{tasks}\n"
-                f"生活记忆：日记 {len(diaries)}（最近一篇）\n"
+                f"生活记忆：日记 {diary_text}\n"
                 f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}，"
                 f"搜索历史 {info['recent_search_history']}\n"
                 f"社交转述：{'开启' if self.config.social.enabled else '关闭'}，短期群摘要 {len(observations)}，"

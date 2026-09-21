@@ -46,6 +46,17 @@ class DummyContext:
     def __init__(self):self.api=DummyAPI()
 
 
+class Base64RejectingAPI:
+    """外部阅读返回 88 字符 base64 载荷与一段正常文本，验证短 base64 同样被拒。"""
+    def __init__(self):self.calls=[]
+    async def call(self,name,**kwargs):
+        self.calls.append((name,kwargs))
+        return {"items":[
+            {"id":"page-b64","title":"Base64 素材","summary":"QUJD"*22},
+            {"id":"page-ok","title":"正常素材","summary":"一段可供阅读的正常文字摘要。"},
+        ]}
+
+
 class CreationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
@@ -164,6 +175,22 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         documents=await self.store.list_bookshelf_documents(allow_private=True,doc_type="reading_note")
         self.assertEqual(len(documents),1); self.assertEqual(documents[0]["privacy"],"private")
         self.assertNotIn("QUJD",documents[0]["content"])
+
+    async def test_external_reading_rejects_short_base64_and_keeps_plain_text(self):
+        """超过 64 字符的纯 base64 特征串一律拒绝，正常文本仍可作为外部阅读素材。"""
+        self.config.creation.plaintext_storage_acknowledged=True
+        self.config.creation.external_reading_enabled=True
+        self.config.creation.external_reading_api_name="reader.list_items"
+        self.config.creation.reading_annotation_enabled=False
+        ctx=DummyContext(); ctx.api=Base64RejectingAPI()
+        service=InspirationService(ctx,self.store,self.config,self.llm,DummyLogger())
+        count=await service.collect(self.now)
+        self.assertEqual(count,1); self.assertEqual(ctx.api.calls[0][0],"reader.list_items")
+        documents=await self.store.list_bookshelf_documents(allow_private=True,doc_type="reading_note")
+        self.assertEqual(len(documents),1)
+        self.assertNotIn("QUJD",documents[0]["content"])
+        self.assertIn("正常文字摘要",documents[0]["content"])
+        self.assertEqual(documents[0]["privacy"],"private")
 
     async def test_diary_is_archived_into_private_bookshelf(self):
         await self.store.save_diary("2026-07-12","普通的一天","今天安静地过完了。","平稳","digest",time.time())

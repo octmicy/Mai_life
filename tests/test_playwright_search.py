@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 import unittest
 
 from Mai_life.config import MaiLifeSettings,SearchProviderProfile
@@ -148,13 +149,36 @@ class PlaywrightSearchUrlTests(unittest.TestCase):
             PlaywrightSearchClient.search_url("google","人工智能","any")
 
 
+class FakeRequest:
+    def __init__(self,url:str)->None:self.url=url
+
+
+class FakeRoute:
+    def __init__(self,url:str)->None:self.url=url; self.abort_calls:list[str]=[]; self.continue_calls:list[str]=[]
+    async def abort(self)->None:self.abort_calls.append(self.url)
+    async def continue_(self)->None:self.continue_calls.append(self.url)
+
+
 class FakePage:
-    def __init__(self,html:str="",error:BaseException|None=None,screenshot_bytes:bytes=b"")->None:
-        self.html=html; self.error=error; self.screenshot_bytes=screenshot_bytes
+    def __init__(self,html:str="",error:BaseException|None=None,screenshot_bytes:bytes=b"",
+                 redirect_url:str|None=None)->None:
+        self.html=html; self.error=error; self.screenshot_bytes=screenshot_bytes; self.redirect_url=redirect_url
         self.goto_calls:list[dict[str,object]]=[]; self.screenshot_calls:list[dict[str,object]]=[]; self.closed=False
+        self.route_handlers:dict[str,Any]={}; self.requests:list[FakeRoute]=[]
+    async def route(self,pattern:str,handler:Any)->None:self.route_handlers[pattern]=handler
+    async def simulate_request(self,url:str)->FakeRoute:
+        """模拟浏览器发起一次请求（如跟随重定向），走注册的 route handler 并返回路由结果。"""
+        route=FakeRoute(url); self.requests.append(route)
+        handler=next(iter(self.route_handlers.values()),None)
+        if handler is not None:await handler(route,FakeRequest(url))
+        return route
     async def goto(self,url:str,**options:object)->None:
         self.goto_calls.append({"url":url,**options})
         if self.error is not None:raise self.error
+        if self.redirect_url:
+            # 模拟 302：浏览器对重定向目标再发一次请求，被 abort 时整个导航失败。
+            route=await self.simulate_request(self.redirect_url)
+            if route.abort_calls:raise RuntimeError(f"net::ERR_ABORTED at {self.redirect_url}")
     async def content(self)->str:return self.html
     async def screenshot(self,**options:object)->bytes:
         self.screenshot_calls.append(options)
@@ -248,6 +272,30 @@ class PlaywrightClientTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(SearchBackendError) as caught:
                     await client.screenshot(url,12)
                 self.assertEqual(caught.exception.error_class,"invalid_response")
+
+    async def test_screenshot_route_handler_allows_public_requests(self):
+        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
+        page=FakePage(screenshot_bytes=png)
+        client=PlaywrightSearchClient(None,playwright_factory=FakePlaywrightFactory(page))
+        result=await client.screenshot("http://8.8.8.8/page",12)
+        self.assertEqual(result,png)
+        self.assertIn("**/*",page.route_handlers)  # goto 前已注册逐跳校验
+        route=await page.simulate_request("http://8.8.8.8/static/app.js")
+        self.assertEqual(route.continue_calls,["http://8.8.8.8/static/app.js"])
+        self.assertEqual(route.abort_calls,[])
+
+    async def test_screenshot_redirect_to_internal_address_is_blocked(self):
+        # 公网 URL 被 302 到云元数据地址：第二次请求必须被 abort，截图不得发生。
+        page=FakePage(redirect_url="http://169.254.169.254/latest/meta-data/")
+        client=PlaywrightSearchClient(None,playwright_factory=FakePlaywrightFactory(page))
+        with self.assertRaises(SearchBackendError) as caught:
+            await client.screenshot("http://8.8.8.8/page",12)
+        self.assertEqual(caught.exception.error_class,"browser_error")
+        self.assertEqual(page.goto_calls[0]["url"],"http://8.8.8.8/page")
+        self.assertEqual(page.screenshot_calls,[])  # 内网内容不会进入截图返回值
+        self.assertEqual(len(page.requests),1)
+        self.assertEqual(page.requests[0].abort_calls,["http://169.254.169.254/latest/meta-data/"])
+        self.assertEqual(page.requests[0].continue_calls,[])
 
     async def test_screenshot_timeout_maps_to_network(self):
         page=FakePage("",TimeoutError("Timeout 12000ms exceeded"))

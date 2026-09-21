@@ -4,11 +4,13 @@ from __future__ import annotations
 from datetime import datetime,timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import parse_qsl,urlencode,urlsplit,urlunsplit
+from urllib.parse import parse_qsl,unquote,urlencode,urlsplit,urlunsplit
 
 import asyncio
 import hashlib
+import re
 import time
+import unicodedata
 
 from .http_client import HttpClient,HttpRequestError
 from .playwright_search import PlaywrightSearchClient
@@ -22,6 +24,13 @@ _ENDPOINTS={
     "tavily":"https://api.tavily.com/search",
     "you":"https://ydc-index.io/v1/search",
 }
+
+# 外发查询词隐私清洗：带 scheme 网址、全角/半角邮箱、@提及、QQ 号与无 scheme 裸域名。
+_QUERY_SCRUB=(r"https?://\S+"
+              r"|[\w.+-]+[＠@][\w.-]+[．.][A-Za-z]{2,}"
+              r"|@\S+"
+              r"|(?<!\d)\d{5,12}(?!\d)"
+              r"|(?<![\w./])(?:[\w-]+\.)+[A-Za-z]{2,}(?:/\S*)?")
 
 
 
@@ -100,6 +109,30 @@ class SearchService:
                       for fingerprint in strategy.fingerprints(provider)}
             if strategy.available(provider,runtimes,current):return True
         return False
+
+    async def _private_query_terms(self)->list[str]:
+        """联网前移除 QQ 号及 Host 自动读取的昵称、群名、群成员昵称；展示名称从不参与身份匹配。"""
+        terms=[str(item.user_id) for item in self.config.users.profiles]
+        terms.extend(str(item.group_id) for item in self.config.social.groups)
+        for item in await self.store.list_users(include_disabled=True):terms.append(str(item.get("display_name") or ""))
+        for item in await self.store.list_group_directory(500):terms.append(str(item.get("group_name") or ""))
+        terms.extend(await self.store.list_group_member_names())
+        return [term for term in terms if term]
+
+    async def sanitize_query(self,query:str)->str:
+        """统一隐私清洗：NFKC 归一加最多两轮 URL 解码后，移除 QQ、昵称、群名、邮箱和网址。"""
+        text=unicodedata.normalize("NFKC",str(query or ""))
+        for _ in range(2):  # 最多两轮解码，拆掉 %25 双重编码的昵称绕过
+            decoded=unquote(text)
+            if decoded==text:break
+            text=decoded
+        text=re.sub(_QUERY_SCRUB," ",text)
+        for term in sorted({str(item).strip() for item in await self._private_query_terms() if str(item).strip()},
+                           key=len,reverse=True):
+            # 单字禁词按整词边界匹配，避免误伤正常词汇；多字禁词保持原子串替换。
+            pattern=rf"(?<!\w){re.escape(term)}(?!\w)" if len(term)==1 else re.escape(term)
+            text=re.sub(pattern," ",text,flags=re.I)
+        return " ".join(text.replace("\x00","").split())[:100]
 
     def _strategy_for(self,provider:Any)->Any:
         """按注册表返回 Provider 对应的策略实例；Playwright 优先、API 备援。"""
@@ -246,7 +279,7 @@ class SearchService:
         else:
             # DNS、超时、5xx、协议和配置错误属于服务故障，不继续消耗同服务备用 Key。
             key_status="service_error"
-            cooldown_until=now+min(6*3600,900*(2**min(failures-1,5)))
+            cooldown_until=now+min(1800,120*2**min(failures-1,4))
             try_next=False
         await self.store.save_search_key_runtime(provider_id,fingerprint,status=key_status,
             cooldown_until=cooldown_until,failure_count=failures,error_class=error_class,used_at=now)

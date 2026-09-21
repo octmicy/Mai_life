@@ -175,14 +175,21 @@ class MemoryService:
             })
 
     async def _create_date_opportunities(self,now:datetime)->None:
-        """为配置的提前天数创建定向契机，数据库唯一键保证同一提醒只生成一次。"""
+        """为配置的提前天数创建定向契机，数据库唯一键保证同一提醒只生成一次。
+
+        当天完全错过（如停机）且 3 天内首次运行时，补一个当天契机，避免重要日期被静默略过。
+        """
         cfg=self.config.memory
         if not cfg.important_dates_enabled:return
         for item in await self.store.list_important_dates():
             occurrence=self.occurrence(item,now.date())
             if not occurrence:continue
             lead=(occurrence-now.date()).days
-            if lead not in cfg.date_reminder_lead_days:continue
+            if lead>0 and lead not in cfg.date_reminder_lead_days:continue
+            if lead<0:
+                if lead<-3:continue
+                if await self.store.has_date_trigger(int(item["id"]),occurrence.isoformat()):continue
+                lead=0
             topic=(f"今天是{item['event_name']}" if lead==0 else f"距离{item['event_name']}还有{lead}天")
             weight={0:0.9,1:0.75,7:0.58,30:0.4}.get(lead,0.45)
             op_id=hashlib.sha1(f"date:{item['id']}:{occurrence}:{lead}".encode()).hexdigest()[:20]

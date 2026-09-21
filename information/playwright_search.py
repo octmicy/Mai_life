@@ -222,6 +222,19 @@ class PlaywrightSearchClient:
                 raise SearchBackendError("浏览器搜索未返回自然结果",error_class="empty_result")
             return SearchResponse(results=results,provider_type="playwright",cited=True,model=str(engine))
 
+    async def _guard_browser_request(self,route:Any,request:Any)->None:
+        """校验浏览器将发起的每一个请求（含重定向目标），非公网一律中断，阻断重定向 SSRF。"""
+        url=str(getattr(request,"url","") or "")
+        try:
+            # validate_public_url 是同步阻塞（DNS 解析），放线程里执行避免卡住事件循环。
+            await asyncio.to_thread(HttpClient.validate_public_url,url)
+        except Exception as exc:
+            debug=getattr(self.logger,"debug",None)
+            if callable(debug):debug(f"Playwright 拦截非公网或未校验请求:{url}({exc})")
+            await route.abort()
+            return
+        await route.continue_()
+
     async def screenshot(self,url:str,timeout_seconds:float)->bytes:
         """打开网页并截图，返回 PNG 字节；失败抛 SearchBackendError。"""
         try:
@@ -234,6 +247,8 @@ class PlaywrightSearchClient:
             context=await self._ensure_browser()
             page=await context.new_page()
             try:
+                # 路由注册在 page 上，page.close() 后自动失效；Chromium 跟随重定向发起的每一跳都过公网校验。
+                await page.route("**/*",self._guard_browser_request)
                 await page.goto(validated,timeout=max(1000,int(timeout_seconds*1000)),wait_until="domcontentloaded")
                 return await page.screenshot(type="png")
             except Exception as exc:

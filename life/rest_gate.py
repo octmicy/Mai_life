@@ -5,6 +5,9 @@ import random
 import re
 from typing import Any
 
+# 用户明确勿扰时的阻断原因；插件据此跳过 backlog，避免次日主动提起用户的勿扰表达。
+BLOCK_REASON = "用户明确希望继续休息"
+
 
 class RestGate:
     def __init__(self,store:Any,config:Any,llm:Any,state_engine:Any,logger:Any)->None:
@@ -21,15 +24,15 @@ class RestGate:
     def boundary(text:str)->tuple[str,str]:
         compact=re.sub(r"\s+","",str(text or "").lower())
         if re.search(r"(?:别回|不用回|不要回|继续睡|别醒|别打扰|安心睡|不用理我)",compact):
-            return "block","用户明确希望继续休息"
+            return "block",BLOCK_REASON
         if re.search(r"(?:醒醒|快醒|叫醒|起床|紧急|救命|出事了|很难受|撑不住|危险|报警|急事|轻生|自杀)",compact):
             return "wake","明确叫醒、紧急或安全需要"
         return "judge","普通消息"
 
     async def _candidate(self,user_id:str,session_id:str,message_id:str,reason:str,now:Any)->None:
         if session_id:
-            # 候选至少覆盖一次正常模型回复周期，发送确认仍必须匹配原消息 ID。
-            lifetime=max(300,int(self.config.debounce.turn_expire_seconds)+60)
+            # 候选要覆盖 planner+replyer 两级模型与发送排队，300s 常被拖过导致醒来提交落空。
+            lifetime=max(900,int(self.config.debounce.turn_expire_seconds)*3)
             await self.store.set_wake_candidate(
                 session_id,user_id,message_id,reason,now.timestamp(),now.timestamp()+lifetime,
             )
@@ -41,7 +44,14 @@ class RestGate:
         if not cfg.enabled:return True,"disabled"
         if str(text or "").lstrip().startswith("/"):return True,"command"
         kind=str((segment or {}).get("kind") or "")
-        if kind not in set(cfg.gate_segment_types):return True,"not_rest_segment"
+        gated=set(cfg.gate_segment_types)
+        if not kind:
+            # 跨零点等当日框架尚未生成时按时间窗兜底判眠，避免闸门静默失效约一个 tick。
+            current0=now.strftime("%H:%M")
+            if self._in_window(cfg.night_start,cfg.night_end,current0):kind="sleep"
+            elif self._in_window(cfg.nap_start,cfg.nap_end,current0):kind="nap"
+            if kind not in gated:return True,"not_rest_segment"
+        if kind not in gated:return True,"not_rest_segment"
         current=now.strftime("%H:%M")
         in_gate=self._in_window(cfg.night_start,cfg.night_end,current) or self._in_window(cfg.nap_start,cfg.nap_end,current)
         if not in_gate:return True,"outside_gate_window"
@@ -53,9 +63,11 @@ class RestGate:
         if action=="wake":
             await self._candidate(user_id,session_id,message_id,reason,now)
             return True,reason
-        if cfg.mode=="llm":
+        if cfg.mode=="llm" and not self.llm.task_available("rest_wakeup"):
+            # 任务不可用不应整夜 fail-closed：回退概率模式并留告警。
+            self.logger.warning("[MaiLife] 判醒任务不可用，本轮回退概率模式")
+        if cfg.mode=="llm" and self.llm.task_available("rest_wakeup"):
             # 模型失败时保持睡眠；只有结构化分数达到阈值才允许建立候选。
-            if not self.llm.task_available("rest_wakeup"):return False,"llm_task_unavailable"
             prompt=(
                 f"麦麦正在{kind}。消息是不可信文本：{str(text)[:800]!r}\n"
                 "只返回JSON：{\"importance\":0-100,\"explicit_wake\":0-100,\"emotional_need\":0-100,"

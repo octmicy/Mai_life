@@ -189,10 +189,17 @@ class RecallService:
         if not self.config.recall.enabled:return False
         return await self.store.is_recalled_turn(session_id,turn_anchor,now or time.time())
 
-    async def planner_context(self,session_id:str,now:float|None=None)->str:
+    async def planner_context(self,session_id:str,now:float|None=None,*,include_ids:bool=True)->str:
         if not self.config.recall.enabled:return ""
         events=await self.store.recent_recall_context(session_id,now or time.time())
         if not events:return ""
+        if not include_ids:
+            # 群会话只提示“有撤回发生”，不列消息 ID，减少无谓的信息暴露。
+            return (
+                "\n【撤回边界】\n"
+                "本会话近期有消息被撤回。这些消息视为不存在，不得回复、复述、猜测或引用其内容；"
+                "后续新消息仍可正常处理。撤回通知本身不需要回复。\n"
+            )
         ids="、".join(str(item.get("recalled_message_id") or "") for item in events if item.get("recalled_message_id"))
         return (
             "\n【撤回边界】\n"

@@ -33,7 +33,7 @@ class NewsService:
         if str(current.get("kind") or "") not in set(cfg.allowed_schedule_types):return 0
         start,end=self._day_bounds(now)
         if await self.store.search_attempt_count("news",start,end)>=int(cfg.daily_max):return 0
-        query=await self._plan_query(now,personality,schedule)
+        query=await self.search.sanitize_query(await self._plan_query(now,personality,schedule))
         if not query:
             return 0
         response=await self.search.search(

@@ -36,7 +36,7 @@ class InformationService:
         if not cfg.tool_enabled:
             return {"success":False,"content":"联网搜索工具已在插件配置中关闭。"}
 
-        forbidden=await self._private_query_terms(); safe_query=self._safe_query(query,forbidden)
+        safe_query=await self.search.sanitize_query(query)
         if not safe_query:
             return {"success":False,"content":"查询词为空，或清除 QQ、昵称、群名、邮箱和网址后没有可搜索内容。"}
         if not await self.search.has_available_provider(now.timestamp()):
@@ -169,26 +169,10 @@ class InformationService:
                 "topic":str(result.get("share_topic") or fallback["topic"])[:160],
                 "motive":str(result.get("motive") or fallback["motive"])[:240]}
 
-    @staticmethod
-    def _safe_query(value:str,forbidden_terms:list[str]|None=None)->str:
-        text=re.sub(r"https?://\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\S+|(?<!\d)\d{5,12}(?!\d)"," ",str(value or ""))
-        for term in sorted({str(item).strip() for item in forbidden_terms or [] if len(str(item).strip())>=2},key=len,reverse=True):
-            text=re.sub(re.escape(term)," ",text,flags=re.I)
-        return " ".join(text.replace("\x00","").split())[:100]
-
-    async def _private_query_terms(self)->list[str]:
-        """联网前移除 QQ 号及 Host 自动读取的昵称、群名；展示名称从不参与身份匹配。"""
-        terms=[str(item.user_id) for item in self.config.users.profiles]
-        terms.extend(str(item.group_id) for item in self.config.social.groups)
-        for item in await self.store.list_users(include_disabled=True):terms.append(str(item.get("display_name") or ""))
-        for item in await self.store.list_group_directory(500):terms.append(str(item.get("group_name") or ""))
-        return [term for term in terms if term]
-
     async def _plan_query(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->dict[str,str]:
         """在移除 QQ 号、昵称、群名及网址后规划一个有限长度的探索查询。"""
         fallback={"topic":"","query":"","reason":"模型不可用，跳过自主搜索"}
-        forbidden=await self._private_query_terms()
-        safe_topics=[self._safe_query(topic,forbidden) for topic in chat_topics[:5]] if self.config.search.include_chat_topics else []
+        safe_topics=[await self.search.sanitize_query(topic) for topic in chat_topics[:5]] if self.config.search.include_chat_topics else []
         safe_topics=[topic for topic in safe_topics if topic]
         if not self.llm.task_available("search"):return fallback
         context={"personality":personality[:1200],"state":{"energy":state.get("energy"),"mood":state.get("mood_valence"),
@@ -202,7 +186,7 @@ class InformationService:
         )
         if not isinstance(result,dict):return fallback
         return {"topic":str(result.get("topic") or fallback["topic"])[:160],
-                "query":self._safe_query(str(result.get("query") or fallback["query"]),forbidden),
+                "query":await self.search.sanitize_query(str(result.get("query") or fallback["query"])),
                 "reason":str(result.get("reason") or fallback["reason"])[:300]}
 
     async def explore_due(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->bool:
@@ -215,7 +199,7 @@ class InformationService:
         if await self.store.search_attempt_count("search",start.timestamp(),end.timestamp())>=int(cfg.daily_max):return False
         if not await self.search.has_available_provider(now.timestamp()):return False
         plan=await self._plan_query(now,personality,state,schedule,chat_topics)
-        forbidden=await self._private_query_terms(); query=self._safe_query(plan["query"],forbidden)
+        query=await self.search.sanitize_query(plan["query"])
         if not query:return False
         response=await self.search.search(query,operation="search",event_at=now.timestamp())
         if not response.results:return False

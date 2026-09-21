@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 import sqlite3
 import tempfile
 import time
@@ -67,7 +68,9 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.add_rest_backlog("2","积压六",now+5)
         backlogs=await self.store.peek_rest_backlogs_batch(["1","2","3"])
         self.assertEqual(backlogs["1"],["积压一","积压二"])
-        self.assertEqual(len(backlogs["2"]),3)
+        # 单次注入上限为 5 条（深夜连续被拦的消息尽量一次带过）。
+        self.assertEqual(backlogs["2"],["积压三","积压四","积压五","积压六"])
+        self.assertEqual(len(backlogs["2"]),4)
         self.assertEqual(backlogs["3"],[])
         self.assertEqual(backlogs["2"],await self.store.peek_rest_backlogs("2"))
 
@@ -116,7 +119,8 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
             day=interacted.date()+timedelta(days=offset)
             start=datetime.combine(day,datetime.min.time(),tzinfo=tz); end=start+timedelta(days=1)
             await self.store.update_relationships(day.isoformat(),start.timestamp(),end.timestamp(),end.timestamp())
-        self.assertEqual((await self.store.get_user("1"))["temperature"],29.25)
+        # 沉默衰减 -0.4/天 × 9 天，30 分用户停在 10 分地板（-0.25→-0.4 的强化）。
+        self.assertAlmostEqual((await self.store.get_user("1"))["temperature"],28.8)
         self.assertEqual((await self.store.get_user("2"))["temperature"],10.0)
 
     async def test_passive_reply_confirmation_does_not_open_write_transaction(self):
@@ -457,12 +461,53 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service._validate("2026-07-11",short),[])
         fallback=self.service._fallback("2026-07-11",False)
         self.assertEqual(fallback[-1]["end_minute"],1440)
-    async def test_scene_delta_applied_once(self):
+    async def test_scene_applied_flag_marks_delta_as_consumed(self):
+        """场景 applied 标记保证节点结束增量只执行一次（经 get_scene 观察）。"""
         day="2026-07-11"; nodes=self.service._fallback(day,False); await self.store.replace_framework(day,nodes)
         first=nodes[0]; await self.store.save_scene(first["id"],"睡觉",{"energy":5},[])
-        self.assertEqual(len(await self.store.completed_unapplied_scenes(day,first["end_minute"])),1)
+        scene=await self.store.get_scene(first["id"])
+        self.assertEqual(scene["state_deltas"],{"energy":5}); self.assertEqual(int(scene["applied"]),0)
         await self.store.mark_scene_applied(first["id"])
-        self.assertEqual(await self.store.completed_unapplied_scenes(day,first["end_minute"]),[])
+        scene=await self.store.get_scene(first["id"])
+        self.assertEqual(int(scene["applied"]),1)
+        # 批量读取口径一致：applied 后的场景不会再被 timeline 重复应用。
+        scenes=await self.store.get_scenes_by_framework_ids([first["id"],"missing"])
+        self.assertEqual(int(scenes[first["id"]]["applied"]),1); self.assertEqual(scenes["missing"],{})
+
+    def test_validation_requires_three_meals_when_hungry(self):
+        """饥饿偏高时两餐框架不合格、三餐框架通过；不饿时仍维持两餐下限。"""
+        two_meals=[{"start":"00:00","end":"08:00","kind":"sleep","summary":"睡觉","location":"卧室"},
+                   {"start":"08:00","end":"09:00","kind":"meal","summary":"早餐","location":"家"},
+                   {"start":"12:00","end":"13:00","kind":"meal","summary":"午饭","location":"家"},
+                   {"start":"19:00","end":"23:00","kind":"leisure","summary":"放松","location":"家"},
+                   {"start":"23:00","end":"24:00","kind":"sleep","summary":"入睡","location":"卧室"}]
+        three_meals=two_meals+[{"start":"18:00","end":"19:00","kind":"meal","summary":"晚饭","location":"家"}]
+        self.assertEqual(self.service._validate("2026-07-11",two_meals,{"hunger":80}),[])
+        self.assertTrue(self.service._validate("2026-07-11",three_meals,{"hunger":80}))
+        self.assertTrue(self.service._validate("2026-07-11",two_meals,{"hunger":40}))
+        self.assertTrue(self.service._validate("2026-07-11",two_meals))
+
+    async def test_ensure_day_prompt_carries_current_state_summary(self):
+        """日程生成提示词必须携带当前状态摘要：饥饿偏高时明确提示保证三餐。"""
+        class CapturingLLM:
+            def __init__(self):self.prompt=""
+            def task_available(self,kind):return kind=="schedule"
+            def task_for(self,kind):return "planner"
+            async def generate_json(self,prompt,system,fallback,**kwargs):
+                self.prompt=prompt; return fallback
+        now=datetime(2026,9,19,3,0,tzinfo=timezone(timedelta(hours=8)))
+        state=await self.store.get_state()
+        state["energy"]=62; state["hunger"]=90; state["mood_valence"]=-0.35
+        await self.store.save_state(state)
+        llm=CapturingLLM()
+        service=ScheduleService(self.store,self.config,llm,str(Path(__file__).parents[1]),DummyLogger())
+        nodes=await service.ensure_day(now,"人格","晴",force=True)
+        self.assertTrue(nodes)
+        self.assertIn("麦麦当前状态",llm.prompt)
+        self.assertIn("饥饿 90/100（很高，最近经常饿）",llm.prompt)
+        self.assertIn("保证正常三餐",llm.prompt)
+        # 饥饿偏高时两餐 LLM 结果被拒，回退到内置三餐骨架。
+        self.assertGreaterEqual(sum(node["kind"]=="meal" for node in nodes),3)
 
     async def test_offline_timeline_crosses_sleep_and_meal_boundaries(self):
         start=datetime(2026,7,9,22,0,tzinfo=timezone(timedelta(hours=8)))
@@ -532,6 +577,66 @@ class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
         state=await self.store.get_state(); state["last_updated_at"]=self.now.timestamp()-7200; await self.store.save_state(state)
         result=await self.state_engine.advance(self.now,{"kind":"work","summary":"工作","location":"书桌"},None)
         self.assertLess(result["state"]["energy"],70); self.assertGreater(result["state"]["hunger"],20)
+
+    async def test_mood_regression_doubles_under_sustained_hunger(self):
+        """饥饿持续偏高时基线回归翻倍：终值高于不加权口径，且不钉死在 -1 钳位边界。"""
+        state=await self.store.get_state()
+        state["last_updated_at"]=self.now.timestamp()-24*3600
+        state["hunger"]=90; state["energy"]=100; state["mood_valence"]=0.0
+        await self.store.save_state(state)
+        result=await self.state_engine.advance(self.now,{"kind":"rest","summary":"休息","location":"家"},None)
+        weighted=result["state"]["mood_valence"]
+        # 同样驱动下不加权的终值（按原公式复算：精力>70 奖励 + 饥饿惩罚 + 原速率回归）。
+        mood=0.0+0.01*24-0.04*24
+        mood+=(0.15-mood)*(1.0-math.exp(-0.0175*24))
+        self.assertGreater(weighted,mood)
+        self.assertGreater(weighted,-0.5)
+
+    async def test_dream_skips_nap_but_survives_nap_before_night_sleep(self):
+        """午休不做梦；nap 紧接夜间睡眠时，整晚睡眠的梦境不再被误判为午休抑制。"""
+        base=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
+        async def seed(last_hour):
+            state=await self.store.get_state()
+            state["last_updated_at"]=(base+timedelta(hours=last_hour)).timestamp(); state["energy"]=40
+            await self.store.save_state(state)
+            runtime=await self.store.get_sleep_runtime()
+            runtime.update({"phase":"awake","started_at":base.timestamp(),"last_event":""})
+            await self.store.save_sleep_runtime(runtime)
+        async def dream_count():
+            return self.store.conn.execute("SELECT COUNT(*) FROM dreams").fetchone()[0]
+        engine=LifeStateEngine(self.store,self.config,DummyLLM(),DummyLogger())
+        # 纯午休 4 小时：时长足够但类型是 nap，不做梦。
+        await seed(13)
+        await engine.advance(base+timedelta(hours=13),{"kind":"nap","summary":"午休","location":"卧室"},None)
+        result=await engine.advance(base+timedelta(hours=17),{"kind":"leisure","summary":"放松","location":"家"},None)
+        self.assertTrue(result["woke"]); self.assertGreaterEqual(result["sleep_duration"],3)
+        self.assertEqual(await dream_count(),0)
+        # 22:00 nap 紧接 22:30-06:30 夜间睡眠：醒来后生成 1 条梦境。
+        await seed(22)
+        await engine.advance(base+timedelta(hours=22),{"kind":"nap","summary":"打盹","location":"卧室"},None)
+        await engine.advance(base+timedelta(hours=22,minutes=30),{"kind":"sleep","summary":"夜间睡眠","location":"卧室"},None)
+        result=await engine.advance(base+timedelta(days=1,hours=6,minutes=30),{"kind":"meal","summary":"早饭","location":"家"},None)
+        self.assertTrue(result["woke"]); self.assertGreaterEqual(result["sleep_duration"],8.0)
+        self.assertEqual(await dream_count(),1)
+
+    async def test_body_cycle_applies_mild_adjustments(self):
+        """经期内只做轻度修正：精力消耗提高约 10%，心情增量低于非经期。"""
+        base=self.now.replace(hour=9,minute=0,second=0,microsecond=0); start=base-timedelta(hours=8)
+        async def run(in_period: bool) -> dict[str, Any]:
+            self.config.state.body_cycle_enabled=in_period
+            self.config.state.body_cycle_start_date=base.date().isoformat() if in_period else ""
+            state=await self.store.get_state()
+            state.update({"energy":100.0,"hunger":20.0,"mood_valence":0.0,"mood_arousal":0.6,
+                          "last_updated_at":start.timestamp()})
+            await self.store.save_state(state)
+            result=await self.state_engine.advance(base,{"kind":"work","summary":"工作","location":"书桌"},None)
+            return result["state"]
+        on=await run(True); off=await run(False)
+        self.assertEqual(on["body_cycle"],"周期第1天"); self.assertEqual(off["body_cycle"],"未启用")
+        # 精力消耗：经期恰为非经期的 1.1 倍。
+        self.assertAlmostEqual(100-off["energy"],(100-on["energy"])/1.1,places=6)
+        # 心情增量：经期被轻抑，低于非经期。
+        self.assertLess(on["mood_valence"],off["mood_valence"])
 
     async def test_gate_requires_time_window_and_rest_segment(self):
         daytime=self.now.replace(hour=10)

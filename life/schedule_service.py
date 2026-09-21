@@ -63,6 +63,18 @@ class ScheduleService:
         validated=self._validate(day,raw) if isinstance(raw,list) else []
         return validated or self._validate(day,builtin)
 
+    def _state_summary(self, state: dict[str, Any] | None) -> str:
+        """把当前精力/饥饿/心情浓缩成一句中文提示，供日程生成参考。"""
+        if not isinstance(state,dict): return ""
+        try:
+            energy=float(state.get("energy",70)); hunger=float(state.get("hunger",20)); mood=float(state.get("mood_valence",0))
+        except (TypeError,ValueError): return ""
+        hunger_note="（很高，最近经常饿）" if hunger>75 else ""
+        energy_note="（很低，需要多休息）" if energy<30 else ""
+        mood_note="（偏低）" if mood<-0.3 else ""
+        return (f"麦麦当前状态：精力 {energy:.0f}/100{energy_note}，饥饿 {hunger:.0f}/100{hunger_note}，"
+                f"心情 {mood:+.2f}{mood_note}。生成日程时请保证正常三餐、不要安排过高强度。")
+
     @staticmethod
     def _apply_memory_hints(day:str,nodes:list[dict[str,Any]],memory_context:dict[str,Any]|None)->list[dict[str,Any]]:
         context=memory_context or {}; dates=context.get("private_date_hints") or []
@@ -76,7 +88,7 @@ class ScheduleService:
         return result
 
     # 所有 LLM 日程必须经过时间、类型、重叠和必要节点校验。
-    def _validate(self, day: str, raw: Any) -> list[dict[str, Any]]:
+    def _validate(self, day: str, raw: Any, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """规范化节点、修复可安全修复的重叠，并拒绝缺少夜间睡眠或进餐的框架。"""
         if not isinstance(raw,list): return []
         cleaned=[]
@@ -110,6 +122,9 @@ class ScheduleService:
             for item in result if item["kind"]=="sleep"
         )
         meals=sum(x["kind"]=="meal" for x in result)
+        # 饥饿偏高时要求三餐齐全，避免少餐框架把饥饿锁在告警区。
+        hungry=float((state or {}).get("hunger",0) or 0)>75
+        if hungry and meals<3: return []
         return result if night_sleep>=5*60 and meals>=2 else []
 
     @staticmethod
@@ -142,6 +157,7 @@ class ScheduleService:
                          environment: dict[str,Any]|None=None) -> list[dict[str, Any]]:
         day=now.strftime("%Y-%m-%d"); existing=await self.store.get_framework(day)
         if existing and not force: return existing
+        state=await self.store.get_state()
         weekend=now.weekday()>=5; fallback=self._apply_memory_hints(day,self._fallback(day,weekend),memory_context)
         variety=await self._variety_context(now)
         calendar_bits=[str(environment.get(key)) for key in ("day_type","holiday","lunar","solar_term")
@@ -164,6 +180,7 @@ class ScheduleService:
             variety=(variety+"\n今天可以考虑的活动灵感（自由选用，不要硬塞）："+ "、".join(picked)).strip()
         prompt=(f"为虚拟网友麦麦生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
                 f"人格：{personality or '自然、独立、有自己的生活'}\n"
+                f"{self._state_summary(state)}\n"
                 f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："
                 f"{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
                 f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁。"
@@ -179,7 +196,7 @@ class ScheduleService:
         raw=fallback
         if self.llm.task_available("schedule"):
             raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=2200,task_kind="schedule",request_type="daily_schedule")
-        nodes=self._validate(day,raw) or fallback
+        nodes=self._validate(day,raw,state) or fallback
         await self.store.replace_framework(day,nodes); return await self.store.get_framework(day)
 
     @staticmethod
@@ -260,14 +277,6 @@ class ScheduleService:
             if cursor<window_end:
                 spans.append({"start":cursor,"end":window_end,"segment":{"kind":"leisure","summary":"自由活动","location":"家里"}})
         return spans
-
-    # applied 标记确保节点结束增量只执行一次。
-    async def apply_completed(self, now: datetime, state_engine: Any) -> None:
-        day=now.strftime("%Y-%m-%d"); minute=now.hour*60+now.minute
-        for scene in await self.store.completed_unapplied_scenes(day,minute):
-            node=next((item for item in await self.store.get_framework(day) if item["id"]==scene["framework_id"]),{})
-            await state_engine.apply_deltas(self._state_deltas(node),updated_at=now.timestamp())
-            await self.store.mark_scene_applied(scene["framework_id"])
 
     async def context(self, now: datetime) -> dict[str, Any]:
         """返回今日框架、当前/下一节点和当前节点唯一的细化场景。"""

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -122,7 +123,12 @@ class MemoryService:
         if now.hour<cfg.diary_hour:return
         target=now.date()-timedelta(days=1); day=target.isoformat()
         if cfg.diary_enabled and not await self.store.get_diary(day):
-            await self._generate_diary(now,target)
+            # 插件运行着的每一天凌晨都会生成 daily_framework；目标日无框架说明当天根本没运行
+            # （如新装首跑），此时补日记只会得到一篇描述从未观测过的一天的幻觉日记。
+            if not await self.store.get_framework(day):
+                self.logger.info(f"[MaiLife] 昨日无生活记录（当日未运行），跳过补日记 day={day}")
+            else:
+                await self._generate_diary(now,target)
         runtime=await self.store.memory_runtime()
         if now.timestamp()-float(runtime.get("last_cleanup_at") or 0)>=86400:
             await self.store.cleanup_date_candidates(
@@ -144,7 +150,9 @@ class MemoryService:
                 "interaction_counts":{"total":total_interactions,"active_people":active_users}}
         serialized=json.dumps(source,ensure_ascii=False,sort_keys=True); digest=hashlib.sha256(serialized.encode()).hexdigest()
         summaries=[str(item.get("summary") or "") for item in life if item.get("summary")]
-        fallback={"title":"普通的一天","content":(
+        # 无模型时标题也从池中取，避免每天的日记标题逐字相同（占位内容也应有变化）。
+        title=random.choice(["普通的一天","平静的一天","如常的一天","寻常的一天","安静的一天"])
+        fallback={"title":title,"content":(
             "今天按自己的节奏过完了一天。"+("大致做了"+"、".join(summaries[:5])+"。" if summaries else "没有留下特别具体的安排。")+
             (f"和熟悉的网友有过一些交流，共收到{total_interactions}条互动。" if total_interactions else "今天的聊天不多，安静也有安静的感觉。")
         ),"mood_summary":"平稳地收下了这一天"}

@@ -47,6 +47,8 @@ class EnvironmentService:
         self._resolved_longitude: float | None = None
         self._weather_city_changed = False
         self._weather_lock = asyncio.Lock()
+        # 失败告警限流状态：(上次 warning 的时间戳, 原因签名)；update_config 不重置它。
+        self._last_weather_warning:tuple[float,str]=(0.0,"")
 
     def update_config(self, config: Any) -> None:
         """更新配置；城市变化时清除内存中的地理编码结果。"""
@@ -148,6 +150,8 @@ class EnvironmentService:
                 },
             )
             raw = (await self.http.get(forecast_url, timeout=8)).json()
+            # 网络已恢复：清空告警限流状态，下次失败即便同原因也重新 warning，避免长期静默。
+            self._last_weather_warning=(0.0,"")
             current = raw.get("current") or {}
             code = int(current.get("weather_code", -1))
             data = {
@@ -167,12 +171,22 @@ class EnvironmentService:
             await self.store.save_weather(data)
             return data
         except Exception as exc:
-            self.logger.warning(f"[MaiLife] 天气刷新失败，使用缓存: {exc}")
+            self._warn_weather_failure(exc)
             return cached or {
                 "description": "天气未知",
                 "location_name": city,
                 "fetched_at": 0,
             }
+
+    def _warn_weather_failure(self,exc:Exception)->None:
+        """失败告警限流：同原因签名 30 分钟内只记 debug，签名变化或超时才记 warning 并更新状态。"""
+        signature=f"{type(exc).__name__}:{str(exc)[:80]}"; now=time.time()
+        last_at,last_signature=self._last_weather_warning
+        if signature==last_signature and now-last_at<1800:
+            self.logger.debug(f"[MaiLife] 天气刷新失败，使用缓存（同原因 30 分钟内重复，已降级）: {exc}")
+            return
+        self._last_weather_warning=(now,signature)
+        self.logger.warning(f"[MaiLife] 天气刷新失败，使用缓存: {exc}")
 
     @staticmethod
     def weather_text(weather: dict[str, Any]) -> str:

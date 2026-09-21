@@ -1,4 +1,4 @@
-"""Mai_life v1.14.2 插件入口。"""
+"""Mai_life v1.14.3 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -1246,7 +1246,12 @@ class MaiLifePlugin(MaiBotPlugin):
                 if settled:
                     self._get_logger().info(f"[MaiLife] 主动发送已结算 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
                 else:
-                    self._get_logger().warning(f"[MaiLife] 主动发送结算未命中 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
+                    # 区分“重复确认已结算”（平台重发/Host 重复投递，正常幂等）与真未命中。
+                    record=await self._store.proactive_event(settle_event) if settle_event else {}
+                    if record and float(record.get("sent_at") or 0)>0:
+                        self._get_logger().info(f"[MaiLife] 主动发送重复确认，此前已结算 session={session} event={settle_event or '-'}")
+                    else:
+                        self._get_logger().warning(f"[MaiLife] 主动发送结算未命中 session={session} event={settle_event or '-'} host_task={settle_host or '-'}")
                 await self._record_mood_event("proactive_reply")
         if not confirmation and not proactive_pending:
             # 无锚点发送无法安全归因；不能因此误叫醒正在休息的麦麦。
@@ -1704,6 +1709,10 @@ class MaiLifePlugin(MaiBotPlugin):
         activity=str(state.get("current_activity") or "自由活动")
         mood=float(state.get("mood_valence",0))
         diary_text=f"最近一篇 {diaries[0]['day']}" if diaries else "暂无"
+        # 叙事类任务（梦境/日记/创作正文）不可用时明确告知“占位内容”，避免用户以为功能缺陷。
+        narrative_note=("；叙事任务无可用模型，梦境/日记/创作为占位内容"
+                        if any(not self._llm.task_available(name)
+                               for name in ("dream","diary","creation_body")) else "")
         return (f"麦麦生活 v{PLUGIN_VERSION}\n精力：{float(state.get('energy',0)):.0f}/100（0 耗尽、100 满电）  "
                 f"饥饿：{float(state.get('hunger',0)):.0f}/100（0 刚吃饱、100 非常饿）\n"
                 f"心情：{mood:+.2f}（{_mood_label(mood)}）  "
@@ -1714,7 +1723,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}，本人摘要缓存 {'开启' if self.config.recall.cache_summary_enabled else '关闭'}\n"
                 f"私聊用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
                 f"可用模型任务：{tasks}\n"
-                f"生活记忆：日记 {diary_text}\n"
+                f"生活记忆：日记 {diary_text}{narrative_note}\n"
                 f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}，"
                 f"搜索历史 {info['recent_search_history']}\n"
                 f"社交转述：{'开启' if self.config.social.enabled else '关闭'}，短期群摘要 {len(observations)}，"

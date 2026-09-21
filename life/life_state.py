@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 import time
 from datetime import date, datetime
 from typing import Any
@@ -10,6 +11,21 @@ from typing import Any
 # 防止纯积分器在健康日程下钉死 +1、在重负荷/少餐日程下阴跌钉死 -1。
 MOOD_BASELINE = 0.15
 MOOD_REGRESSION_PER_HOUR = 0.0175
+
+# 未配置模型时的梦境兜底池：同一调性的晨光/小路/水声/暖光意象，每套摘要配至少 3 条碎片，
+# 随机取一套，避免每天的梦境逐字相同；不预言、不出现用户，mood 统一 calm 保持原有余韵强度。
+DREAM_FALLBACKS=[
+    {"summary":"只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。",
+     "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声","天快亮时梦就淡了"],"mood":"calm"},
+    {"summary":"梦里一直在下很轻的雨，屋檐的水滴得很慢，醒来只记得青草被洗干净的味道。",
+     "fragments":["青草味很干净","雨声盖住了别的声音","天亮前雨好像停了","地面还是湿的"],"mood":"calm"},
+    {"summary":"梦见自己沿着河边走了很久，水面把灯光揉得很碎，后来就记不太清了。",
+     "fragments":["河面的光很碎","有人在不远处轻声说话","走着走着天就亮了","鞋边沾了露水"],"mood":"calm"},
+    {"summary":"梦里回到一间熟悉的旧房间，阳光斜斜地落在桌面上，醒来时心里很安静。",
+     "fragments":["灰尘在光里浮着","窗帘被风吹动了一下","旧钟走得很慢","窗外有鸟叫"],"mood":"calm"},
+    {"summary":"只记得梦里在等一班很慢的车，站台空空的，醒来时那种安静还留了一会儿。",
+     "fragments":["站台的长椅是凉的","远处有广播的杂音","车始终没有来","天色介于早晚之间"],"mood":"calm"},
+]
 
 
 class LifeStateEngine:
@@ -155,8 +171,9 @@ class LifeStateEngine:
                              woke_at: datetime|None=None) -> None:
         """为一次有效夜间睡眠生成至多一个梦境，并创建有限期分享契机。"""
         count=int(self.config.memory.dream_fragment_count) if self.config.memory.dream_fragments_enabled else 0
-        fallback={"summary":"只记得梦里走过一条被晨光照亮的小路，醒来时细节已经慢慢散掉了。",
-                  "fragments":["路边有很轻的风","远处的窗户亮着暖光","醒来前像是听见了水声"][:count],"mood":"calm"}
+        variant=random.choice(DREAM_FALLBACKS)
+        fallback={"summary":variant["summary"],
+                  "fragments":variant["fragments"][:count],"mood":variant["mood"]}
         result=fallback
         if self.llm.task_available("dream"):
             # 摘取入睡前白天里的群聊公开话题，作为梦境的模糊参考素材。

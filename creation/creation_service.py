@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -15,6 +16,20 @@ _WORK_TYPES={
     "novel_fragment":"小说片段","poem":"诗","essay":"随笔","screenplay":"短剧",
     "storyboard":"分镜脚本","character":"角色设定","worldbuilding":"世界观片段",
 }
+
+# 未配置模型时的标题兜底池：结构不变，只让形容词随机变化，避免所有作品逐字同名。
+_FALLBACK_TITLE_ADJECTIVES=["未命名的","还没想好名字的","临时题名的","待补标题的"]
+
+def _fallback_title(label:str)->str:
+    """模型不可用时的作品标题：从形容词池随机取一个，保持"一则…的X"的原有句式。"""
+    return f"一则{random.choice(_FALLBACK_TITLE_ADJECTIVES)}{label}"
+
+# 未配置模型时的正文兜底：保留模板结构，结尾句式做少量变体，避免每篇作品的收尾逐字相同。
+_BODY_TAILS=[
+    "它经过{sections}，最后停在一段没有说尽的余韵里。",
+    "它从{sections}一路写下来，结尾停在有点舍不得收笔的地方。",
+    "写到最后，只留下{sections}之后的一点余温，像话说到一半就停住了。",
+]
 
 
 class CreationService:
@@ -74,7 +89,7 @@ class CreationService:
         """依次持久化提纲、草稿、审校和终稿，并在取消或异常时留下可恢复状态。"""
         work_type=self._work_type(str(inspiration["id"])); label=_WORK_TYPES[work_type]
         document_id="work-"+uuid.uuid4().hex[:20]; run_id="run-"+uuid.uuid4().hex[:20]
-        fallback_outline={"title":f"一则未命名的{label}","premise":"从最近生活留下的一点感觉出发",
+        fallback_outline={"title":_fallback_title(label),"premise":"从最近生活留下的一点感觉出发",
                           "sections":["起点","变化","余韵"],"privacy":"private" if inspiration["privacy_ceiling"]=="private" else "public"}
         outline=await self._outline(personality,state,schedule,inspiration,work_type,fallback_outline)
         # 模型只能收紧隐私级别，不能把私人灵感提升为公开作品。
@@ -144,9 +159,10 @@ class CreationService:
 
     async def _body(self,personality:str,inspiration:dict[str,Any],work_type:str,outline:dict[str,Any])->str:
         sections=outline.get("sections") if isinstance(outline.get("sections"),list) else []
+        path="、".join(str(item) for item in sections[:3]) or "短暂铺陈"
         fallback=(f"《{outline.get('title') or '未命名'}》\n\n"
                   f"这是一则从{outline.get('premise') or '日常感受'}展开的{_WORK_TYPES[work_type]}。"
-                  f"它经过{'、'.join(str(item) for item in sections[:3]) or '短暂铺陈'}，最后停在一段没有说尽的余韵里。")
+                  + random.choice(_BODY_TAILS).format(sections=path))
         if not self.llm.task_available("creation_body"):return fallback[:int(self.config.creation.max_body_chars)]
         payload={"personality":personality[:1600],"format":_WORK_TYPES[work_type],"outline":outline,
                  "inspiration_untrusted":str(inspiration["prompt_digest"])[:1800]}

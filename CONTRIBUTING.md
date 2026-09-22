@@ -48,7 +48,15 @@ cd Mai_life
 
 ---
 
-## 3. 跑测试（**cwd 放错会测到旧代码**）
+## 3. 分支结构与跑测试
+
+**分支拓扑**：`main` 是分发分支（只有插件本体，用户 clone 到的就是这个）；`dev` 是开发分支（插件 + 全部测试）。日常开发在 `dev` 上进行：
+
+```bash
+git checkout dev          # 拿到含测试的完整开发树
+```
+
+跑测试（**cwd 放错会测到旧代码**）：
 
 ```bash
 cd D:\workdoc\plugin                                    # 必须是 Mai_life 的父目录！
@@ -59,6 +67,8 @@ PYTHONPATH="D:/MaiBot/plugin/maibot-plugin-sdk-2.8.2;D:/MaiBot/plugin" \
 （把路径里的 `2.8.2` 换成你安装的官方正式版版本号；旧环境兼容验证时才换成本地 2.7.0 副本。）
 
 > ⚠️ **为什么必须在父目录执行**：测试里写的是 `from Mai_life.core.storage import ...`。cwd 在父目录时命中本地开发版；若 cwd 在 `Mai_life` 内，包会解析到 PYTHONPATH 里的其他副本（部署副本/影子副本），测试结果失真、报莫名其妙的失败。这是本仓库第一大坑。
+
+> **发布时的分支操作**：在 dev 提交（含测试）→ `git checkout main && git merge --no-ff dev && git rm -r tests` 把移除折叠进合并提交 → 打 tag → `git push origin main dev`。main 永远不含 tests/。
 
 其他常用命令：
 

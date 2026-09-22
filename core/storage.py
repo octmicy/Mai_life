@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 # 长期运行记录（互动、主动事件、契机、转述候选/事件、跳过统计）的保留天数。
 # 这些表没有过期字段驱动的外部清理，超期行必须在 cleanup_runtime_records 中删除，
 # 否则只会无限增长；pending 与在途行永远保留，避免打断正在结算的引用。
@@ -170,7 +170,8 @@ class LifeStore:
             CREATE TABLE IF NOT EXISTS sleep_runtime(
               id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
               started_at REAL NOT NULL, awake_grace_until REAL NOT NULL DEFAULT 0,
-              woken_count INTEGER NOT NULL DEFAULT 0, last_event TEXT NOT NULL DEFAULT ''
+              woken_count INTEGER NOT NULL DEFAULT 0, last_event TEXT NOT NULL DEFAULT '',
+              sleep_defer_until REAL NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS dreams(
               id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL,
@@ -508,6 +509,8 @@ class LifeStore:
             self._migrate_to_v12()
         if version < 13:
             self._migrate_to_v13()
+        if version < 14:
+            self._migrate_to_v14()
         self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         now = time.time()
         self.conn.execute(
@@ -598,6 +601,10 @@ class LifeStore:
                 sleep_phase TEXT NOT NULL, current_activity TEXT NOT NULL DEFAULT '')"""
             )
 
+    def _migrate_to_v14(self) -> None:
+        """v14 为睡眠相位增加睡前推迟点；幂等补列，不改动任何旧数据（含书柜）。"""
+        self._ensure_column("sleep_runtime","sleep_defer_until","REAL NOT NULL DEFAULT 0")
+
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         """幂等补充 SQLite 列，避免测试阶段升级时覆盖已有生活数据。"""
         columns = {str(row[1]) for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -683,9 +690,10 @@ class LifeStore:
             with self._tx() as conn:
                 conn.execute(
                     """UPDATE sleep_runtime SET phase=?,started_at=?,awake_grace_until=?,
-                    woken_count=?,last_event=? WHERE id=1""",
+                    woken_count=?,last_event=?,sleep_defer_until=? WHERE id=1""",
                     (runtime["phase"],runtime["started_at"],runtime.get("awake_grace_until",0),
-                     runtime.get("woken_count",0),runtime.get("last_event","")),
+                     runtime.get("woken_count",0),runtime.get("last_event",""),
+                     runtime.get("sleep_defer_until",0)),
                 )
 
     async def add_dream(self, content: str, mood_delta: float, energy_delta: float,

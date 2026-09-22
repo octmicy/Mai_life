@@ -11,10 +11,15 @@ from typing import Any
 class RelayService:
     """只创建 Planner 转述任务，不直接发送消息或构造 ``at`` 消息段。"""
 
-    def __init__(self,ctx:Any,store:Any,config:Any,logger:Any)->None:
+    def __init__(self,ctx:Any,store:Any,config:Any,logger:Any,bot_name:str="麦麦")->None:
         self.ctx=ctx; self.store=store; self.config=config; self.logger=logger
+        self.bot_name=bot_name
 
     def update_config(self,config:Any)->None:self.config=config
+
+    def set_bot_name(self,name:str)->None:
+        clean=str(name or "").strip()
+        if clean:self.bot_name=clean
 
     def resolve_group(self,group_id:str,*,relay_target:bool=True)->tuple[Any|None,str]:
         target=str(group_id or "").strip()
@@ -75,7 +80,7 @@ class RelayService:
         # 睡眠相位内不触发目标群 Planner（与主动巡检的睡眠门禁对齐）。
         runtime=await self.store.get_sleep_runtime()
         if str(runtime.get("phase") or "") in {"falling_asleep","light_sleep","deep_sleep"}:
-            return {"success":False,"error":"麦麦正在休息，转述稍后再试。"}
+            return {"success":False,"error":f"{self.bot_name}正在休息，转述稍后再试。"}
         group,error=self.resolve_group(group_id)
         if not group:return {"success":False,"error":error}
         clean=" ".join(str(content or "").replace("\x00","").split())[:1000]

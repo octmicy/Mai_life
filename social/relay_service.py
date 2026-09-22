@@ -72,6 +72,10 @@ class RelayService:
     async def trigger_explicit(self,group_id:str,content:str)->dict[str,Any]:
         """验证 QQ 群白名单并创建可追踪候选，再交给目标群 Planner 决定是否开口。"""
         if not self.config.social.enabled:return {"success":False,"error":"社交转述尚未启用。"}
+        # 睡眠相位内不触发目标群 Planner（与主动巡检的睡眠门禁对齐）。
+        runtime=await self.store.get_sleep_runtime()
+        if str(runtime.get("phase") or "") in {"falling_asleep","light_sleep","deep_sleep"}:
+            return {"success":False,"error":"麦麦正在休息，转述稍后再试。"}
         group,error=self.resolve_group(group_id)
         if not group:return {"success":False,"error":error}
         clean=" ".join(str(content or "").replace("\x00","").split())[:1000]

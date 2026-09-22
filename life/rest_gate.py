@@ -33,6 +33,49 @@ class RestGate:
             return "wake","明确叫醒、紧急或安全需要"
         return "judge","普通消息"
 
+    def in_group_quiet_window(self,now:Any)->bool:
+        """当前是否处于群静音窗（群夜间或群午休窗，配置独立于私聊）。"""
+        cfg=self.config.rest_gate
+        if not getattr(cfg,"group_enabled",False):return False
+        current=now.strftime("%H:%M")
+        return (self._in_window(cfg.group_night_start,cfg.group_night_end,current)
+                or self._in_window(cfg.group_nap_start,cfg.group_nap_end,current))
+
+    def group_gate_enabled_for(self,group_id:str)->bool:
+        """该群是否受群闸门管辖。
+
+        group_mode="all"（默认）：开了总闸就对所有群生效，开箱即用；
+        group_mode="selected"：只有社交白名单内且打开「夜间静音」的群生效。
+        """
+        target=str(group_id or "").strip()
+        if not target:return False
+        cfg=self.config.rest_gate
+        if str(getattr(cfg,"group_mode","all") or "all")!="selected":
+            return True
+        for item in (getattr(self.config.social,"groups",None) or []):
+            if str(getattr(item,"group_id","") or "").strip()==target:
+                return bool(getattr(item,"enabled",False) and getattr(item,"rest_gate_enabled",False))
+        return False
+
+    def decide_group(self,text:str,now:Any,group_id:str)->tuple[bool,str]:
+        """群聊轻量版闸门：总闸/分群开关 → 时间窗 → 强制唤醒词放行 / 勿扰词阻断 / 其余静默。
+
+        不放行概率、不建待醒候选、不写积压——每条群消息独立判定；
+        被阻断的消息不进入主程序，因此不产生 Planner/Replyer/VLM 等请求。
+        """
+        cfg=self.config.rest_gate
+        if not getattr(cfg,"group_enabled",False):return True,"group_gate_disabled"
+        if not self.group_gate_enabled_for(group_id):return True,"group_not_enabled"
+        if not self.in_group_quiet_window(now):return True,"outside_group_window"
+        compact=re.sub(r"\s+","",str(text or "").lower())
+        for term in (getattr(cfg,"group_force_wake_terms",None) or []):
+            word=str(term or "").strip().lower()
+            if word and word in compact:
+                return True,f"群强制唤醒词：{str(term).strip()}"
+        if re.search(r"(?:别回|不用回|不要回|继续睡|别醒|别打扰|安心睡|不用理我|别烦我|别吵)",compact):
+            return False,BLOCK_REASON
+        return False,"群休息时段静默"
+
     async def _candidate(self,user_id:str,session_id:str,message_id:str,reason:str,now:Any)->None:
         if session_id:
             # 候选要覆盖 planner+replyer 两级模型与发送排队，300s 常被拖过导致醒来提交落空。

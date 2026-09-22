@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.14.4"
+PLUGIN_VERSION = "1.14.5"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -306,6 +306,11 @@ class SocialGroupProfile(PluginConfigBase):
         default=False, description="是否允许管理员向该群发起显式转述。",
         json_schema_extra=_ui("允许作为转述目标", "启用后主人或管理员可用 /麦麦转述 群QQ号 内容触发该群 Planner。", 3,
                               label_en="Allow Relay Target", hint_en="Allow owner/admin to trigger this group's Planner with the Chinese relay command."),
+    )
+    rest_gate_enabled: bool = Field(
+        default=False, description="是否在该群启用夜间静音（休息闸门）。",
+        json_schema_extra=_ui("启用夜间静音", "开启后，在「休息回复闸门→群聊闸门」配置的时间窗内，该群只有含强制唤醒词的消息会被回复，其余静默。需先在总开关启用群聊休息闸门。", 4,
+                              label_en="Enable Group Night Silence", hint_en="During group quiet windows only force-wake terms get replies in this group."),
     )
 
     @field_validator("group_id", mode="before")
@@ -791,10 +796,49 @@ class RestGateSettings(PluginConfigBase):
         json_schema_extra=_ui("午休闸门结束", "默认 14:30。", 9, label_en="Nap Gate End", hint_en="Nap gate end in HH:MM format."),
     )
 
-    @field_validator("night_start", "night_end", "nap_start", "nap_end", mode="before")
+    # ── 群聊闸门（与私聊完全独立；轻量版：强制词放行 + 勿扰词阻断 + 其余静默）──
+    group_enabled: bool = Field(
+        default=False, description="群聊休息闸门总开关。",
+        json_schema_extra=_ui("启用群聊休息闸门", "默认关闭。开启后，在下方群时间窗内，群里只有含强制唤醒词的消息会被回复，其余静默（不回复、不积压、不进主程序）。", 10,
+                              label_en="Enable Group Rest Gate", hint_en="During group quiet windows only force-wake terms get replies."),
+    )
+    group_mode: Literal["all", "selected"] = Field(
+        default="all", description="群闸门作用范围：all=所有群；selected=只对群聊白名单中开了「夜间静音」的群生效。",
+        json_schema_extra=_ui("群闸门作用范围", "「所有群」开箱即用；「指定群」需先在社交转述白名单登记该群并打开「夜间静音」。", 10,
+                              label_en="Group Gate Scope", hint_en="All groups, or only selected groups from the social allowlist.",
+                              enum_labels={"all": "所有群", "selected": "指定群（白名单）"}),
+    )
+    group_night_start: str = Field(
+        default="22:30", description="群夜间闸门开始时间。",
+        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；独立于私聊设置。", 11, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
+    )
+    group_night_end: str = Field(
+        default="08:00", description="群夜间闸门结束时间。",
+        json_schema_extra=_ui("群夜间闸门结束", "默认 08:00。", 12, label_en="Group Night End", hint_en="Group night window end in HH:MM format."),
+    )
+    group_nap_start: str = Field(
+        default="12:00", description="群午休闸门开始时间。",
+        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。", 13, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
+    )
+    group_nap_end: str = Field(
+        default="14:30", description="群午休闸门结束时间。",
+        json_schema_extra=_ui("群午休闸门结束", "默认 14:30。", 14, label_en="Group Nap End", hint_en="Group nap window end in HH:MM format."),
+    )
+    group_force_wake_terms: list[str] = Field(
+        default_factory=lambda: ["救命","急事","报警","醒醒","快醒","叫醒","出事了","很难受","撑不住","危险","轻生","自杀"],
+        description="群强制唤醒词：群消息含其中任意一词时放行；独立于私聊词表。",
+        json_schema_extra=_ui("群强制唤醒词","群消息含任意一词立即放行；可自由增删",15,
+                              label_en="Group Force Wake Terms",
+                              hint_en="Group messages containing any term bypass the group silence."),
+    )
+
+    @field_validator("night_start", "night_end", "nap_start", "nap_end",
+                     "group_night_start", "group_night_end", "group_nap_start", "group_nap_end", mode="before")
     @classmethod
     def validate_gate_time(cls, value: Any, info: ValidationInfo) -> str:
-        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30"}
+        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30",
+                  "group_night_start":"22:30","group_night_end":"08:00",
+                  "group_nap_start":"12:00","group_nap_end":"14:30"}
         return _time(value,defaults.get(info.field_name,"00:00"))
 
 

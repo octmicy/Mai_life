@@ -57,11 +57,24 @@ class GroupObserver:
         marker=f"[媒介:{','.join(media)}]" if media else ""
         return " ".join(item for item in (text,marker) if item).strip()
 
+    def _group_quiet_now(self,now:datetime)->bool:
+        """群闸门开启且当前在群静音窗：跳过观察判定与摘要（夜间无 Planner 消费这些摘要）。"""
+        cfg=getattr(self.config,"rest_gate",None)
+        if cfg is None or not getattr(cfg,"group_enabled",False):return False
+        current=now.strftime("%H:%M")
+        start=str(getattr(cfg,"group_night_start","22:30")); end=str(getattr(cfg,"group_night_end","08:00"))
+        nap_start=str(getattr(cfg,"group_nap_start","12:00")); nap_end=str(getattr(cfg,"group_nap_end","14:30"))
+        def in_window(a:str,b:str)->bool:
+            if a==b:return False
+            return a<=current<b if a<b else current>=a or current<b
+        return in_window(start,end) or in_window(nap_start,nap_end)
+
     async def observe(self,message:dict[str,Any],now:datetime)->dict[str,Any]:
         """收口一个群话题；较早的并发调用返回 superseded。"""
         if self._closed or not self.config.social.enabled:return {"status":"disabled"}
         group_id,group_name=group_identity(message); profile=self._group_profile(group_id)
         if not profile:return {"status":"not_allowlisted"}
+        if self._group_quiet_now(now):return {"status":"rest_gated"}
         user_id,user_name=sender_identity(message)
         await self.store.upsert_group_directory(
             group_id,group_name,str(message.get("session_id") or ""),now.timestamp(),

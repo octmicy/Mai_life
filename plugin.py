@@ -1,4 +1,4 @@
-"""Mai_life v1.14.4 插件入口。"""
+"""Mai_life v1.14.5 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -762,6 +762,13 @@ class MaiLifePlugin(MaiBotPlugin):
         group_id,group_name=group_identity(merged)
         if group_id:
             await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
+        # 群休息闸门（轻量版）：在群轮次登记与观察之前判定；被阻断的消息不进主程序，
+        # 因此不产生 Planner/Replyer/VLM 等主程序模型请求，也不留积压与候选。
+        if self._rest:
+            group_allowed,group_reason=self._rest.decide_group(direct_text(merged),self._env.now(),group_id)
+            if not group_allowed:
+                self.ctx.logger.info(f"[MaiLife] 群休息闸门阻断 group={group_id or session} user={uid} reason={group_reason}")
+                return {"action":"abort"}
         if self.config.debounce.group_enabled:
             turn_scope=self._group_scope(merged)
             await self._cancel_group_confirmations(turn_scope)
@@ -1729,6 +1736,7 @@ class MaiLifePlugin(MaiBotPlugin):
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n"
               f"配置用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
               f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
+              f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.social.groups if g.enabled and g.rest_gate_enabled) if self.config.rest_gate.group_enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
               f"联网见闻：{'开启' if self.config.information.enabled else '关闭'}（新闻 {'开' if self.config.news.enabled else '关'} / 搜索 {'开' if self.config.search.enabled else '关'}）\n"

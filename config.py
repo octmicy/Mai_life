@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.14.3"
+PLUGIN_VERSION = "1.14.4"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -221,6 +221,20 @@ class UserProfile(PluginConfigBase):
         try:configured=int(data.get("daily_proactive_max",1))
         except (TypeError,ValueError):configured=1
         if configured<0:data["daily_proactive_max"]=2 if str(data.get("role") or "friend")=="owner" else 1
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_owner_group_to_private(cls, value: Any) -> Any:
+        """主人档案未单独配置群转私开关时默认允许，保持旧版“全局开关即可”的行为。
+
+        群转私对主人是“全局开关 AND 档案开关”；只有显式关闭档案开关的主人才被排除，
+        避免既有部署在升级后静默失去主人群转私。朋友仍默认关闭。
+        """
+        if not isinstance(value,dict):return value
+        if str(value.get("role") or "friend")!="owner":return value
+        if "group_to_private_enabled" in value:return value
+        data=dict(value); data["group_to_private_enabled"]=True
         return data
 
     @field_validator("user_id", mode="before")
@@ -752,6 +766,13 @@ class RestGateSettings(PluginConfigBase):
             label_en="Gated Schedule Types", hint_en="Recommended: sleep and nap. Adding rest also gates ordinary rest periods.",
             enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）"},
         ),
+    )
+    force_wake_terms: list[str] = Field(
+        default_factory=lambda: ["救命","急事","报警","醒醒","快醒","叫醒","出事了","很难受","撑不住","危险","轻生","自杀"],
+        description="强制唤醒词：消息含其中任意一词时无视勿扰词与概率，立即放行并建立待醒候选。",
+        json_schema_extra=_ui("强制唤醒词","含任意一词立即放行；可自由增删",6,
+                              label_en="Force Wake Terms",
+                              hint_en="Any term in the message bypasses quiet terms and probability, waking Mai immediately."),
     )
     night_start: str = Field(
         default="22:30", description="夜间闸门开始时间。",

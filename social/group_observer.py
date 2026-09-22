@@ -10,6 +10,7 @@ from typing import Any
 
 from ..messaging.adapter_compat import adapter_name,group_identity,sender_identity
 from ..messaging.message_pipeline import media_types,plain_text
+from ..messaging.recall_service import RecallService
 
 
 _SENSITIVE_RE=re.compile(
@@ -89,13 +90,18 @@ class GroupObserver:
         if not digest.get("public") or not digest.get("summary"):return {"status":"private_or_empty"}
         stamp=now.timestamp(); key="\n".join(snippets)
         observation_id=hashlib.sha1(f"{group_id}:{stamp}:{key}".encode("utf-8","ignore")).hexdigest()[:24]
+        # observe 收到的是防抖合并后的消息：RecallService.source_message_ids 取合并轮
+        # 全部来源 ID，与撤回清理口径一致；窗口内其他发送者的消息 ID 也一并保留。
+        source_ids=list(RecallService.source_message_ids(message))
+        for entry_id,_snippet in entries:
+            if entry_id and entry_id not in source_ids:source_ids.append(entry_id)
         # group_alias 是旧库兼容列，只保存 Host 自动读取的群名称，不参与任何匹配或权限判断。
         item={"id":observation_id,"group_id":group_id,"group_alias":group_name or f"QQ群 {group_id}",
               "topic":str(digest.get("topic") or "群聊里的公开话题")[:240],
               "summary":str(digest["summary"])[:1200],"interest_score":float(digest.get("score") or 0),
               "source_adapter":source_adapter,"created_at":stamp,
               "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600,
-              "source_message_ids":[message_id for message_id,_snippet in entries if message_id]}
+              "source_message_ids":source_ids}
         if not await self.store.save_group_observation(item):return {"status":"duplicate"}
         queued=await self._queue_private_share(item,now)
         return {"status":"saved","observation_id":observation_id,"private_share_queued":queued}
@@ -182,9 +188,12 @@ class GroupObserver:
         for user in await self.store.list_users(proactive_only=True):
             uid=str(user["user_id"]); profile=profiles.get(uid)
             role=str(user.get("role") or "friend")
-            allowed=(role=="owner" and self.config.social.owner_group_to_private_enabled) or bool(
-                profile and profile.group_to_private_enabled
-            )
+            # 群转私对主人是“全局开关 AND 档案开关”双条件；朋友仍只看个人档案开关。
+            if role=="owner":
+                allowed=bool(self.config.social.owner_group_to_private_enabled
+                             and profile and profile.group_to_private_enabled)
+            else:
+                allowed=bool(profile and profile.group_to_private_enabled)
             if not allowed or not user.get("stream_id"):continue
             activity=await self.store.get_group_activity(observation["group_id"],uid)
             # 未知活跃时间不等于已离群；必须有一次真实群活跃作为保守证据。
@@ -214,7 +223,8 @@ class GroupObserver:
             "topic":str(observation["topic"])[:160],
             "motive":f"QQ群 {observation['group_id']}（{observation['group_alias']}）有一条公开话题摘要：{observation['summary'][:300]}。"
                      "该用户已较久未在群里出现；只在自然且不泄露群友身份或原句时考虑转述。",
-            "weight":min(0.85,max(0.45,float(observation["interest_score"]))),
+            # 群转私契机下限 0.7：排在日常场景契机之前，避免被普通日程挤占。
+            "weight":min(0.85,max(0.7,float(observation["interest_score"]))),
             "privacy":"group_public","target_user_id":uid,"expires_at":expires_at,
         })
         return True

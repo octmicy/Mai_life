@@ -7,6 +7,7 @@ from typing import Any
 _TYPE_LABELS={
     "novel_fragment":"小说片段","poem":"诗","essay":"随笔","screenplay":"短剧",
     "storyboard":"分镜脚本","character":"角色设定","worldbuilding":"世界观片段",
+    "reading_note":"阅读笔记","diary":"日记",
 }
 
 

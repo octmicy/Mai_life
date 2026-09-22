@@ -233,13 +233,17 @@ class MessageDebouncer:
             burst.timer_task.cancel()
             burst.timer_task = None
 
-    @classmethod
-    def _merge(cls, messages: list[dict[str, Any]], separator: str = "\n") -> dict[str, Any]:
+    def _merge(self, messages: list[dict[str, Any]], separator: str = "\n") -> dict[str, Any]:
         """参考插件合并逻辑：以最新消息为基底，按分隔符拼接组件与文本。"""
         latest = copy.deepcopy(messages[-1])
         combined: list[dict[str, Any]] = []; texts: list[str] = []; ids: list[str] = []
         for index, message in enumerate(messages):
             components = copy.deepcopy(message.get("raw_message") or [])
+            if not isinstance(components, list):
+                # 个别适配器可能给出非列表 raw_message；丢弃组件但保留文本，避免合并炸断。
+                self.logger.debug("[MaiLife] 合并跳过非列表 raw_message message=%s type=%s",
+                                  str(message.get("message_id") or ""), type(components).__name__)
+                components = []
             if index and combined and separator:
                 combined.append({"type": "text", "data": separator})
             combined.extend(components)
@@ -251,9 +255,13 @@ class MessageDebouncer:
                 ids.append(mid)
         latest["raw_message"] = combined
         latest["processed_plain_text"] = separator.join(texts)
-        latest["is_emoji"] = all(cls._is_emoji_only(message.get("raw_message") or []) for message in messages)
-        latest["is_picture"] = any(cls._has_component(message.get("raw_message") or [], "image") for message in messages)
-        latest["is_command"] = False
+        latest["is_emoji"] = all(self._is_emoji_only(message.get("raw_message") or []) for message in messages)
+        latest["is_picture"] = any(self._has_component(message.get("raw_message") or [], "image") for message in messages)
+        # 任一段是命令（含 / 开头）则合并轮按命令处理：连发拆分命令的第二段不会被当聊天。
+        latest["is_command"] = any(
+            bool(message.get("is_command")) or direct_text(message).lstrip().startswith("/")
+            for message in messages
+        )
         info = latest.setdefault("message_info", {})
         additional = info.setdefault("additional_config", {}) if isinstance(info, dict) else {}
         if isinstance(additional, dict):
@@ -316,7 +324,11 @@ class MessageDebouncer:
             generation = burst.generation
             over_limit = len(burst.messages) >= int(cfg.max_messages) or sum(media_bytes(item) for item in burst.messages) > int(cfg.max_media_bytes)
             text = direct_text(message)
-            immediate = bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit)
+            # 强制唤醒词与紧急/安静词同级别立即结算：单独立即放行，不与后续消息合并。
+            force_terms = [str(term).strip() for term in
+                           (getattr(self.config.rest_gate, "force_wake_terms", None) or []) if str(term).strip()]
+            immediate = bool(_URGENT_RE.search(text) or _QUIET_RE.search(text) or over_limit
+                             or any(term in text for term in force_terms))
             if not immediate:
                 # 参考插件：每条新消息重置防抖定时器，总等待不超过首次消息起的 max_wait。
                 self._schedule_timer_locked(burst_key, burst, private)

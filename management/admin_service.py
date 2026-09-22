@@ -150,26 +150,41 @@ class AdminService:
         elif scope=="sources":
             lines=[f"联网服务：总开关 {'开' if data['information_enabled'] else '关'} / 新闻 {'开' if data['news_enabled'] else '关'} / 搜索 {'开' if data['search_enabled'] else '关'}"]
             for item in data["providers"]:
+                if item["provider_type"]=="playwright":
+                    # Playwright 走本地浏览器而非 API Key，Key 列展示 0 会误导成配置缺失。
+                    lines.append(f"{item['provider_id']}｜{item['provider_type']}｜{'开' if item['enabled'] else '关'}｜浏览器（无需 Key）")
+                    continue
                 states=",".join(f"{key['fingerprint']}:{key['status']}"+(f"/{key['last_error_class']}" if key['last_error_class'] else "") for key in item["keys"]) or "无 Key"
                 lines.append(f"{item['provider_id']}｜{item['provider_type']}｜{'开' if item['enabled'] else '关'}｜Key {item['key_count']}｜{states}")
         elif scope=="bookshelf":
             lines=["书柜元数据（不含正文）"]+[f"{item['id']}｜{item['title']}｜{item['privacy']}｜{item['status']}" for item in data["items"]]
         elif scope=="tokens":
-            lines=["今日模型 Token 聚合"]+[f"{item['source']}/{item['task_name']}｜{item['calls']} 次｜{int(item['total_tokens'] or 0)} Token" for item in data["model_usage"]]
-            lines.append("今日搜索 API 请求（不计作 Token）")
-            lines.extend(f"{item['provider_type']}｜{item['calls']} 次｜成功 {item['successes'] or 0}｜结果 {item['results'] or 0}" for item in data["search_api_usage"])
+            if not data["model_usage"] and not data["search_api_usage"]:
+                # 两类数据都空时只给一句结论，不再输出光杆标题。
+                lines=["今日暂无模型调用。"]
+            else:
+                lines=[]
+                if data["model_usage"]:
+                    lines.append("今日模型 Token 聚合")
+                    lines.extend(f"{item['source']}/{item['task_name']}｜{item['calls']} 次｜{int(item['total_tokens'] or 0)} Token" for item in data["model_usage"])
+                if data["search_api_usage"]:
+                    lines.append("今日搜索 API 请求（不计作 Token）")
+                    lines.extend(f"{item['provider_type']}｜{item['calls']} 次｜成功 {item['successes'] or 0}｜结果 {item['results'] or 0}" for item in data["search_api_usage"])
         elif scope=="search":
             labels={"tool_search":"联网工具","search":"主动搜索","news":"新闻阅读"}
-            lines=["最近本地搜索历史（查询词已隐私清洗）"]
-            for item in data["items"]:
-                when=datetime.fromtimestamp(float(item["created_at"])).strftime("%m-%d %H:%M")
-                status="成功" if item["success"] else f"失败({item['error_class'] or '未知'})"
-                results=item.get("results") if isinstance(item.get("results"),list) else []
-                first_title=str((results[0] if results and isinstance(results[0],dict) else {}).get("title") or "")
-                first=" ".join(first_title.split())[:60]
-                line=f"{when}｜{labels.get(item['operation'],item['operation'])}｜{item['query'][:60]}｜{item['provider_type'] or '-'}｜{status}｜{item['result_count']} 条"
-                if first:line+=f"｜{first}"
-                lines.append(line)
+            if not data["items"]:
+                lines=["暂无搜索历史。"]
+            else:
+                lines=["最近本地搜索历史（查询词已隐私清洗）"]
+                for item in data["items"]:
+                    when=datetime.fromtimestamp(float(item["created_at"])).strftime("%m-%d %H:%M")
+                    status="成功" if item["success"] else f"失败({item['error_class'] or '未知'})"
+                    results=item.get("results") if isinstance(item.get("results"),list) else []
+                    first_title=str((results[0] if results and isinstance(results[0],dict) else {}).get("title") or "")
+                    first=" ".join(first_title.split())[:60]
+                    line=f"{when}｜{labels.get(item['operation'],item['operation'])}｜{item['query'][:60]}｜{item['provider_type'] or '-'}｜{status}｜{item['result_count']} 条"
+                    if first:line+=f"｜{first}"
+                    lines.append(line)
         else:
             lines=["近期主动候选"]+[f"{item['user_id']}｜{item.get('topic') or item['opportunity_id']}｜{item['status']}" for item in data["items"]]
             skip=data.get("skip_stats") if isinstance(data,dict) else []

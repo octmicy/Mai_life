@@ -266,6 +266,8 @@ class SearchService:
                 success=False,status_code=err.status_code,latency_ms=latency_ms,result_count=0,
                 error_class=error_class)
             self.last_error_class=error_class
+            # 非惩罚失败同样要让运维在日志里看到，只是不伴随 Key 冷却。
+            self.logger.debug(f"[MaiLife] 联网搜索未惩罚失败 provider={provider_id} type={provider_type} error={error_class}")
             return False
         failures=int(runtime.get("failure_count") or 0)+1
         if error_class=="auth":
@@ -288,7 +290,8 @@ class SearchService:
             success=False,status_code=err.status_code,latency_ms=latency_ms,result_count=0,
             error_class=error_class)
         self.last_error_class=error_class
-        self.logger.info(f"[MaiLife] 联网搜索降级 provider={provider_id} type={provider_type} error={error_class}")
+        # 惩罚性降级必须可见：后台联网长期失败时，info 级日志很容易被淹没。
+        self.logger.warning(f"[MaiLife] 联网搜索降级 provider={provider_id} type={provider_type} error={error_class}")
         return try_next
 
     async def _record_history(self,query:str,operation:str,event_time:float,
@@ -318,7 +321,7 @@ class SearchService:
         await self.prepare(); self.last_error_class=""
         maximum=max(1,min(12,int(self.config.search_api.max_attempts))); attempts=0
         now=time.time(); event_time=float(event_at or now); search_started=time.perf_counter()
-        attempt_limit_reached=False
+        attempt_limit_reached=False; last_provider_type=""
         for provider_id,provider in self.providers():
             if not provider.enabled:continue
             strategy=self._strategy_for(provider)
@@ -330,7 +333,7 @@ class SearchService:
             for fingerprint,key in strategy.available(provider,runtimes,now):
                 if attempts>=maximum:
                     self.last_error_class="attempt_limit"; attempt_limit_reached=True; break
-                attempts+=1; started=time.perf_counter()
+                attempts+=1; last_provider_type=str(provider.provider_type); started=time.perf_counter()
                 try:
                     parsed=await strategy.attempt(provider_id,provider,fingerprint,key,query,freshness)
                 except SearchAttemptError as exc:
@@ -354,11 +357,13 @@ class SearchService:
                 return parsed
             if attempt_limit_reached:
                 break
+        # 失败历史也要能看出是哪个服务最后一次尝试，便于定位是 Key 失效还是服务故障。
+        failed_response=SearchResponse([],provider_type=last_provider_type)
         await self._record_history(
-            query,operation,event_time,SearchResponse([]),
+            query,operation,event_time,failed_response,
             (time.perf_counter()-search_started)*1000,error_class=self.last_error_class or "no_available_provider",
         )
-        return SearchResponse([])
+        return failed_response
 
     async def browse_screenshot(self,url:str)->bytes:
         """用 Playwright 打开网页并截图；无可用浏览器时抛 SearchBackendError。"""
@@ -367,7 +372,8 @@ class SearchService:
                 continue
             client=self._browser_client(provider_id,provider)
             return await client.screenshot(url,float(self.config.search_api.timeout_seconds))
-        raise SearchBackendError("未启用 Playwright 浏览器服务",error_class="browser_unavailable")
+        # 没有已启用的 Playwright 服务时与“Chromium 未安装”区分：后者才该提示装浏览器。
+        raise SearchBackendError("未启用 Playwright 浏览器服务",error_class="service_not_configured")
 
     async def health_snapshot(self)->list[dict[str,Any]]:
         await self.prepare(); rows=await self.store.search_provider_health()

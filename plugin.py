@@ -1,4 +1,4 @@
-"""Mai_life v1.14.3 插件入口。"""
+"""Mai_life v1.14.4 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -9,8 +9,8 @@ from typing import Any,ClassVar,Iterable,Optional
 
 import asyncio
 import hashlib
-import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -27,7 +27,7 @@ from .life.memory_service import MemoryService
 from .life.proactive import ProactiveEngine
 from .life.rest_gate import BLOCK_REASON,RestGate
 from .life.schedule_service import ScheduleService,hhmm
-from .messaging.adapter_compat import adapter_name,group_identity,recall_notice,sender_identity
+from .messaging.adapter_compat import adapter_name,component_kind,component_text,group_identity,recall_notice,sender_identity
 from .messaging.command_catalog import COMMAND_SECTIONS,build_command_usage_text
 from .messaging.command_reply import CommandReplyService
 from .messaging.command_result_renderer import MaiLifeCommandResultRenderer
@@ -45,9 +45,13 @@ ADMIN_SCOPE_ALIASES:dict[str,str]={
     "来源":"sources","书柜":"bookshelf","统计":"tokens","主动":"proactive","搜索":"search",
 }
 PRIVATE_COMMAND_ACCESS_DENIED="该指令仅对已配置并启用的私聊用户或私聊管理员开放。"
+# 主人被 admin_user_ids 配为他人时也会被这些命令拒绝；统一提示如何补充管理员。
+ADMIN_IDS_HINT="（如需其他管理员，请在 admin_user_ids 中加入其 QQ）"
 
 _SLEEP_PHASE_ZH={"awake":"清醒","woken":"被叫醒","falling_asleep":"入睡中",
                  "light_sleep":"浅睡","deep_sleep":"深睡"}
+_SCHEDULE_KIND_ZH={"meal":"用餐","work":"工作","study":"学习","travel":"出行",
+                   "leisure":"闲暇","sleep":"睡眠","nap":"午休","rest":"休息"}
 
 def _mood_label(value:float)->str:
     """心情效价值翻译为中文档位，避免用户面对 -1~+1 的裸浮点。"""
@@ -56,6 +60,21 @@ def _mood_label(value:float)->str:
     if value<0.25:return "平静"
     if value<0.6:return "不错"
     return "很好"
+
+
+def _creation_result_text(result:dict[str,Any])->str:
+    """把创作判断的状态机翻译成中文反馈，避免用户面对裸 JSON。"""
+    status=str(result.get("status") or "")
+    if status=="archived":
+        privacy="公开" if str(result.get("privacy") or "")=="public" else "私人"
+        return f"已创作并归档《{str(result.get('title') or '未命名')}》（{privacy}）"
+    if status in {"disabled","plaintext_not_acknowledged"}:return "书柜创作未启用或未确认明文存储。"
+    if status in {"daily_limit","daily_limit_zero"}:return "今日创作额度已用完。"
+    if status=="low_energy":return "精力不足，先不创作。"
+    if status=="schedule_busy":return "当前时段不适合创作。"
+    if status=="no_inspiration":return "暂时没有想写的灵感。"
+    if status=="failed":return f"创作失败：{str(result.get('error') or '未知原因')}"
+    return f"本次未创作（{status or '未知状态'}）"
 
 
 class MaiLifePlugin(MaiBotPlugin):
@@ -199,7 +218,7 @@ class MaiLifePlugin(MaiBotPlugin):
         """停止调度、按 scope 刷新对应服务引用、清理失效运行态，再按新开关恢复任务。"""
         del config_data,version
         await self._stop_tasks()
-        await self._active_tasks.reset()
+        # 配置保存不得清空主动/转述任务注册表：WebUI 每次保存都重置会让进行中的任务失去归因。
         self._active_tasks.update_retention(int(self.config.debounce.turn_expire_seconds))
         self._reply_confirmations.clear(); self._group_turns.clear(); self._group_turn_generation=0
         self._group_sessions.clear()
@@ -660,6 +679,17 @@ class MaiLifePlugin(MaiBotPlugin):
         if not isinstance(additional,dict):additional={}; info["additional_config"]=additional
         return additional
 
+    def _is_unmatched_mai_command(self,message:dict[str,Any])->bool:
+        """识别“像命令但不是我们的命令”的手滑输入。
+
+        命令形态（is_command 或以 / 开头）且以 /麦麦 或 /mai 开头，却未命中任何
+        自家命令 pattern：尾空格、缺参数、大写 /MAI 等都落在这里。
+        """
+        if not (bool(message.get("is_command")) or direct_text(message).lstrip().startswith("/")):return False
+        text=_raw_command_text(message)
+        if not _SUSPECT_COMMAND_RE.match(text):return False
+        return not _matches_own_command(text)
+
     @HookHandler("chat.receive.before_process",mode=HookMode.BLOCKING,order=HookOrder.EARLY,timeout_ms=30000)
     async def on_receive(self,**kwargs:Any)->dict[str,Any]:
         """统一处理撤回、群/私聊收口、互动记录和休息闸门。
@@ -678,6 +708,18 @@ class MaiLifePlugin(MaiBotPlugin):
         if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return {"action":"continue"}
         if message.get("is_notify"):return {"action":"continue"}
         uid,session,mid,private=message_identity(message)
+        if self._is_unmatched_mai_command(message):
+            # 手滑命令不会被 Host 派发给本插件；直接显示菜单并 abort，避免落进 AI 闲聊。
+            # Hook 入参只有 message，发送目标必须从消息身份派生。
+            group_id,_group_name=group_identity(message)
+            try:
+                await self._send_command_menu(
+                    {"user_id":uid,"group_id":group_id,"stream_id":session,
+                     "platform":str(message.get("platform") or "qq")},
+                    notice="未识别的指令，已为你显示指令菜单。",
+                )
+            except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 未识别指令菜单发送失败: {exc}")
+            return {"action":"abort"}
         assert self._store and self._env and self._schedule and self._rest and self._debouncer and self._continuity and self._memory and self._recall
         self._recall.note_inbound(message)
         try:await self._recall.register_turn(message)
@@ -777,10 +819,12 @@ class MaiLifePlugin(MaiBotPlugin):
         except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 合并撤回轮次注册失败，消息继续处理: {exc}")
         if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
         intent=classify_intent(text,media)
-        await self._store.record_interaction(
-            uid,text or f"发送了{','.join(media) or '一条消息'}",
-            self._env.now().timestamp(),self._env.now().hour,source_message_id=mid,
-        )
+        # 纯空消息（无文字也无媒介）已被防抖放行；不再写互动历史，避免“发送了一条消息”污染关系时间线。
+        if text or media:
+            await self._store.record_interaction(
+                uid,text or f"发送了{','.join(media) or '一条消息'}",
+                self._env.now().timestamp(),self._env.now().hour,source_message_id=mid,
+            )
         task_keys=[(session,source) for source in source_ids]
         # 连续话题与日期提取不阻塞当前回复，并与来源消息绑定以支持撤回取消。
         self._spawn_transient(self._continuity.refresh(uid,intent),f"mai-life-continuity-{uid}",message_keys=task_keys)
@@ -790,7 +834,7 @@ class MaiLifePlugin(MaiBotPlugin):
         )
         # 休息闸门最后执行；被阻断消息只写入一次性 backlog，不进入 Planner/Replyer。
         context=await self._schedule.context(self._env.now())
-        gate_allowed,gate_reason=await self._rest.decide(uid,text,self._env.now(),context.get("current"),session_id=session,message_id=mid)
+        gate_allowed,gate_reason=await self._rest.decide(uid,text,self._env.now(),context.get("current"),session_id=session,message_id=mid,media=media)
         if not gate_allowed:
             if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
             if gate_reason!=BLOCK_REASON:
@@ -1051,19 +1095,30 @@ class MaiLifePlugin(MaiBotPlugin):
             self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=missing_attribution session={session}")
             return self._suppress_response(kwargs,"missing_attribution")
         # 主动和转述输出必须能对应仍有效的持久层候选；无法归因的 Host 主动轮一律静默。
+        # 迟到回复放行：active 归因仍存活（注册表保留窗已覆盖候选过期窗）且候选未结算时，
+        # 视为本次任务的合法产出——允许发送并由 after_send 结算，不标记过期、不重试。
+        proactive_late_ok=bool(active and proactive and str(proactive.get("id") or "")==str(active.record_id)
+                               and float(proactive.get("sent_at") or 0)==0
+                               and str(proactive.get("status") or "") in {"pending","expired"})
         proactive_pending=bool(proactive and str(proactive.get("status") or "")=="pending"
-                               and float(proactive.get("expires_at") or 0)>now)
+                               and float(proactive.get("expires_at") or 0)>now) or proactive_late_ok
         if proactive and not proactive_pending:
-            if str(proactive.get("status") or "")=="pending" and self._store:
+            proactive_status=str(proactive.get("status") or "")
+            if proactive_status=="pending" and self._store:
                 await self._store.set_proactive_event_status(str(proactive["id"]),"expired")
-            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=proactive_expired session={session}")
-            return self._suppress_response(kwargs,"proactive_expired")
+            # 过期与“已取消/已失败”是不同运维语义，抑制原因必须能区分，不能都报 expired。
+            reason="proactive_cancelled" if proactive_status in {"cancelled","failed"} else "proactive_expired"
+            self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason={reason} session={session}")
+            return self._suppress_response(kwargs,reason)
+        relay_late_ok=bool(active and relay_task and str(relay_task.get("id") or "")==str(active.record_id)
+                           and float(relay_task.get("sent_at") or 0)==0
+                           and str(relay_task.get("status") or "") in {"pending","sending","expired"})
         relay_status=str(relay_task.get("status") or "")
         relay_expired=bool(relay_task and relay_status in {"pending","sending"}
-                           and float(relay_task.get("expires_at") or 0)<=now)
+                           and float(relay_task.get("expires_at") or 0)<=now) and not relay_late_ok
         if relay_expired and self._store:
             await self._store.set_relay_status(str(relay_task["id"]),"expired",now,"reply_after_expiry")
-        if relay_task and (relay_expired or relay_status in {"superseded","failed","expired","cancelled","sent"}):
+        if relay_task and not relay_late_ok and (relay_expired or relay_status in {"superseded","failed","expired","cancelled","sent"}):
             self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=relay_expired session={session}")
             return self._suppress_response(kwargs,"relay_expired")
         cancel_proactive=bool(proactive and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.proactive.enabled))
@@ -1164,7 +1219,11 @@ class MaiLifePlugin(MaiBotPlugin):
                 # proactive:* 是 Host 内部锚点，不是 QQ 消息号；禁止 NapCat 将其编码成无效 reply 段。
                 kwargs["set_reply"]=False; modified=True
             status=str(proactive_task.get("status") or "")
-            expired=status=="pending" and float(proactive_task.get("expires_at") or 0)<=time.time()
+            # 迟到发送放行：active 归因存活且事件未结算时，候选虽已过 expires_at 仍应发出。
+            late_ok=bool(active and str(proactive_task.get("id") or "")==str(active.record_id)
+                         and float(proactive_task.get("sent_at") or 0)==0
+                         and status in {"pending","expired"})
+            expired=status=="pending" and float(proactive_task.get("expires_at") or 0)<=time.time() and not late_ok
             disabled=self._stopping or not self.config.plugin.enabled or not self.config.proactive.enabled
             if expired:await self._store.set_proactive_event_status(str(proactive_task["id"]),"expired")
             elif disabled and status=="pending":
@@ -1194,8 +1253,12 @@ class MaiLifePlugin(MaiBotPlugin):
             return {"action":"abort"}
         if not self._relay or not self.config.plugin.enabled or not self.config.social.enabled:
             return {"action":"continue","modified_kwargs":kwargs} if modified else {"action":"continue"}
-        if await self._relay.should_abort_send(message,task_id):return {"action":"abort"}
-        mutated,reserved=await self._relay.mutate_before_send(message,task_id)
+        # 迟到转述放行：active 归因存活且候选未结算时，过期候选仍应发出（与主动链一致）。
+        relay_late=bool(active and relay_task and str(relay_task.get("id") or "")==str(active.record_id)
+                        and float(relay_task.get("sent_at") or 0)==0
+                        and str(relay_task.get("status") or "") in {"pending","sending","expired"})
+        if not relay_late and await self._relay.should_abort_send(message,task_id):return {"action":"abort"}
+        mutated,reserved=await self._relay.mutate_before_send(message,task_id,allow_expired=relay_late)
         if await recalled_now() or confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
             return {"action":"abort"}
@@ -1362,6 +1425,7 @@ class MaiLifePlugin(MaiBotPlugin):
             error_class=str(getattr(exc,"error_class","") or "")
             content={"playwright_unavailable":"Playwright 依赖未安装，请 pip install playwright。",
                      "browser_unavailable":"Chromium 浏览器不可用，请运行 python -m playwright install chromium。",
+                     "service_not_configured":"未启用 Playwright 浏览器服务（可在「联网搜索服务」中启用）。",
                      "invalid_response":"网页地址无效或不满足访问要求（仅公网 http/https）。",
                      "network":"网页打开超时或网络不可达，请稍后重试。",
                      }.get(error_class,"网页打开或截图失败，可能无法访问或页面较复杂。")
@@ -1528,12 +1592,19 @@ class MaiLifePlugin(MaiBotPlugin):
     async def cmd_date_add(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
-        raw_date=str(groups.get("event_date") or ""); name=str(groups.get("event_name") or "").strip()[:120]
+        raw_date=str(groups.get("event_date") or ""); raw_name=str(groups.get("event_name") or "").strip()
         try:parsed=date.fromisoformat(raw_date)
         except ValueError:return await self._send_command(kwargs,"日期格式无效，请使用 YYYY-MM-DD。")
+        name=raw_name[:120]; truncated="（名称超长，已截断）" if len(raw_name)>120 else ""
+        if self._store:
+            # 同日期同名称重复添加没有意义；先查一遍给出明确反馈，不再静默多写一行。
+            for item in await self._store.list_important_dates(uid):
+                if (str(item.get("event_name") or "")==name
+                        and str(item.get("event_date") or "")==parsed.isoformat()):
+                    return await self._send_command(kwargs,f"该日期已存在：{parsed.isoformat()} {name}")
         recurrence="annual" if any(word in name for word in ("生日","纪念日")) else "none"
         saved=await self._store.add_important_date(uid,name,parsed.isoformat(),recurrence,"manual",self._env.now().timestamp()) if self._store and self._env and name else 0
-        return await self._send_command(kwargs,f"已记录：{parsed.isoformat()} {name}" if saved else "未能添加日期，请检查输入。")
+        return await self._send_command(kwargs,f"已记录：{parsed.isoformat()} {name}{truncated}" if saved else "未能添加日期，请检查输入。")
 
     @Command(name="/麦麦删除日期",pattern=r"^(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
     async def cmd_date_remove(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -1612,14 +1683,14 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦立即创作",pattern=r"^(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
     async def cmd_create_now(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_access(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有私聊管理员可以手动执行创作判断。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以手动执行创作判断。"+ADMIN_IDS_HINT)
         if not self._creation or not self._env or not self._store or not self._schedule:
             return await self._send_command(kwargs,"创作服务尚未初始化。")
         now=self._env.now(); result=await self._creation.tick(
             now,self._personality,await self._store.get_state(),await self._schedule.context(now),force=True,
         )
-        return await self._send_command(kwargs,"创作结果："+json.dumps(result,ensure_ascii=False))
+        return await self._send_command(kwargs,_creation_result_text(result))
 
     @Command(name="/麦麦转述",pattern=r"^(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
     async def cmd_relay(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -1636,15 +1707,15 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦统计",pattern=r"^(?:/麦麦统计|/mai_tokens)(?=\s|$)",description="管理员查看今日插件 Token 统计")
     async def cmd_tokens(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_access(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有私聊管理员可以查看 Token 统计。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看 Token 统计。"+ADMIN_IDS_HINT)
         return await self._send_command(kwargs,await self._token_report())
 
     @Command(name="/麦麦管理",pattern=r"^(?:/麦麦管理|/mai_admin)(?:\s+(?P<scope>概览|用户|群聊|日期|来源|书柜|统计|主动|搜索|overview|users|groups|dates|sources|bookshelf|tokens|proactive|search))?\s*$",description="管理员查看聚合管理摘要")
     async def cmd_admin(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_access(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有私聊管理员可以查看管理摘要。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看管理摘要。"+ADMIN_IDS_HINT)
         groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         # 菜单只展示中文范围，旧英文范围仍在这里归一化后兼容处理。
         raw_scope=str(groups.get("scope") or "概览").strip()
@@ -1655,7 +1726,8 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦配置",pattern=r"^(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦麦生活配置摘要")
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
-        text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n配置用户：{len(self.config.users.profiles)}\n"
+        text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n"
+              f"配置用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
               f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
@@ -1673,8 +1745,8 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦重生日程",pattern=r"^(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_access(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有私聊管理员可以重新生成日程。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以重新生成日程。"+ADMIN_IDS_HINT)
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
         assert self._env and self._schedule and self._memory and self._store
         now=self._env.now(); weather=await self._store.get_weather() or {"description":"天气未知"}
@@ -1686,13 +1758,16 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦休息测试",pattern=r"^(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
     async def cmd_rest_test(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
-        if not await self._command_access(kwargs) or not self._is_admin(uid):
-            return await self._send_command(kwargs,"只有私聊管理员可以查看休息闸门诊断。")
+        if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
+            return await self._send_command(kwargs,"只有私聊管理员可以查看休息闸门诊断。"+ADMIN_IDS_HINT)
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
         assert self._env and self._schedule and self._store
         now=self._env.now(); context=await self._schedule.context(now); runtime=await self._store.get_sleep_runtime()
-        text=(f"当前时间：{now.strftime('%H:%M')}\n日程类型：{(context.get('current') or {}).get('kind','无')}\n"
-              f"睡眠阶段：{runtime.get('phase')}\n醒来缓冲至：{datetime.fromtimestamp(float(runtime.get('awake_grace_until',0)),tz=now.tzinfo).isoformat() if runtime.get('awake_grace_until') else '无'}")
+        kind=str((context.get('current') or {}).get('kind') or "无"); phase=str(runtime.get('phase') or "未知")
+        grace=runtime.get('awake_grace_until')
+        text=(f"当前时间：{now.strftime('%H:%M')}\n日程类型：{_SCHEDULE_KIND_ZH.get(kind,kind)}\n"
+              f"睡眠阶段：{_SLEEP_PHASE_ZH.get(phase,phase)}\n醒来缓冲至："
+              f"{datetime.fromtimestamp(float(grace),tz=now.tzinfo).strftime('%H:%M') if grace else '无'}")
         return await self._send_command(kwargs,text)
 
     async def _status_report(self)->str:
@@ -1703,6 +1778,10 @@ class MaiLifePlugin(MaiBotPlugin):
         context=await self._schedule.context(self._env.now())
         tasks=",".join(sorted(self._llm.available_tasks)) or "未知"
         diaries=await self._store.list_diaries(1); info=await self._information.status(self._env.now())
+        # 后台联网失败不能完全静默：状态行带出最近一次失败分类，便于区分“没新闻”与“搜索挂了”。
+        last_failure=next((str(key.get("last_error_class") or "") for provider in info["providers"]
+                           for key in (provider.get("keys") or [])
+                           if str(key.get("last_error_class") or "")),"无")
         observations=await self._store.recent_group_observations(self._env.now().timestamp(),100)
         creation=await self._creation.status(self._env.now())
         segment=str((context.get("current") or {}).get("summary") or "无")
@@ -1725,7 +1804,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 f"可用模型任务：{tasks}\n"
                 f"生活记忆：日记 {diary_text}{narrative_note}\n"
                 f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}，"
-                f"搜索历史 {info['recent_search_history']}\n"
+                f"搜索历史 {info['recent_search_history']}，最近失败：{last_failure}\n"
                 f"社交转述：{'开启' if self.config.social.enabled else '关闭'}，短期群摘要 {len(observations)}，"
                 f"群缓冲 {self._group_observer.active_groups if self._group_observer else 0}\n"
                 f"书柜创作：{'开启' if creation['enabled'] else '关闭'}，今日归档 {creation['archived_today']}，"
@@ -1784,7 +1863,8 @@ class MaiLifePlugin(MaiBotPlugin):
 
     @API(name="get_environment_snapshot",description="获取当前时间、历法和媒介环境快照",version="1",public=True)
     async def api_get_environment(self,platform:str="qq",adapter:str="unknown",chat_type:str="private",media:list[str]|None=None,**kwargs:Any)->dict[str,Any]:
-        clean_media=[str(item)[:40] for item in media if str(item).strip()] if isinstance(media,list) else ["text"]
+        # None 会被 str() 变成 "None" 字符串，媒介列表必须先过滤再截断。
+        clean_media=[str(item)[:40] for item in media if item is not None and str(item).strip()] if isinstance(media,list) else ["text"]
         return self._env.snapshot(platform=platform,adapter=adapter,chat_type=chat_type,media=clean_media or ["text"]) if self._env else {}
 
     @API(name="create_proactive_opportunity",description="创建外部主动分享契机",version="1",public=True)
@@ -1826,6 +1906,36 @@ class MaiLifePlugin(MaiBotPlugin):
     async def home_card_management(self,**kwargs:Any)->dict[str,Any]:
         del kwargs
         return {"success":True}
+
+
+def _command_pattern_res()->tuple[re.Pattern[str],...]:
+    """从 @Command 装饰实时收集本插件全部命令 pattern，避免与命令声明重复维护两份正则。"""
+    compiled:list[re.Pattern[str]]=[]
+    for attr_name in dir(MaiLifePlugin):
+        info=getattr(getattr(MaiLifePlugin,attr_name,None),"__maibot_component_info__",None)
+        pattern=str(getattr(info,"command_pattern","") or "")
+        if pattern:compiled.append(re.compile(pattern))
+    return tuple(compiled)
+
+
+# 未识别指令兜底：命令形态、以 /麦麦 或 /mai 开头（大小写不敏感）却未命中任何自家命令 pattern。
+_MAI_COMMAND_RES:tuple[re.Pattern[str],...]=_command_pattern_res()
+_SUSPECT_COMMAND_RE=re.compile(r"\s*/(?:麦麦|mai)",re.IGNORECASE)
+
+
+def _raw_command_text(message:dict[str,Any])->str:
+    """保留尾空格等原始形态的命令文本；direct_text 会 strip，手滑判断必须看原样。"""
+    raw=message.get("raw_message")
+    if isinstance(raw,list):
+        parts=[component_text(item) for item in raw
+               if isinstance(item,dict) and component_kind(item)=="text"]
+        if any(part.strip() for part in parts):return "".join(parts)
+    return str(message.get("processed_plain_text") or "")
+
+
+def _matches_own_command(text:str)->bool:
+    """文本是否命中本插件任一命令 pattern（前缀匹配，与 Host 派发的宽松度一致）。"""
+    return any(pattern.match(str(text or "")) for pattern in _MAI_COMMAND_RES)
 
 
 def create_plugin()->MaiBotPlugin:return MaiLifePlugin()

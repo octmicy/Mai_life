@@ -1,7 +1,6 @@
 """把指令文本渲染成与菜单一致的冰蓝玻璃风格结果卡片。"""
 from __future__ import annotations
 
-import io
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -98,9 +97,7 @@ class MaiLifeCommandResultRenderer(MaiLifeMenuRenderer):
         footer="图片失败时自动降级文本"
         footer_width=self._text_width(fonts["footer"],footer)
         self._draw_text(draw,(self.WIDTH-margin-footer_width,footer_y),footer,font=fonts["footer"],fill=self._PALETTE["muted"])
-
-        buffer=io.BytesIO(); image.convert("RGB").save(buffer,format="PNG",optimize=True)
-        return buffer.getvalue()
+        return self._encode_png(image)
 
     def render(self,text:str,*,title:str="麦麦生活 · 指令结果")->tuple[RenderedCommandPage,...]:
         """生成一页或多页 PNG；字体或 Pillow 异常时返回空元组触发文本降级。"""

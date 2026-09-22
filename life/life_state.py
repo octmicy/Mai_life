@@ -12,6 +12,13 @@ from typing import Any
 MOOD_BASELINE = 0.15
 MOOD_REGRESSION_PER_HOUR = 0.0175
 
+# 睡眠均衡恢复：夜间睡眠向 REST_TARGET 指数收敛——缺觉时恢复多、精力充沛时恢复少，
+# 与小时级清醒消耗相抵后每日净变化趋近 0，避免长期运行精力数周内缓慢耗尽贴地。
+REST_TARGET = 90.0
+REST_RATE = 0.35
+# 累计睡眠达到 45 分钟后进入深睡；10 分钟 tick 也能逐级推进到深睡相位。
+DEEP_SLEEP_AFTER_HOURS = 0.75
+
 # 未配置模型时的梦境兜底池：同一调性的晨光/小路/水声/暖光意象，每套摘要配至少 3 条碎片，
 # 随机取一套，避免每天的梦境逐字相同；不预言、不出现用户，mood 统一 calm 保持原有余韵强度。
 DREAM_FALLBACKS=[
@@ -81,15 +88,23 @@ class LifeStateEngine:
         woke=False; sleep_duration=0.0
         # 睡眠恢复与清醒消耗分支互斥，避免同一时间段重复计算。
         if effective_sleep:
-            new_phase="deep_sleep" if kind=="sleep" and elapsed>=0.5 else "light_sleep"
+            # 相位按累计睡眠时长判定：入睡 45 分钟后进入深睡；离线补算时 started_at 可能
+            # 远早于 now，同样一次到位。elapsed=0 的收尾 advance 也只做 minimal 更新，不降级。
             if old_phase not in {"falling_asleep","light_sleep","deep_sleep"}:
                 runtime.update({"phase":"falling_asleep","started_at":min(now_ts,float(state.get("last_updated_at",now_ts)))})
                 new_phase="falling_asleep"
+            elif old_phase=="deep_sleep":
+                new_phase="deep_sleep"
+            else:
+                slept_hours=max(0.0,(now_ts-float(runtime.get("started_at",now_ts)))/3600)
+                new_phase="deep_sleep" if kind=="sleep" and slept_hours>=DEEP_SLEEP_AFTER_HOURS else "light_sleep"
             runtime["phase"]=new_phase
             # 睡眠段延续时也同步类型：nap 紧接 sleep 时升级为 sleep，避免整晚睡眠被误判为午休。
             runtime["last_event"]=f"进入{kind}"
-            recover=(2.5 if kind=="sleep" else 1.4)*elapsed
-            state["energy"]=self._clamp(float(state.get("energy",70))+recover,0,100)
+            # 均衡恢复：夜间睡眠向 REST_TARGET 收敛，午休保持固定小幅恢复。
+            energy=float(state.get("energy",70))
+            recover=(REST_TARGET-energy)*(1.0-math.exp(-REST_RATE*elapsed)) if kind=="sleep" else 1.4*elapsed
+            state["energy"]=self._clamp(energy+recover,0,100)
             state["hunger"]=self._clamp(float(state.get("hunger",20))+1.0*elapsed,0,100)
             state["mood_arousal"]=self._clamp(float(state.get("mood_arousal",0.6))-0.2*elapsed,0,1)
         else:
@@ -112,8 +127,10 @@ class LifeStateEngine:
         mood += -0.04*elapsed if hunger>75 else 0
         if in_period: mood += -0.004*elapsed
         # 指数式基线回归：离线长时段补算时既不欠账也不会过冲穿越基线。
-        # 饥饿/精力持续负面驱动时回归翻倍，避免平衡点钉死在 -1 钳位边界。
+        # 饥饿/精力持续负面驱动时回归翻倍；心情已被钉死在 -1 附近时再 ×3，
+        # 保证平衡点离开 -1 钳位边界（持续判断用当前心情值，无需额外持久化计时）。
         rate=MOOD_REGRESSION_PER_HOUR*2 if (hunger>75 or energy<30) else MOOD_REGRESSION_PER_HOUR
+        if mood<=-0.8: rate*=3
         mood += (MOOD_BASELINE - mood) * (1.0 - math.exp(-rate * elapsed))
         state["mood_valence"]=self._clamp(mood,-1,1)
         if energy<20:
@@ -155,6 +172,8 @@ class LifeStateEngine:
                 await self.apply_deltas(deltas,updated_at=span["end"].timestamp())
                 framework_id=str(completion.get("framework_id") or "")
                 if framework_id:await self.store.mark_scene_applied(framework_id)
+            # 离线补算逐小时快照：整点桶 INSERT OR IGNORE 幂等，长离线中间小时也有轨迹。
+            await self.store.save_state_snapshot(span["end"].timestamp(),await self.store.get_state())
         return await self.advance(now,final_segment,final_scene)
 
     # 场景结束时一次性应用增量，并统一限制在合法范围内。
@@ -200,10 +219,14 @@ class LifeStateEngine:
         mood=str(result.get("mood") or "calm"); mood_delta=0.03 if mood=="warm" else -0.02 if mood=="uneasy" else 0.0
         now=woke_at.timestamp() if woke_at else time.time()
         dream_id=await self.store.add_dream(text,mood_delta,0.5,sleep_started_at,fragments,created_at=now)
+        # 契机器锚定到入睡时刻 +12h：正常睡眠（<12h）下即 sleep_started_at+12h；
+        # 超长睡眠或传入过去时间戳时不生成出生即已过期的契机，顺延到创建时刻 +12h。
+        expires=sleep_started_at+12*3600
+        if expires<=now: expires=now+12*3600
         await self.store.add_opportunity({
             "id":f"dream-{dream_id}","framework_id":f"dream:{dream_id}","topic":"昨晚醒来后还记得一点梦",
             "motive":"梦境留下了短暂余韵，可能想向熟悉的网友自然提起",
-            "weight":0.46,"privacy":"normal","expires_at":now+12*3600,
+            "weight":0.46,"privacy":"normal","expires_at":expires,
         })
         await self.apply_deltas({"mood_valence":mood_delta,"energy":0.5},updated_at=now)
 

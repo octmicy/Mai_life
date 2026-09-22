@@ -257,6 +257,21 @@ class MaiLifeMenuRenderer:
             if index<len(section.items)-1:
                 draw.line((x1+24,y-6,x2-24,y-6),fill=self._PALETTE["line"],width=1)
 
+    @classmethod
+    def _encode_png(cls,image:Any)->bytes:
+        """量化到 64 色后再存 PNG：冰蓝玻璃风以大面积渐变和有限色板为主，体积可降一个数量级。
+
+        量化或保存失败时回退原始 RGBA→RGB 路径，渲染可用性优先于体积。
+        """
+        try:
+            quantized=image.convert("RGB").quantize(colors=64,method=Image.MEDIANCUT,
+                                                    dither=Image.FLOYDSTEINBERG)
+            buffer=io.BytesIO(); quantized.save(buffer,format="PNG",optimize=True)
+            return buffer.getvalue()
+        except Exception:
+            buffer=io.BytesIO(); image.convert("RGB").save(buffer,format="PNG",optimize=True)
+            return buffer.getvalue()
+
     def render(self,title:str,sections:Sequence[CommandSection],*,version:str=PLUGIN_VERSION,notice:str="")->bytes:
         """测量双栏布局并生成 PNG；任何 Pillow/字体异常都返回空字节触发文本降级。"""
         if not self.available:return b""
@@ -315,8 +330,7 @@ class MaiLifeMenuRenderer:
             footer="私聊用户与管理员可用"
             footer_width=self._text_width(fonts["footer"],footer)
             self._draw_text(draw,(self.WIDTH-margin-footer_width,footer_y),footer,font=fonts["footer"],fill=self._PALETTE["muted"])
-            buffer=io.BytesIO(); image.convert("RGB").save(buffer,format="PNG",optimize=True)
-            result=buffer.getvalue(); self._cache[cache_key]=result
+            result=self._encode_png(image); self._cache[cache_key]=result
             while len(self._cache)>self.CACHE_LIMIT:self._cache.popitem(last=False)
             self.last_error=""
             return result

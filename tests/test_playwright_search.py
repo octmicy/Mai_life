@@ -325,13 +325,14 @@ class SearchServiceBrowseScreenshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.url,"http://8.8.8.8/x")
         self.assertEqual(client.timeout,12.0)
 
-    async def test_browse_screenshot_without_playwright_raises_browser_unavailable(self):
+    async def test_browse_screenshot_without_playwright_raises_service_not_configured(self):
         config=MaiLifeSettings()
         config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["k"])]
         service=SearchService(config,HttpClientDummy(),self.store,DummyLogger())
         with self.assertRaises(SearchBackendError) as caught:
             await service.browse_screenshot("http://8.8.8.8/x")
-        self.assertEqual(caught.exception.error_class,"browser_unavailable")
+        # 未启用 Playwright 服务是配置问题，与“未装 Chromium”环境问题区分（P3-20）。
+        self.assertEqual(caught.exception.error_class,"service_not_configured")
 
 
 if __name__=="__main__":unittest.main()

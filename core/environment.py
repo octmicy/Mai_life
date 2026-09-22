@@ -49,6 +49,8 @@ class EnvironmentService:
         self._weather_lock = asyncio.Lock()
         # 失败告警限流状态：(上次 warning 的时间戳, 原因签名)；update_config 不重置它。
         self._last_weather_warning:tuple[float,str]=(0.0,"")
+        # 时区数据缺失告警只打一次，避免每次 now() 都刷屏。
+        self._tz_warned=False
 
     def update_config(self, config: Any) -> None:
         """更新配置；城市变化时清除内存中的地理编码结果。"""
@@ -70,6 +72,10 @@ class EnvironmentService:
         try:
             return datetime.now(ZoneInfo(self.config.environment.timezone))
         except Exception:
+            # 静默回退会让“时间差 8 小时”难以定位；只告警一次，之后仍保持可用。
+            if not self._tz_warned:
+                self._tz_warned=True
+                self.logger.warning("[MaiLife] 时区数据缺失，回退 UTC+8（建议安装 tzdata）")
             return datetime.now(timezone(timedelta(hours=8)))
 
     async def _resolve_city(self, city: str) -> tuple[str, float, float]:

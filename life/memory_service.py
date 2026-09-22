@@ -6,7 +6,12 @@ import json
 import random
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+# 离线补日记：向前寻找最早有框架日最多查 14 天，补算窗口上限 7 天。
+_BACKFILL_SCAN_DAYS=14
+_BACKFILL_MAX_DAYS=7
 
 
 _EXPLICIT_DATE_RE=re.compile(r"(?:(?P<year>20\d{2})\s*[年./-]\s*)?(?P<month>1[0-2]|0?[1-9])\s*[月./-]\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*日?")
@@ -15,6 +20,8 @@ _EVENT_WORDS=("生日","纪念日","考试","面试","约定","见面","截止",
 class MemoryService:
     def __init__(self,store:Any,config:Any,llm:Any,logger:Any)->None:
         self.store=store; self.config=config; self.llm=llm; self.logger=logger
+        # 跳过补日记的 info 日志限流状态：(时间戳, 原因签名)，同因 24 小时内只记一条。
+        self._last_skip_log:tuple[float,str]|None=None
 
     def update_config(self,config:Any)->None:self.config=config
 
@@ -104,7 +111,8 @@ class MemoryService:
         try:confidence=max(0,min(1,float(result.get("confidence") or 0)))
         except (TypeError,ValueError):confidence=0.0
         parsed=self._parse_date(suggested)
-        if parsed and confidence>=0.86:
+        # 过去日期不直接落库：模型高置信但日期已过时降级为候选，等待用户确认。
+        if parsed and confidence>=0.86 and parsed>=now.date():
             recurrence="annual" if str(result.get("recurrence"))=="annual" else "none"
             await self.store.add_important_date(
                 user_id,name,parsed.isoformat(),recurrence,"model_high_confidence",now.timestamp(),source_message_id,
@@ -121,19 +129,50 @@ class MemoryService:
         if not cfg.enabled:return
         await self._create_date_opportunities(now)
         if now.hour<cfg.diary_hour:return
-        target=now.date()-timedelta(days=1); day=target.isoformat()
-        if cfg.diary_enabled and not await self.store.get_diary(day):
-            # 插件运行着的每一天凌晨都会生成 daily_framework；目标日无框架说明当天根本没运行
-            # （如新装首跑），此时补日记只会得到一篇描述从未观测过的一天的幻觉日记。
-            if not await self.store.get_framework(day):
-                self.logger.info(f"[MaiLife] 昨日无生活记录（当日未运行），跳过补日记 day={day}")
-            else:
-                await self._generate_diary(now,target)
+        if cfg.diary_enabled:
+            await self._backfill_diaries(now)
         runtime=await self.store.memory_runtime()
         if now.timestamp()-float(runtime.get("last_cleanup_at") or 0)>=86400:
             await self.store.cleanup_date_candidates(
                 now.timestamp()-int(cfg.date_candidate_retention_days)*86400
             )
+
+    def _log_skip(self,now:datetime,signature:str,message:str)->None:
+        """跳过补日记的 info 按签名限流：同因 24 小时内最多一条，10 分钟一 tick 不再刷屏。"""
+        last=self._last_skip_log
+        if last and last[1]==signature and now.timestamp()-last[0]<86400:return
+        self._last_skip_log=(now.timestamp(),signature)
+        self.logger.info(message)
+
+    async def _backfill_diaries(self,now:datetime)->None:
+        """补算 [最早有框架日的次日, 昨天] 内缺日记的日子，窗口上限 7 天。
+
+        离线多日时中间日没有落库框架，先用本地骨架补框架再生成日记；
+        向前 14 天都找不到任何框架（全新库）时保持 F1 守卫：一天都不补。
+        """
+        target=now.date()-timedelta(days=1)
+        anchor:date|None=None
+        for offset in range(_BACKFILL_SCAN_DAYS):
+            day=target-timedelta(days=offset)
+            if await self.store.get_framework(day.isoformat()):anchor=day; break
+        if anchor is None:
+            # 插件运行着的每一天凌晨都会生成 daily_framework；窗口内无框架说明当天根本没运行
+            # （如新装首跑），此时补日记只会得到一篇描述从未观测过的一天的幻觉日记。
+            self._log_skip(now,"no_framework",f"[MaiLife] 昨日无生活记录（当日未运行），跳过补日记 day={target.isoformat()}")
+            return
+        # 窗口 [anchor+1, target]：offset 0..N-1 即 target 到 anchor 次日，排序后取最近 7 天。
+        days=sorted(target-timedelta(days=offset) for offset in range(0,(target-anchor).days))[-_BACKFILL_MAX_DAYS:]
+        if target not in days:days.append(target)  # 昨日有框架（正常运行路径）照旧补
+        for day in days:
+            if await self.store.get_diary(day.isoformat()):continue
+            if not await self.store.get_framework(day.isoformat()):
+                # MemoryService 不持有 ScheduleService，按需构造；只用本地 _fallback 兜底骨架。
+                from .schedule_service import ScheduleService
+                schedule=ScheduleService(self.store,self.config,self.llm,
+                                         str(Path(__file__).resolve().parents[1]),self.logger)
+                await self.store.replace_framework(day.isoformat(),
+                                                   schedule._fallback(day.isoformat(),day.weekday()>=5))
+            await self._generate_diary(now,day)
 
     async def _generate_diary(self,now:datetime,target:date)->None:
         """仅聚合麦麦自身场景、梦境和匿名互动计数，生成不含聊天原句的日记。"""

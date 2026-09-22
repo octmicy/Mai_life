@@ -123,14 +123,23 @@ class ActivePluginTask:
 class ActiveTaskRegistry:
     """Serialize task attribution within a session while preserving real quote IDs."""
 
-    def __init__(self, retention_seconds: int = 180) -> None:
+    def __init__(self, retention_seconds: int = 180, pending_expire_seconds: int = 120) -> None:
         self._retention_seconds = max(20, int(retention_seconds))
+        # pending 事件的过期窗与保留窗解耦：Replyer 迟到（>120s）时事件已过期，
+        # 但归因必须继续存活以抑制重复触发并走完结算链路。
+        self._pending_expire_seconds = max(120, int(pending_expire_seconds))
         self._active: dict[str, ActivePluginTask] = {}
         self._last_inbound_at: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     def update_retention(self, seconds: int) -> None:
+        """兼容调用方只调 retention：pending 过期窗永不低于 120s，避免迟到归因被剪枝。"""
         self._retention_seconds = max(20, int(seconds))
+        self._pending_expire_seconds = max(120, int(seconds), self._pending_expire_seconds)
+
+    def update_pending_expire(self, seconds: int) -> None:
+        """单独调整 pending 事件过期窗（与主动事件 pending_expire_seconds 对齐）。"""
+        self._pending_expire_seconds = max(120, int(seconds))
 
     async def reset(self) -> None:
         async with self._lock:
@@ -182,7 +191,10 @@ class ActiveTaskRegistry:
                 return None
             retain_until = sent_at + self._retention_seconds
         elif status in {"pending", "sending"} and float(record.get("expires_at") or 0) > now:
-            retain_until = max(float(record.get("expires_at") or 0), now + self._retention_seconds)
+            # 迟到 Replyer（事件已过期但尚未结算）仍需存活：保留窗取事件过期时刻与
+            # now+max(保留窗, pending 过期窗)+120 的较大值，覆盖 130s 级迟到。
+            retain_until = max(float(record.get("expires_at") or 0),
+                               now + max(self._retention_seconds, self._pending_expire_seconds) + 120)
         else:
             return None
         async with self._lock:

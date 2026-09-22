@@ -50,12 +50,12 @@ class ScheduleService:
         builtin=[
             {"start":"00:00","end":"08:00","kind":"sleep","summary":"安稳睡觉","location":"卧室","energy_load":8,"shareability":0.05},
             {"start":"08:00","end":"09:00","kind":"meal","summary":"起床洗漱并吃早餐","location":"家里","energy_load":-1,"shareability":0.25},
-            {"start":"09:00","end":"12:00","kind":"work","summary":"处理自己的事情","location":"书桌前","energy_load":-5,"shareability":0.25},
+            {"start":"09:00","end":"12:00","kind":"work","summary":"处理积压的私信和待办清单","location":"书桌前","energy_load":-4,"shareability":0.25},
             {"start":"12:00","end":"13:00","kind":"meal","summary":"准备午饭","location":"厨房","energy_load":-1,"shareability":0.4},
             {"start":"13:00","end":"13:40","kind":"nap","summary":"短暂午休","location":"卧室","energy_load":3,"shareability":0.05},
-            {"start":"13:40","end":"18:00","kind":"study","summary":"继续学习和整理东西","location":"书桌前","energy_load":-5,"shareability":0.25},
+            {"start":"13:40","end":"18:00","kind":"study","summary":"整理这周的读书笔记和课程作业","location":"书桌前","energy_load":-5,"shareability":0.25},
             {"start":"18:00","end":"19:00","kind":"meal","summary":"做晚饭","location":"厨房","energy_load":-1,"shareability":0.55},
-            {"start":"19:00","end":"23:30","kind":"leisure","summary":"放松、看东西和随便逛逛","location":"家里","energy_load":-3,"shareability":0.55},
+            {"start":"19:00","end":"23:30","kind":"leisure","summary":"拼完上次没拼完的拼图","location":"家里","energy_load":-3,"shareability":0.55},
             {"start":"23:30","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05},
         ]
         template=self._template(); key="weekend" if weekend else "workday"; raw=template.get(key)
@@ -167,6 +167,10 @@ class ScheduleService:
         ideas: list[str] = []
         try:
             for note in await self.store.recent_exploration_notes(now.timestamp(),5):
+                # 关联分数过低的探索笔记只是噪音，不进灵感池。
+                try:
+                    if float(note.get("relevance_score") or 0)<0.35: continue
+                except (TypeError,ValueError): continue
                 topic=str(note.get("topic") or "").strip()
                 if topic: ideas.append(topic[:40])
         except Exception: pass
@@ -190,7 +194,9 @@ class ScheduleService:
                 "禁止'处理自己的事情''放松、看东西和随便逛逛'这类空泛描述；\n"
                 "2) 工作/学习段写清楚主题方向，休闲段每天至少有一件事与最近几天不同；\n"
                 "3) 节假日、节气、农历和天气要自然反映在活动里；\n"
-                "4) 日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项，时间不重叠，包含夜间睡眠和至少两顿饭。\n"
+                "4) 日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项，时间不重叠，包含夜间睡眠和至少两顿饭；\n"
+                "5) energy_load 是该节点对全天精力的影响合计值：工作/学习 -2~-6，睡眠 +4~+8，餐饮 -1，休闲 -1~-3，"
+                "出行 -2~-4；全天 energy_load 合计应与当天精力消耗相抵（接近 0），睡眠增益不要重复计算白天消耗。\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         raw=fallback

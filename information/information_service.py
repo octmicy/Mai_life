@@ -242,10 +242,12 @@ class InformationService:
     async def context(self,now:Any)->dict[str,Any]:
         limit=int(self.config.information.context_item_limit)
         if not self.config.information.enabled or limit<=0:return {"news":[],"explorations":[]}
+        # 被动上下文阈值跟随“自我关联阈值”配置，但封顶 0.5，避免低门槛把弱关联内容塞进 Prompt。
+        threshold=min(float(self.config.information.association_threshold),0.5)
         news=[item for item in await self.store.recent_news_items(now.timestamp(),limit*2,associated_only=True)
-              if float(item.get("relevance_score") or 0)>=0.35][:limit]
+              if float(item.get("relevance_score") or 0)>=threshold][:limit]
         notes=[item for item in await self.store.recent_exploration_notes(now.timestamp(),limit*2)
-               if float(item.get("relevance_score") or 0)>=0.35][:limit]
+               if float(item.get("relevance_score") or 0)>=threshold][:limit]
         return {"news":[{"title":item["title"],"summary":item["summary"],"score":item["relevance_score"]} for item in news],
                 "explorations":[{"topic":item["topic"],"summary":item["summary"],"score":item["relevance_score"]} for item in notes]}
 

@@ -85,7 +85,7 @@ class RelayService:
               "reason":"主人或管理员显式要求向白名单群转述；Planner 仍可因语境不合适选择沉默。",
               "status":"pending","created_at":now,
               "expires_at":now+int(self.config.social.relay_pending_seconds)}
-        if not await self.store.create_relay_candidate(item):return {"success":False,"error":"转述候选重复，请稍后再试。"}
+        if not await self.store.create_relay_candidate(item):return {"success":False,"error":"刚才的转述请求太密集，请稍后再试。"}
         directory=await self.store.get_group_directory(target_group_id)
         reason=json.dumps({
             "source":"mai_life_social_relay","relay_id":relay_id,"target_group_id":target_group_id,
@@ -111,7 +111,7 @@ class RelayService:
         except Exception as exc:
             await self.store.set_relay_status(relay_id,"failed",time.time(),type(exc).__name__)
             self.logger.error(f"[MaiLife] 群转述 proactive.trigger 失败: {type(exc).__name__}")
-            return {"success":False,"error":"目标群 Planner 触发失败，请查看插件日志。"}
+            return {"success":False,"error":"转述请求发送失败，请稍后重试。"}
 
     async def prompt_context(self,session_id:str,host_task_id:str="")->str:
         # 主动轮优先按 Host task_id 取候选，避免同一群的旧转述污染新任务。
@@ -139,11 +139,11 @@ class RelayService:
             return True
         return status in {"superseded","failed","expired","cancelled"}
 
-    async def mutate_before_send(self,message:dict[str,Any],host_task_id:str="")->tuple[dict[str,Any],bool]:
+    async def mutate_before_send(self,message:dict[str,Any],host_task_id:str="",*,allow_expired:bool=False)->tuple[dict[str,Any],bool]:
         """在平台发送前原子占用转述候选，并把候选 ID 附加到消息运行元数据。"""
         session_id=str(message.get("session_id") or "")
         if not session_id:return message,False
-        item=await self.store.reserve_relay_for_send(session_id,time.time(),host_task_id)
+        item=await self.store.reserve_relay_for_send(session_id,time.time(),host_task_id,allow_expired=allow_expired)
         if not item:return message,False
         info=message.get("message_info")
         if not isinstance(info,dict):info={}; message["message_info"]=info

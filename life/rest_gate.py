@@ -20,10 +20,14 @@ class RestGate:
         if start==end:return False
         return start<=current<end if start<end else current>=start or current<end
 
-    @staticmethod
-    def boundary(text:str)->tuple[str,str]:
+    def boundary(self,text:str)->tuple[str,str]:
         compact=re.sub(r"\s+","",str(text or "").lower())
-        if re.search(r"(?:别回|不用回|不要回|继续睡|别醒|别打扰|安心睡|不用理我)",compact):
+        # 强制唤醒词优先于勿扰词与概率：合并消息"安心睡+救命"也必须放行。
+        for term in (getattr(self.config.rest_gate,"force_wake_terms",None) or []):
+            word=str(term or "").strip().lower()
+            if word and word in compact:
+                return "wake",f"强制唤醒词：{str(term).strip()}"
+        if re.search(r"(?:别回|不用回|不要回|继续睡|别醒|别打扰|安心睡|不用理我|别烦我|别吵)",compact):
             return "block",BLOCK_REASON
         if re.search(r"(?:醒醒|快醒|叫醒|起床|紧急|救命|出事了|很难受|撑不住|危险|报警|急事|轻生|自杀)",compact):
             return "wake","明确叫醒、紧急或安全需要"
@@ -38,25 +42,26 @@ class RestGate:
             )
 
     async def decide(self,user_id:str,text:str,now:Any,segment:dict[str,Any]|None,
-                     *,session_id:str="",message_id:str="")->tuple[bool,str]:
-        """按总开关、时间窗、规则边界及选定模式建立“待醒”候选，不直接提交醒来。"""
+                     *,session_id:str="",message_id:str="",media:list[str]|None=None)->tuple[bool,str]:
+        """按总开关、时间窗、规则边界及选定模式建立"待醒"候选，不直接提交醒来。"""
         cfg=self.config.rest_gate
         if not cfg.enabled:return True,"disabled"
         if str(text or "").lstrip().startswith("/"):return True,"command"
-        kind=str((segment or {}).get("kind") or "")
-        gated=set(cfg.gate_segment_types)
-        if not kind:
-            # 跨零点等当日框架尚未生成时按时间窗兜底判眠，避免闸门静默失效约一个 tick。
-            current0=now.strftime("%H:%M")
-            if self._in_window(cfg.night_start,cfg.night_end,current0):kind="sleep"
-            elif self._in_window(cfg.nap_start,cfg.nap_end,current0):kind="nap"
-            if kind not in gated:return True,"not_rest_segment"
-        if kind not in gated:return True,"not_rest_segment"
+        # 时间窗优先：闸门只能由 night/nap 时间窗开启，窗内一律判眠；
+        # 日程 kind 只是细化提示，避免默认框架的 leisure/meal 段把闸门静默收窄。
         current=now.strftime("%H:%M")
-        in_gate=self._in_window(cfg.night_start,cfg.night_end,current) or self._in_window(cfg.nap_start,cfg.nap_end,current)
-        if not in_gate:return True,"outside_gate_window"
+        night=self._in_window(cfg.night_start,cfg.night_end,current)
+        nap=self._in_window(cfg.nap_start,cfg.nap_end,current)
+        if not (night or nap):return True,"outside_gate_window"
+        # 窗内判眠：框架 kind 命中 gate_segment_types 时用它细化（如用户配置了 rest），
+        # 否则按窗推断（night→sleep，nap→nap）。
+        segment_kind=str((segment or {}).get("kind") or "")
+        kind=segment_kind if segment_kind in set(cfg.gate_segment_types) else ("sleep" if night else "nap")
         runtime=await self.store.get_sleep_runtime()
         if float(runtime.get("awake_grace_until",0))>now.timestamp():return True,"awake_grace"
+        # 夜间纯图片/表情（无文字）直接阻断，不走概率与模型。
+        if not str(text or "").strip() and media and any(item in {"image","emoji","gif"} for item in media):
+            return False,"夜间媒体消息，不叫醒"
         # 明确勿扰和明确叫醒优先于概率/模型，避免模型覆盖用户的直接意图。
         action,reason=self.boundary(text)
         if action=="block":return False,reason

@@ -707,7 +707,8 @@ class LifeStore:
 
     async def latest_dream(self) -> dict[str, Any]:
         async with self._lock:
-            row = self.conn.execute("SELECT * FROM dreams ORDER BY created_at DESC LIMIT 1").fetchone()
+            # 同秒入库的梦境按 id 决胜，保证 latest_dream 稳定返回最新一条。
+            row = self.conn.execute("SELECT * FROM dreams ORDER BY created_at DESC, id DESC LIMIT 1").fetchone()
             if not row:return {}
             data=dict(row)
             fragments=self.conn.execute(
@@ -1099,6 +1100,44 @@ class LifeStore:
                                  (relay[0],"sent","proactive_after_send",now))
                 return True
 
+    def _expire_pending_locked(self, conn: sqlite3.Connection, now: float,
+                               max_retries: int, day: str) -> None:
+        """过期 pending 事件的共用逻辑：释放机会、标记 expired、记 planner_no_reply。
+
+        必须在已持有 ``self._lock`` 的上下文里以事务连接调用（``expire_pending``
+        的锁内或 ``cleanup_runtime_records`` 的 ``_tx`` 内），自身绝不再取锁，
+        否则维护清理与主动巡检会因重复取锁死锁。
+        """
+        rows=conn.execute(
+            """SELECT id,opportunity_id,user_id FROM proactive_events
+            WHERE status='pending' AND expires_at<=? AND sent_at=0""",
+            (now,),
+        ).fetchall()
+        day=day or time.strftime("%Y-%m-%d",time.localtime(now))
+        for row in rows:
+            event_id=str(row[0]); opportunity_id=str(row[1]); user_id=str(row[2] or "")
+            fail_count=conn.execute(
+                """SELECT COUNT(*) FROM proactive_events
+                WHERE opportunity_id=? AND status IN ('expired','cancelled','failed')""",
+                (opportunity_id,),
+            ).fetchone()[0]
+            if int(fail_count) < max(0,int(max_retries)):
+                # 释放机会，让它在后续巡检中重新进入候选池。
+                conn.execute(
+                    "UPDATE proactive_opportunities SET consumed_by='',consumed_at=0 WHERE id=?",
+                    (opportunity_id,),
+                )
+            conn.execute(
+                "UPDATE proactive_events SET status='expired' WHERE id=?",
+                (event_id,),
+            )
+            # Planner 沉默或超时导致事件过期：记录一次跳过，便于诊断主动发言偏低。
+            conn.execute(
+                """INSERT INTO proactive_skip_stats(user_id,reason,day,count) VALUES(?,?,?,1)
+                ON CONFLICT(user_id,reason,day) DO UPDATE SET count=count+1""",
+                (user_id,"planner_no_reply",day),
+            )
+
     async def expire_pending(self, now: float, *, max_retries: int = 2, day: str = "") -> None:
         """把过期的 pending 事件标记为 expired，并释放尚未发送成功的对应机会以便重试。
 
@@ -1108,36 +1147,8 @@ class LifeStore:
         留空时退回服务器本地日期，仅兼容旧调用方。
         """
         async with self._lock:
-            rows=self.conn.execute(
-                """SELECT id,opportunity_id,user_id FROM proactive_events
-                WHERE status='pending' AND expires_at<=? AND sent_at=0""",
-                (now,),
-            ).fetchall()
-            day=day or time.strftime("%Y-%m-%d",time.localtime(now))
-            for row in rows:
-                event_id=str(row[0]); opportunity_id=str(row[1]); user_id=str(row[2] or "")
-                fail_count=self.conn.execute(
-                    """SELECT COUNT(*) FROM proactive_events
-                    WHERE opportunity_id=? AND status IN ('expired','cancelled','failed')""",
-                    (opportunity_id,),
-                ).fetchone()[0]
-                if int(fail_count) < max(0,int(max_retries)):
-                    # 释放机会，让它在后续巡检中重新进入候选池。
-                    self.conn.execute(
-                        "UPDATE proactive_opportunities SET consumed_by='',consumed_at=0 WHERE id=?",
-                        (opportunity_id,),
-                    )
-                self.conn.execute(
-                    "UPDATE proactive_events SET status='expired' WHERE id=?",
-                    (event_id,),
-                )
-                # Planner 沉默或超时导致事件过期：记录一次跳过，便于诊断主动发言偏低。
-                self.conn.execute(
-                    """INSERT INTO proactive_skip_stats(user_id,reason,day,count) VALUES(?,?,?,1)
-                    ON CONFLICT(user_id,reason,day) DO UPDATE SET count=count+1""",
-                    (user_id,"planner_no_reply",day),
-                )
-            self.conn.commit()
+            with self._tx() as conn:
+                self._expire_pending_locked(conn, now, max_retries, day)
 
     async def record_proactive_skip(self, user_id: str, reason: str, now: float, day: str = "") -> None:
         """按用户、原因、自然日聚合累计一次主动候选跳过，供诊断与 /麦麦管理 主动 查看。
@@ -1580,15 +1591,20 @@ class LifeStore:
             ).fetchone()
             return dict(row) if row else {}
 
-    async def reserve_relay_for_send(self, stream_id: str, now: float, host_task_id: str = "") -> dict[str, Any]:
-        """发送前原子占用一次 @；Host 正常分段时只有第一段会命中。"""
+    async def reserve_relay_for_send(self, stream_id: str, now: float, host_task_id: str = "",
+                                    *, allow_expired: bool = False) -> dict[str, Any]:
+        """发送前原子占用一次 @；Host 正常分段时只有第一段会命中。
+
+        allow_expired 用于迟到发送放行：active 归因仍存活时，已过 expires_at 但未结算的
+        候选仍应被占用并结算，避免“回复已发出但候选停留在 pending”。
+        """
         async with self._lock:
             with self._tx() as conn:
                 if host_task_id:
                     row=conn.execute(
                         """SELECT * FROM relay_candidates WHERE target_stream_id=? AND host_task_id=?
-                        AND kind='explicit' AND status='pending' AND expires_at>?""",
-                        (stream_id,host_task_id,now),
+                        AND kind='explicit' AND status='pending' AND (? OR expires_at>?)""",
+                        (stream_id,host_task_id,1 if allow_expired else 0,now),
                     ).fetchone()
                 else:
                     # 兼容不返回 task_id 的旧 Host；不抢占已经精确关联的新任务。
@@ -1897,7 +1913,9 @@ class LifeStore:
                     "WHERE summary_expires_at>0 AND summary_expires_at<=?",(now,)
                 )
                 conn.execute("DELETE FROM recall_events WHERE expires_at<=?",(now,))
-                conn.execute("UPDATE proactive_events SET status='expired' WHERE status='pending' AND expires_at<=?",(now,))
+                # 维护清理与 expire_pending 共用同一套过期逻辑（释放机会 + 记 planner_no_reply），
+                # 避免维护抢先时重试静默失效；_expire_pending_locked 是同步方法，不会重复取锁。
+                self._expire_pending_locked(conn, now, max(0, 2), "")
                 conn.execute("DELETE FROM llm_usage_events WHERE created_at<?",(usage_before,))
                 conn.execute("DELETE FROM group_observations WHERE expires_at<=?",(now,))
                 conn.execute("UPDATE relay_candidates SET status='expired' WHERE expires_at<=? AND status IN ('pending','sending','queued')",(now,))

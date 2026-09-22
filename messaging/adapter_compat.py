@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+import json
+
 
 SUPPORTED_ADAPTERS = ("snowluma", "napcat")
 
@@ -39,8 +41,14 @@ def recall_notice(message: Mapping[str, Any]) -> dict[str, str]:
     else:
         notice_type=str(additional.get("napcat_notice_type") or "").strip()
         payload=additional.get("napcat_notice_payload")
-    if notice_type not in {"friend_recall","group_recall"} or not isinstance(payload,Mapping):
+    if notice_type not in {"friend_recall","group_recall"}:
         return {}
+    if not isinstance(payload,Mapping):
+        # 部分适配器把 payload 整体序列化为 JSON 字符串；解析失败仍按无通知处理。
+        if isinstance(payload,str):
+            try:payload=json.loads(payload)
+            except (TypeError,ValueError):return {}
+        if not isinstance(payload,Mapping):return {}
     recalled_message_id=str(payload.get("message_id") or "").strip()
     if not recalled_message_id:return {}
     info=message.get("message_info") if isinstance(message.get("message_info"),Mapping) else {}

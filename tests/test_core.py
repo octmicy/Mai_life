@@ -235,7 +235,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         reopened=LifeStore(data_dir); await reopened.initialize()
         try:
             self.assertEqual(reopened.conn.execute(
-                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"14")
             # 新表可用且为空。
             self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM mood_events").fetchone()[0],0)
             self.assertEqual(reopened.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0],0)
@@ -363,7 +363,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         upgraded=LifeStore(other.name); await upgraded.initialize()
         backups=list(Path(other.name).glob("mai_life.incompatible.*.db"))
         self.assertEqual(len(backups),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"14")
         await upgraded.close(); other.cleanup()
 
     async def test_corrupt_database_is_closed_preserved_and_rebuilt(self):
@@ -371,7 +371,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"not-a-sqlite-database")
         upgraded=LifeStore(other.name); await upgraded.initialize()
         self.assertEqual(len(list(Path(other.name).glob("mai_life.corrupt.*.db"))),1)
-        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
+        self.assertEqual(upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"14")
         await upgraded.close(); other.cleanup()
 
     async def test_v8_to_v9_drops_skills_aliases_and_converts_legacy_quota(self):
@@ -421,7 +421,7 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
                 conn.commit(); conn.close()
                 upgraded=LifeStore(other.name); await upgraded.initialize()
                 self.assertEqual(
-                    upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"13")
+                    upgraded.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"14")
                 self.assertEqual([],list(Path(other.name).glob("mai_life.incompatible.*.db")))
                 user=await upgraded.get_user("10086")
                 self.assertEqual(user["display_name"],"升级前昵称"); self.assertEqual(user["temperature"],66.5)

@@ -27,11 +27,16 @@ def hhmm(value: int) -> str:
 
 
 class ScheduleService:
-    def __init__(self, store: Any, config: Any, llm: Any, plugin_dir: str, logger: Any) -> None:
+    def __init__(self, store: Any, config: Any, llm: Any, plugin_dir: str, logger: Any, bot_name: str = "麦麦") -> None:
         self.store=store; self.config=config; self.llm=llm; self.plugin_dir=Path(plugin_dir); self.logger=logger
+        self.bot_name=bot_name
 
     def update_config(self, config: Any) -> None:
         self.config=config
+
+    def set_bot_name(self,name:str)->None:
+        clean=str(name or "").strip()
+        if clean:self.bot_name=clean
 
     def _template(self) -> dict[str, Any]:
         root=self.plugin_dir.resolve()
@@ -72,7 +77,7 @@ class ScheduleService:
         hunger_note="（很高，最近经常饿）" if hunger>75 else ""
         energy_note="（很低，需要多休息）" if energy<30 else ""
         mood_note="（偏低）" if mood<-0.3 else ""
-        return (f"麦麦当前状态：精力 {energy:.0f}/100{energy_note}，饥饿 {hunger:.0f}/100{hunger_note}，"
+        return (f"{self.bot_name}当前状态：精力 {energy:.0f}/100{energy_note}，饥饿 {hunger:.0f}/100{hunger_note}，"
                 f"心情 {mood:+.2f}{mood_note}。生成日程时请保证正常三餐、不要安排过高强度。")
 
     @staticmethod
@@ -182,7 +187,7 @@ class ScheduleService:
         picked=random.sample(ideas,min(3,len(ideas))) if ideas else []
         if picked:
             variety=(variety+"\n今天可以考虑的活动灵感（自由选用，不要硬塞）："+ "、".join(picked)).strip()
-        prompt=(f"为虚拟网友麦麦生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
+        prompt=(f"为虚拟网友{self.bot_name}生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
                 f"人格：{personality or '自然、独立、有自己的生活'}\n"
                 f"{self._state_summary(state)}\n"
                 f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："

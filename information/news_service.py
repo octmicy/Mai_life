@@ -14,11 +14,15 @@ from .search_service import SearchService
 
 
 class NewsService:
-    def __init__(self,store:Any,config:Any,search:SearchService,http:HttpClient,logger:Any,llm:Any)->None:
+    def __init__(self,store:Any,config:Any,search:SearchService,http:HttpClient,logger:Any,llm:Any,bot_name:str="麦麦")->None:
         self.store=store; self.config=config; self.search=search; self.http=http; self.logger=logger
-        self.llm=llm
+        self.llm=llm; self.bot_name=bot_name
 
     def update_config(self,config:Any)->None:self.config=config
+
+    def set_bot_name(self,name:str)->None:
+        clean=str(name or "").strip()
+        if clean:self.bot_name=clean
 
     @staticmethod
     def _day_bounds(now:Any)->tuple[float,float]:
@@ -65,14 +69,14 @@ class NewsService:
             return ""
         current=schedule.get("current") or {}
         result=await self.llm.generate_json(
-            "你是麦麦。根据你的人设与当前状态，自主决定此刻最想了解的一类新闻，给出一个简短、"
+            f"你是{self.bot_name}。根据你的人设与当前状态，自主决定此刻最想了解的一类新闻，给出一个简短、"
             "适合网页搜索的查询词（不超过 40 字）。不要搜索用户身份、账号、群名、私密关系或聊天原句。\n"
             + json.dumps({
                 "personality": personality[:1200],
                 "current_activity": current.get("summary") or "",
             }, ensure_ascii=False)
             + "\n只返回JSON：{\"query\":\"\"}。",
-            "你自主决定麦麦此刻读什么新闻。", {"query": ""}, max_tokens=120,
+            f"你自主决定{self.bot_name}此刻读什么新闻。", {"query": ""}, max_tokens=120,
             task_kind="news", request_type="news_query_planning",
         )
         if not isinstance(result,dict):

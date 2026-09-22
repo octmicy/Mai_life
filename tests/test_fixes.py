@@ -31,6 +31,7 @@ from Mai_life.config import MaiLifeSettings, SearchProviderProfile, SocialGroupP
 from Mai_life.core.environment import EnvironmentService
 from Mai_life.core.storage import LifeStore
 from Mai_life.creation.creation_service import CreationService
+from Mai_life.life.bedtime import BedtimeManager
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.memory_service import MemoryService
 from Mai_life.life.rest_gate import BLOCK_REASON, RestGate
@@ -124,7 +125,7 @@ class StorageFixTests(unittest.IsolatedAsyncioTestCase):
         await reopened.initialize()
         try:
             self.assertEqual(reopened.conn.execute(
-                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "13")
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "14")
             # 旧数据完整保留：用户、日记、书柜、旧状态值。
             self.assertAlmostEqual((await reopened.get_user("1"))["temperature"], 66.0)
             self.assertEqual(len(await reopened.list_diaries(7)), 1)
@@ -1863,6 +1864,402 @@ class GroupGateConfigTests(unittest.TestCase):
         config.rest_gate.group_night_start = "20:00"
         self.assertEqual(config.rest_gate.night_start, "22:30")
         self.assertTrue(config.rest_gate.force_wake_terms)
+
+
+# ==========v1.14.6==========
+# 睡前流程（晚安由 reply 发 + 入睡推迟）、叫醒回填、回睡、schema v14、bot 名统一。
+
+
+class V1146GateDeferTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 需求④：睡前协商期内消息放行，勿扰词仍然优先拦截。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+        self.config.rest_gate.wake_probability = 0.0
+        self.gate = RestGate(self.store, self.config, DummyLLM(), DummyStateEngine(), DummyLogger())
+        self.night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _set_defer(self, until: float) -> None:
+        runtime = await self.store.get_sleep_runtime()
+        runtime["sleep_defer_until"] = until
+        await self.store.save_sleep_runtime(runtime)
+
+    async def test_deferred_bedtime_passes_messages_until_quiet(self):
+        # 入睡点被"最后一条私聊+静默"推后：她还没睡，正常回复不等判醒。
+        await self._set_defer(self.night.timestamp() + 600)
+        allowed, reason = await self.gate.decide(
+            "1", "普通消息", self.night, {"kind": "sleep"}, session_id="s1", message_id="m1")
+        self.assertTrue(allowed); self.assertEqual(reason, "睡前对话未完，暂缓入睡")
+        # 静默满后 defer<=now，闸门恢复固定窗行为（概率 0 一律拦）。
+        await self._set_defer(self.night.timestamp() - 1)
+        allowed, reason = await self.gate.decide(
+            "1", "普通消息", self.night, {"kind": "sleep"}, session_id="s1", message_id="m1")
+        self.assertFalse(allowed); self.assertEqual(reason, "probability:0.00")
+
+    async def test_block_terms_still_win_during_defer(self):
+        await self._set_defer(self.night.timestamp() + 600)
+        allowed, reason = await self.gate.decide(
+            "1", "别烦我，要睡了", self.night, {"kind": "sleep"})
+        self.assertFalse(allowed); self.assertEqual(reason, BLOCK_REASON)
+
+    async def test_force_wake_term_passes_without_candidate_during_defer(self):
+        # 协商期内她本来醒着：强制唤醒词直接放行，不建待醒候选（无需叫醒流程）。
+        await self._set_defer(self.night.timestamp() + 600)
+        allowed, reason = await self.gate.decide(
+            "1", "救命，出事了", self.night, {"kind": "sleep"}, session_id="s1", message_id="m1")
+        self.assertTrue(allowed); self.assertEqual(reason, "睡前对话未完，暂缓入睡")
+        candidates = self.store.conn.execute("SELECT COUNT(*) FROM wake_candidates").fetchone()[0]
+        self.assertEqual(candidates, 0)
+
+
+class V1146BedtimeManagerTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 BedtimeManager：defer 计算规则与叫醒后回睡。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+        self.env = EnvironmentService(self.store, self.config, DummyLogger())
+        self.state = LifeStateEngine(self.store, self.config, DummyLLM(), DummyLogger())
+        self.manager = BedtimeManager(DummyCtx(), self.store, self.config, self.env, self.state, DummyLogger())
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _defer(self) -> float:
+        return float((await self.store.get_sleep_runtime()).get("sleep_defer_until", 0))
+
+    async def test_defer_uses_latest_message_plus_silence(self):
+        await self.store.sync_users([UserProfile(user_id="1")])
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
+        # 最后一条私聊 23:50 → 入睡点推到 00:00（+10 分钟静默），但不早于夜窗开始。
+        await self.store.record_interaction("1", "在吗", night.replace(minute=50).timestamp(), 23)
+        self.env.now = lambda: night.replace(minute=55)
+        await self.manager.tick(self.env.now())
+        expected = max(night.replace(hour=22, minute=30).timestamp(),
+                       night.replace(minute=50).timestamp() + 600)
+        self.assertEqual(await self._defer(), expected)
+
+    async def test_defer_crosses_midnight_with_same_evening_floor(self):
+        # 凌晨 01:00 仍在夜窗内：floor 取前一晚 22:30，而不是当天未来时刻。
+        night = datetime(2026, 9, 21, 23, 30, tzinfo=TZ)
+        await self.store.sync_users([UserProfile(user_id="1")])
+        await self.store.record_interaction("1", "在吗", night.timestamp(), 23)
+        deep = datetime(2026, 9, 22, 1, 0, tzinfo=TZ)
+        self.env.now = lambda: deep
+        await self.manager.tick(deep)
+        self.assertEqual(await self._defer(), night.replace(minute=40).timestamp())  # max(09-21 22:30, 23:40)
+
+    async def test_defer_cleared_when_asleep_woken_outside_window_or_disabled(self):
+        await self.store.sync_users([UserProfile(user_id="1")])
+        await self.store.record_interaction("1", "在吗", datetime(2026, 9, 21, 23, 50, tzinfo=TZ).timestamp(), 23)
+        cases = {
+            "asleep": (datetime(2026, 9, 21, 23, 55, tzinfo=TZ), "deep_sleep"),
+            "woken": (datetime(2026, 9, 21, 23, 55, tzinfo=TZ), "woken"),
+            "outside": (datetime(2026, 9, 21, 21, 0, tzinfo=TZ), "awake"),
+        }
+        for label, (now, phase) in cases.items():
+            with self.subTest(case=label):
+                runtime = await self.store.get_sleep_runtime()
+                runtime.update({"phase": phase, "sleep_defer_until": now.timestamp() + 999})
+                await self.store.save_sleep_runtime(runtime)
+                self.env.now = lambda: now
+                await self.manager.tick(now)
+                self.assertEqual(await self._defer(), 0.0)
+        # 总闸关闭时同样不协商。
+        self.config.rest_gate.enabled = False
+        night = datetime(2026, 9, 21, 23, 55, tzinfo=TZ)
+        await self.manager.tick(night)
+        self.assertEqual(await self._defer(), 0.0)
+
+    async def test_grace_expiry_in_window_forces_resleep(self):
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
+        await self.state.mark_woken(night, "回复后醒来")
+        # 宽限（30 分钟）未到：不回睡。
+        await self.manager.tick(night.replace(minute=20))
+        self.assertEqual((await self.store.get_sleep_runtime())["phase"], "woken")
+        # 宽限到期且仍在夜窗：重新入睡，宽限与 defer 清零。
+        await self.manager.tick(night.replace(minute=40))
+        runtime = await self.store.get_sleep_runtime()
+        self.assertEqual(runtime["phase"], "falling_asleep")
+        self.assertEqual(runtime["last_event"], "叫醒后重新入睡")
+        self.assertEqual(float(runtime.get("awake_grace_until", 0)), 0.0)
+        self.assertEqual((await self.store.get_state())["sleep_phase"], "falling_asleep")
+
+    async def test_grace_expiry_outside_window_defers_to_schedule(self):
+        morning = datetime(2026, 9, 22, 7, 55, tzinfo=TZ)
+        await self.state.mark_woken(morning, "回复后醒来")
+        # 夜窗 08:00 结束：窗外不强制，等日程推进自然转 awake。
+        await self.manager.tick(morning.replace(hour=8, minute=20))
+        self.assertEqual((await self.store.get_sleep_runtime())["phase"], "woken")
+
+    async def test_approaching_starts_lead_minutes_before_night_window(self):
+        before = datetime(2026, 9, 21, 22, 15, tzinfo=TZ)   # 夜窗前 15 分钟 > lead 10
+        self.assertFalse(self.manager.approaching(before))
+        inside = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)   # 夜窗前 5 分钟 < lead 10
+        self.assertTrue(self.manager.approaching(inside))
+        # 夜窗结束后不再注入（08:00 后）。
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 22, 9, 0, tzinfo=TZ)))
+        self.config.rest_gate.enabled = False
+        self.assertFalse(self.manager.approaching(inside))
+
+
+class V1146AdvanceDeferTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 advance：协商期内不入睡，修掉"提示词显示入睡中却还在回消息"。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.state = LifeStateEngine(self.store, self.config, DummyLLM(), DummyLogger())
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_scheduled_sleep_waits_for_defer(self):
+        night = datetime(2026, 9, 21, 23, 30, tzinfo=TZ)
+        runtime = await self.store.get_sleep_runtime()
+        runtime["sleep_defer_until"] = night.timestamp() + 600
+        await self.store.save_sleep_runtime(runtime)
+        await self.state.advance(night, {"kind": "sleep", "summary": "睡觉", "location": "卧室"}, None)
+        self.assertEqual((await self.store.get_sleep_runtime())["phase"], "awake")
+        # defer 过后同一睡眠段正常入睡。
+        runtime = await self.store.get_sleep_runtime()
+        runtime["sleep_defer_until"] = night.timestamp() - 1
+        await self.store.save_sleep_runtime(runtime)
+        await self.state.advance(night, {"kind": "sleep", "summary": "睡觉", "location": "卧室"}, None)
+        self.assertEqual((await self.store.get_sleep_runtime())["phase"], "falling_asleep")
+
+
+class V1146WokenPromptTests(unittest.TestCase):
+    """v1.14.6 需求②：叫醒回填（刚被叫醒 + 空格分段的睡眠期漏听消息）。"""
+
+    def _builder(self) -> PromptBuilder:
+        return PromptBuilder()
+
+    def _state(self, phase: str) -> dict[str, Any]:
+        return {"energy": 40, "hunger": 30, "mood_valence": 0.0, "mood_arousal": 0.5,
+                "current_activity": "写代码", "current_location": "家里", "sleep_phase": phase}
+
+    def test_woken_phase_injects_just_woken_note_with_bot_name(self):
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(self._state("woken"), method=method, bot_name="小米")
+                self.assertIn("【刚被叫醒】", text)
+                self.assertIn("小米刚才已经睡着了", text)
+                self.assertNotIn("麦麦", text)
+
+    def test_backlog_segments_with_spaces(self):
+        backlogs = ["约2小时前：第一条", "约1小时前：第二条"]
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(self._state("light_sleep"), backlogs=backlogs, method=method)
+                self.assertIn("约2小时前：第一条 约1小时前：第二条", text)
+
+    def test_approaching_bedtime_injects_goodnight_hint(self):
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(self._state("awake"), method=method,
+                                   bedtime="approaching", bot_name="小米")
+                self.assertIn("【睡前氛围】", text)
+                self.assertIn("正式道晚安", text)
+        # 非 approaching 不注入。
+        text = self._build(self._state("awake"), method="replyer")
+        self.assertNotIn("【睡前氛围】", text)
+
+    def _build(self, state: dict[str, Any], *, backlogs: list[str] | None = None,
+               method: str = "planner", bot_name: str = "麦麦", bedtime: str = "") -> str:
+        builder = self._builder()
+        user = {"user_id": "1", "role": "owner", "temperature": 50}
+        weather = {"description": "晴"}; context = {"current": {"summary": "写代码"}, "next": None}
+        if method == "planner":
+            return builder.planner(
+                state, weather, context, user, {}, backlogs or [],
+                {"time_period": "晚上", "day_type": "工作日"},
+                {"unresolved_topics": []}, "聊天",
+                memory={"diary": {}, "upcoming_dates": []},
+                information={"news": [], "explorations": []},
+                bookshelf={"items": []}, bot_name=bot_name, bedtime=bedtime)
+        return builder.replyer(
+            state, weather, context, user, backlogs or [],
+            {"time_period": "晚上", "day_type": "工作日"},
+            {"unresolved_topics": []}, "聊天",
+            memory={"diary": {}, "upcoming_dates": []},
+            information={"news": [], "explorations": []},
+            bookshelf={"items": []}, bot_name=bot_name, bedtime=bedtime)
+
+
+class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 plugin 层：payload[bedtime] 与 planner/replyer 注名。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self, now: datetime) -> MaiLifePlugin:
+        return await build_plugin(self.store, self.config, users=[UserProfile(user_id="10001", role="owner")],
+                                  llm=DummyLLM(), now=now)
+
+    async def test_payload_marks_approaching_only_for_private_night(self):
+        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)  # 夜窗前 5 分钟（lead=10）
+        plugin = await self._plugin(night)
+        payload = await plugin._prompt_payload("stream-10001")
+        self.assertEqual(payload["bedtime"], "approaching")
+        # 夜窗开始前 15 分钟：不注入。
+        plugin_early = await self._plugin(datetime(2026, 9, 21, 22, 15, tzinfo=TZ))
+        self.assertEqual((await plugin_early._prompt_payload("stream-10001"))["bedtime"], "")
+        # 群会话（即便匹配到用户）不注入。
+        await self.store.sync_users([UserProfile(user_id="10002")])
+        await self.store.set_user_stream("10002", "group-stream-1")
+        plugin._group_sessions.add("group-stream-1")
+        self.assertEqual((await plugin._prompt_payload("group-stream-1"))["bedtime"], "")
+        # 闸门关闭后整条睡前流程不生效。
+        self.config.rest_gate.enabled = False
+        plugin_off = await self._plugin(night)
+        self.assertEqual((await plugin_off._prompt_payload("stream-10001"))["bedtime"], "")
+
+    async def test_planner_injection_carries_bot_name_and_bedtime_hint(self):
+        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+        plugin = await self._plugin(night)
+        plugin._bot_name = "小米"
+        result = await plugin.on_planner(session_id="stream-10001", items=[
+            {"item_type": "UserMessageItem", "meta": {}, "parts": [{"type": "text", "text": "在吗"}]}])
+        items = result.get("modified_kwargs", {}).get("items") or []
+        injected = next((item for item in items if item.get("item_type") == "SystemMessageItem"), None)
+        self.assertIsNotNone(injected)
+        note = injected["parts"][0]["text"]
+        self.assertIn("小米", note)
+        self.assertNotIn("麦麦", note)
+        self.assertIn("【睡前氛围】", note)
+
+    async def test_bot_name_refresh_reads_host_nickname_and_propagates(self):
+        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+
+        class NicknameCtx(DummyCtx):
+            class _Config:
+                async def get(self, key, default=None):
+                    return "小米" if key == "bot.nickname" else default
+
+            def __init__(self):
+                super().__init__()
+                self.config = NicknameCtx._Config()
+
+        plugin = await self._plugin(night)
+        plugin._set_context(NicknameCtx())
+        await plugin._refresh_personality()
+        self.assertEqual(plugin._bot_name, "小米")
+        self.assertEqual(plugin._rest.bot_name, "小米")
+        self.assertEqual(plugin._schedule.bot_name, "小米")
+        self.assertEqual(plugin._state.bot_name, "小米")
+        self.assertEqual(plugin._memory.bot_name, "小米")
+        self.assertEqual(plugin._information.bot_name, "小米")
+        self.assertEqual(plugin._information.news.bot_name, "小米")
+        self.assertEqual(plugin._relay.bot_name, "小米")
+        self.assertEqual(plugin._creation.bot_name, "小米")
+        self.assertEqual(plugin._creation.inspirations.bot_name, "小米")
+
+    async def test_config_reports_bedtime_flow(self):
+        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+        ctx = DummyContext(image_result=False)
+        plugin = await build_plugin(self.store, self.config, ctx=ctx,
+                                    users=[UserProfile(user_id="10001", role="owner")],
+                                    llm=DummyLLM(), now=night)
+        await plugin.cmd_config(user_id="10001", group_id="", stream_id="stream-10001", platform="qq")
+        texts = [str(item.get("text") or "") for item in ctx.send.texts]
+        self.assertTrue(any("睡前流程：夜窗前 10 分钟道晚安，静默 10 分钟后入睡" in t for t in texts))
+
+
+class V1146BotNamePromptTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 bot 名统一：判醒与日程提示词用配置名，取不到回落"麦麦"。"""
+
+    class RecordingLLM(DummyLLM):
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def task_available(self, kind): return kind == "rest_wakeup"
+
+        async def generate_json(self, prompt, system, fallback=None, max_tokens=0, **kwargs):
+            self.prompts.append(str(prompt))
+            return {"score": 10, "should_reply": False}
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+        self.config.rest_gate.mode = "llm"
+        self.config.rest_gate.llm_threshold = 99
+        self.llm = V1146BotNamePromptTests.RecordingLLM()
+        self.gate = RestGate(self.store, self.config, self.llm, DummyStateEngine(), DummyLogger(),
+                             bot_name="小米")
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_judge_prompt_uses_configured_name(self):
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
+        await self.gate.decide("1", "普通消息", night, {"kind": "sleep"})
+        self.assertIn("小米正在", self.llm.prompts[0])
+        self.assertNotIn("麦麦", self.llm.prompts[0])
+
+    async def test_schedule_prompt_uses_configured_name(self):
+        service = ScheduleService(self.store, self.config, DummyLLM(), ".", DummyLogger(),
+                                  bot_name="小米")
+        state = await self.store.get_state()
+        prompt_usage = service._state_summary(state)
+        self.assertIn("小米当前状态", prompt_usage)
+        self.assertNotIn("麦麦", prompt_usage)
+
+
+class V1146SchemaTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.6 schema：sleep_defer_until 新库直建、v13 旧库幂等补齐。"""
+
+    async def test_fresh_database_has_sleep_defer_until(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            store = LifeStore(tmp.name); await store.initialize()
+            try:
+                columns = {row[1] for row in store.conn.execute("PRAGMA table_info(sleep_runtime)")}
+                self.assertIn("sleep_defer_until", columns)
+                self.assertEqual(store.conn.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "14")
+            finally:
+                await store.close()
+        finally:
+            tmp.cleanup()
+
+    async def test_v13_database_gains_defer_column_without_data_loss(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            seeded = LifeStore(tmp.name); await seeded.initialize()
+            await seeded.sync_users([UserProfile(user_id="1")])
+            await seeded.record_interaction("1", "历史消息", time.time(), 12)
+            seeded.conn.execute("UPDATE meta SET value='13' WHERE key='schema_version'")
+            seeded.conn.commit(); await seeded.close()
+            upgraded = LifeStore(tmp.name); await upgraded.initialize()
+            try:
+                columns = {row[1] for row in upgraded.conn.execute("PRAGMA table_info(sleep_runtime)")}
+                self.assertIn("sleep_defer_until", columns)
+                self.assertEqual(float((await upgraded.get_sleep_runtime()).get("sleep_defer_until", 0)), 0.0)
+                self.assertEqual(len(await upgraded.list_users()), 1)
+                self.assertEqual(upgraded.conn.execute(
+                    "SELECT COUNT(*) FROM interaction_events").fetchone()[0], 1)
+            finally:
+                await upgraded.close()
+        finally:
+            tmp.cleanup()
 
 
 if __name__ == "__main__":

@@ -18,12 +18,17 @@ _EXPLICIT_DATE_RE=re.compile(r"(?:(?P<year>20\d{2})\s*[年./-]\s*)?(?P<month>1[0
 _FUZZY_DATE_RE=re.compile(r"(今天|明天|后天|下周[一二三四五六日天]?|下个月|月底|月末|过几天|最近几天)")
 _EVENT_WORDS=("生日","纪念日","考试","面试","约定","见面","截止","开学","毕业","比赛","复诊","旅行","婚礼","提醒")
 class MemoryService:
-    def __init__(self,store:Any,config:Any,llm:Any,logger:Any)->None:
+    def __init__(self,store:Any,config:Any,llm:Any,logger:Any,bot_name:str="麦麦")->None:
         self.store=store; self.config=config; self.llm=llm; self.logger=logger
+        self.bot_name=bot_name
         # 跳过补日记的 info 日志限流状态：(时间戳, 原因签名)，同因 24 小时内只记一条。
         self._last_skip_log:tuple[float,str]|None=None
 
     def update_config(self,config:Any)->None:self.config=config
+
+    def set_bot_name(self,name:str)->None:
+        clean=str(name or "").strip()
+        if clean:self.bot_name=clean
 
     @staticmethod
     def _day_bounds(now:datetime,target:date)->tuple[float,float]:
@@ -198,7 +203,7 @@ class MemoryService:
         result=fallback
         if self.llm.task_available("diary"):
             prompt=(
-                "根据以下麦麦自己的生活数据写一篇第一人称抽象日记。不得补写聊天原句、用户姓名、群名、账号、密码或朋友隐私。"
+                f"根据以下{self.bot_name}自己的生活数据写一篇第一人称抽象日记。不得补写聊天原句、用户姓名、群名、账号、密码或朋友隐私。"
                 "互动数据只有数量，不能猜测聊天内容。返回JSON：title、content、mood_summary。\n"+serialized
             )
             raw=await self.llm.generate_json(

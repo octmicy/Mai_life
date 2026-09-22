@@ -36,11 +36,16 @@ DREAM_FALLBACKS=[
 
 
 class LifeStateEngine:
-    def __init__(self, store: Any, config: Any, llm: Any, logger: Any) -> None:
+    def __init__(self, store: Any, config: Any, llm: Any, logger: Any, bot_name: str = "麦麦") -> None:
         self.store=store; self.config=config; self.llm=llm; self.logger=logger
+        self.bot_name=bot_name
 
     def update_config(self, config: Any) -> None:
         self.config=config
+
+    def set_bot_name(self,name:str)->None:
+        clean=str(name or "").strip()
+        if clean:self.bot_name=clean
 
     @staticmethod
     def _clamp(value: float, low: float, high: float) -> float:
@@ -79,12 +84,14 @@ class LifeStateEngine:
         kind=str((segment or {}).get("kind") or "leisure")
         scheduled_sleep=kind in {"sleep","nap"}
         grace=float(runtime.get("awake_grace_until",0))>now_ts
+        # 睡前协商期（sleep_defer_until 未到）不入睡：夜窗前对话未完时她还在回复。
+        defer=float(runtime.get("sleep_defer_until",0))>now_ts
         old_phase=str(runtime.get("phase") or "awake")
         old_sleep_started=float(runtime.get("started_at",now_ts))
         # 睡眠段类型从 last_event 还原（睡眠段内逐次同步），午休不做梦。
         old_sleep_kind=str(runtime.get("last_event") or "").removeprefix("进入")
         in_period=self._in_period(now)
-        effective_sleep=scheduled_sleep and not grace
+        effective_sleep=scheduled_sleep and not grace and not defer
         woke=False; sleep_duration=0.0
         # 睡眠恢复与清醒消耗分支互斥，避免同一时间段重复计算。
         if effective_sleep:
@@ -202,7 +209,7 @@ class LifeStateEngine:
                 topics=[str(item.get("topic") or "").strip() for item in observations if str(item.get("topic") or "").strip()]
                 if topics:group_context="白天在群里看到过这些话题："+ "、".join(topics[:8]) + "。这些可以作为梦境的模糊参考，但不要逐字复述或暴露群友身份。"
             except Exception:pass
-            prompt=(f"麦麦刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
+            prompt=(f"{self.bot_name}刚结束约{hours:.1f}小时睡眠。当前心情值{state.get('mood_valence',0):.2f}，"
                     f"最近生活场景是{state.get('current_activity','普通日常')}。"
                     f"{group_context}"
                     "生成克制自然的醒后梦境，"
@@ -236,6 +243,17 @@ class LifeStateEngine:
         runtime["phase"]="woken"; runtime["awake_grace_until"]=now.timestamp()+self.config.rest_gate.awake_grace_minutes*60
         runtime["woken_count"]=int(runtime.get("woken_count",0))+1; runtime["last_event"]=reason
         state["sleep_phase"]="woken"; state["energy"]=self._clamp(float(state.get("energy",70))-3,0,100); state["last_updated_at"]=now.timestamp()
+        await self.store.save_sleep_runtime(runtime); await self.store.save_state(state)
+
+    # 叫醒宽限到期后由 BedtimeManager 调用：从 woken 重新入睡，
+    # 入睡相位从头计时（45 分钟后才进深睡），与用户配置的 awake_grace_minutes 对齐。
+    async def mark_resleep(self, now: datetime) -> None:
+        runtime=await self.store.get_sleep_runtime(); state=await self.store.get_state()
+        if str(runtime.get("phase") or "")!="woken":return
+        now_ts=now.timestamp()
+        runtime.update({"phase":"falling_asleep","started_at":now_ts,
+                        "awake_grace_until":0,"sleep_defer_until":0,"last_event":"叫醒后重新入睡"})
+        state["sleep_phase"]="falling_asleep"; state["last_updated_at"]=now_ts
         await self.store.save_sleep_runtime(runtime); await self.store.save_state(state)
 
 

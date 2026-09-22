@@ -101,6 +101,7 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     from Mai_life.creation.bookshelf_service import BookshelfService
     from Mai_life.creation.creation_service import CreationService
     from Mai_life.information.information_service import InformationService
+    from Mai_life.life.bedtime import BedtimeManager
     from Mai_life.life.continuity import ContinuityService
     from Mai_life.life.life_state import LifeStateEngine
     from Mai_life.life.memory_service import MemoryService
@@ -145,6 +146,7 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     plugin._bookshelf = BookshelfService(store, config)
     plugin._creation = CreationService(ctx, store, config, llm, logger)
     plugin._admin = AdminService(store, config)
+    plugin._bedtime = BedtimeManager(ctx, store, config, plugin._env, plugin._state, logger)
     if now is not None:
         plugin._env.now = lambda: now
     return plugin

@@ -215,7 +215,7 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await upgraded.close(); other.cleanup()
 
-    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,13)
+    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,14)
 
 
 if __name__=="__main__":unittest.main()

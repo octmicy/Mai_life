@@ -1,4 +1,4 @@
-"""Mai_life v1.14.7 插件入口。"""
+"""Mai_life v1.14.8 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta
@@ -21,7 +21,7 @@ from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
 from .core.storage import LifeStore,RECORD_RETENTION_DAYS
 from .information.information_service import InformationService
-from .life.bedtime import BEDTIME_LOOP_SECONDS,BEDTIME_SILENCE_MINUTES,GOODNIGHT_LEAD_MINUTES,BedtimeManager
+from .life.bedtime import BEDTIME_LOOP_SECONDS,BEDTIME_SILENCE_MINUTES,BedtimeManager
 from .life.continuity import ContinuityService
 from .life.life_state import LifeStateEngine
 from .life.memory_service import MemoryService
@@ -234,7 +234,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if scope=="self":
             for service in (self._llm,self._env,self._state,self._schedule,self._rest,self._proactive,
                             self._debouncer,self._continuity,self._memory,self._information,
-                            self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,self._recall):
+                            self._group_observer,self._relay,self._bookshelf,self._creation,self._admin,
+                            self._recall,self._bedtime):
                 if service:service.update_config(self.config)
             if self._store and (not self.config.recall.enabled or not self.config.recall.cache_summary_enabled):
                 await self._store.clear_recall_summaries()
@@ -1769,7 +1770,7 @@ class MaiLifePlugin(MaiBotPlugin):
         text=(f"麦麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n"
               f"配置用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
               f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
-              f"睡前流程：{'夜窗前 %d 分钟道晚安，静默 %d 分钟后入睡' % (GOODNIGHT_LEAD_MINUTES,BEDTIME_SILENCE_MINUTES) if self.config.rest_gate.enabled else '关闭'}\n"
+              f"睡前流程：{'与夜间闸门同时段（静默 %d 分钟后入睡）' % BEDTIME_SILENCE_MINUTES if self.config.rest_gate.enabled else '关闭'}\n"
               f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.social.groups if g.enabled and g.rest_gate_enabled) if self.config.rest_gate.group_enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"

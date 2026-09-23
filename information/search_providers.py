@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC,abstractmethod
 from typing import Any
 
-from .http_client import HttpRequestError
+from .http_client import HttpClient,HttpRequestError
 from .search_models import SearchBackendError,SearchResponse
 from .search_parsing import redact_key_echo
 
@@ -104,8 +104,16 @@ class ApiProvider(SearchProvider):
 
     def validate(self,provider:Any)->str:
         kind=str(provider.provider_type)
-        if kind.startswith("openai_") and (not str(provider.endpoint).strip() or not str(provider.model).strip()):
-            return "invalid_config"
+        if kind.startswith("openai_"):
+            if not str(provider.endpoint).strip() or not str(provider.model).strip():
+                return "invalid_config"
+            # 自定义 endpoint 只允许公网：字面量内网/环回/云元数据地址直接判配置错误，
+            # 不发起请求、不惩罚 Key；域名解析到内网的 rebinding 由请求时 public_only 固定 IP 兜底。
+            try:
+                if HttpClient.private_host_reason(str(provider.endpoint)):
+                    return "unsafe_endpoint"
+            except HttpRequestError:
+                return "invalid_config"
         return ""
 
     def fingerprints(self,provider:Any)->list[str]:
@@ -131,10 +139,12 @@ class ApiProvider(SearchProvider):
         try:
             parsed=await self.service._request_provider(provider,key,query,freshness)
         except HttpRequestError as exc:
+            # 非公网地址是配置错误而非 Key 故障：记录但不禁用/冷却 Key，避免误伤可用 Key。
+            config_error=exc.error_class in {"unsafe_url","invalid_url"}
             quota=self.service._quota_error(exc)
             raise SearchAttemptError(
                 "API 请求失败",error_class="quota" if quota else exc.error_class,
-                status_code=exc.status_code,headers=exc.headers,
+                status_code=exc.status_code,headers=exc.headers,penalize=not config_error,
             ) from exc
         except Exception:
             raise SearchAttemptError("API 请求内部异常",error_class="internal",penalize=False)

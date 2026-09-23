@@ -1,6 +1,6 @@
 # 麦麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。当前版本为 **v1.14.6**，适配 MaiBot 1.0.12+、Plugin SDK 2.7.x，以及 SnowLuma、NapCat 两种 QQ 适配器。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。并且还有其他功能，比如说消息防抖，联网搜索等。
 
 ## 快速配置
 
@@ -8,39 +8,77 @@
 
 1. 在“私聊用户”中填写真实 QQ 号，并启用该用户。
 2. 最多设置一个 `owner`，其他用户使用 `friend`。
-3. 为每个用户明确填写每日主动上限。这是「每日最多 N 次」的硬上限，不是目标次数——实际主动次数常少于该值（受免打扰、冷却、精力、候选评分和 Planner 自主决策约束）。建议主人 `2`，朋友 `1`，填 `0` 表示禁止主动私聊。
+3. 为每个用户明确填写每日主动上限。
 4. 在“环境与天气”中填写城市。插件会自动解析坐标，不需要经纬度。
 5. 保存配置并重载插件，使用 `/麦麦状态` 检查任务和模型状态。
 
 管理员 QQ 可以直接在私聊使用菜单、状态、配置和管理诊断指令，不需要再重复创建私聊用户档案。关系温度、本人撤回摘要和重要日期属于个人档案功能，只有把当前 QQ 加入“私聊用户”并启用档案后才可使用。
 
-输入 `/麦麦` 或 `/麦麦帮助` 会返回本地生成的指令菜单图。菜单由 Pillow 即时渲染，不访问生图 API，也没有新增独立 Web 页面或 Web 服务；Windows 优先使用系统幼圆字体并合成粗体，Linux 优先尝试 M PLUS Rounded，缺失时回退到可用中文字体。Pillow、字体或图片发送能力不可用时会自动返回纯文本菜单。旧版英文指令仅作为隐藏兼容入口保留，不再显示在菜单中。
+输入 `/麦麦` 或 `/麦麦帮助` 会返回本地生成的指令菜单图。菜单由 Pillow 即时渲染，不访问生图 API。
 
-状态、日程、关系、管理摘要和错误提示等指令结果也会在本地渲染成同主题图片。长内容会自动分页发送；Pillow、字体或适配器图片能力不可用时，仅对失败部分降级为纯文本。该过程不调用生图模型，不额外消耗模型 Token。
+### 安装 Chromium、chinese-calendar、lunar-python（可选）
 
-用户、管理员、关系权限和群聊目标都只按 QQ 号判断。昵称与群名称由 MaiBot 会话自动读取，仅用于状态展示；改名不会改变身份或权限。
+playwright 这个 Python 包已写入 _manifest.json 的 dependencies，MaiBot 加载插件时会自动安装；但另外两个 Python 库（chinese-calendar、lunar-python）以及 Chromium 浏览器二进制需要手动安装一次。
 
-### 安装 Chromium（可选，仅联网搜索需要）
+关键：用哪个 python 运行 MaiBot，就用同一个环境安装依赖，确保组件装进插件运行时能看到的环境。
 
-`playwright` 这个 Python 包已写入 `_manifest.json` 的 `dependencies`，MaiBot 加载插件时会自动安装；但 Chromium 浏览器二进制不属于 pip 包，**仍需手动装一次**。
-
-关键：用哪个 `python` 运行 MaiBot，就用同一个 `python` 安装 Chromium，确保浏览器装进插件运行时能看到的环境。
-
-如果 MaiBot 运行在虚拟环境（例如 Linux 上的 `.venv`），要进到 MaiBot 目录、用虚拟环境里的 `python` 执行，而不是系统 `python`：
+如果 MaiBot 运行在虚拟环境（例如 Linux 上的 .venv），要进到 MaiBot 目录，用虚拟环境里的 pip 和 python 执行：
 
 ```bash
-cd /root/maimai/MaiBot
+cd /maibot安装的主文件夹
+# 1. 安装 Python 依赖包（如果 MaiBot 自动装失败，可手动补装）
+.venv/bin/pip install chinese-calendar lunar-python
+
+# 2. 下载 Playwright 专属的 Chromium 浏览器内核
 .venv/bin/python -m playwright install chromium
 ```
 
 如果 MaiBot 用系统 Python 直接运行，则直接执行：
 
 ```bash
+# 1. 安装 Python 依赖包
+pip install chinese-calendar lunar-python
+
+# 2. 下载 Playwright 专属的 Chromium 浏览器内核
 python -m playwright install chromium
 ```
 
-- 服务器无外网或下载失败时，可先在有网的机器上装好 Chromium，再把浏览器缓存目录整体拷贝过去：Windows 默认 `%USERPROFILE%\AppData\Local\ms-playwright`，Linux 默认 `~/.cache/ms-playwright`。
-- 不装 Chromium 不会阻止插件加载；联网搜索会记录 `browser_unavailable` 错误，并自动降级到后续 API 备援服务。
+针对 Docker 部署用户
+
+如果你的 MaiBot 是用 Docker 运行的，切勿在宿主机（服务器）上执行安装命令，务必让依赖装进容器内部。
+
+推荐修改你的 Dockerfile，在构建阶段加入以下指令：
+
+```dockerfile
+# 安装 Playwright 运行所需的系统依赖
+RUN apt-get update && apt-get install -y \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libasound2 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装三个 Python 依赖包
+RUN pip install --no-cache-dir chinese-calendar lunar-python playwright
+
+# 下载 Chromium 浏览器内核
+RUN playwright install chromium
+```
+
+然后重建并重启容器：
+
+```bash
+docker compose down
+docker compose build
+docker compose up -d
+```
+
+如果容器里没有中文字体，Playwright 截图或渲染可能全是方块。如果 Maibot 需要截图发送，建议在 Dockerfile 里加一行：
+
+```dockerfile
+RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+```
+
+- 不装 Chromium、chinese-calendar、lunar-python 不会阻止插件加载；联网搜索会记录 `browser_unavailable` 错误，并自动降级到后续 API 备援服务。
 
 ### 推荐开关
 
@@ -88,11 +126,7 @@ Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文。`playw
 
 原始 Key 只保存在本地 `config.toml`。SQLite、日志、Prompt、Token 明细和管理输出只使用不可逆指纹，但服务器文件权限不当时 TOML 仍可能泄露 Key。
 
-v1.13.0 起，联网工具、主动搜索和新闻阅读的每次逻辑搜索都会写入本地 `search_history`（SQLite），记录清洗后的查询词、实际使用服务、成功与否和结果摘要，主人可用 `/麦麦管理 搜索` 查看，`/麦麦状态` 也会显示历史条数。可在 WebUI 关闭（`history_enabled`）或调整保留天数（默认 30 天）；查询词已做隐私清洗，原始 Key 永不入库。
-
 新闻默认每天最多读取 1 次，每次由麦麦根据人格自主决定想了解的新闻主题，最多保留 5 条结果并尝试读取前 3 篇正文。主动搜索默认每天最多 1 次，同样由麦麦根据人格自主规划搜索词。每日次数按整条降级链的一次逻辑尝试计算，失败或空结果也会计入，避免持续请求；模型不可用时新闻与主动搜索会跳过而不会退化为硬编码词条，所有服务失败时保留旧缓存，不生成虚假见闻。
-
-v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映射配置。升级到 v1.12.0 后，默认配置已经包含 Playwright/Bing；API 服务仍可在 WebUI 中追加为备援。
 
 ## 主要功能
 
@@ -109,7 +143,6 @@ v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映�
 - **道晚安**：夜窗前 10 分钟起，私聊回复会被自然提醒收尾——正在聊就正式说晚安（由回复说出，不主动发消息），用户一直不说话则安静入睡。
 - **推迟入睡**：入睡点 = 夜窗开始与"最后一条私聊 + 10 分钟静默"中的较晚者；睡前还在聊就一条条往后推，静默满 10 分钟才睡，被拦下的睡眠期消息不会重新推开。
 - **被叫醒**：宽限期（默认 30 分钟）内正常回复，并回填睡眠期被拦下的消息（空格分段）与"刚被你叫醒"的困意；宽限到期后自动重新入睡。
-- **角色名**：提示词中的称呼读取主程序 `[bot] nickname`（改了 bot 名即时生效，读不到回落"麦麦"）；"麦麦生活"是插件产品名，不随角色名变化。
 
 ### 消息体验
 
@@ -130,7 +163,6 @@ v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映�
 ### 记忆与创作
 
 - 梦境碎片、抽象日记和重要日期可以影响后续状态、日程与主动话题。
-- v1.7.0 已删除技能成长；MaiBot 不是 Agent，插件不再模拟技能学习。
 - 可选书柜保存麦麦自己的日记和作品。正文以 SQLite 明文保存，朋友只能访问允许公开的内容。
 
 ## 运行影响
@@ -138,12 +170,9 @@ v1.7.0 不再调用旧 RSS、Atom、B站插件 API、SearXNG 或通用 JSON 映�
 | 项目 | 影响 |
 | --- | --- |
 | 响应延迟 | 私聊防抖固定增加最多约 1.2 秒；单图默认等待 3 秒。群防抖开启后按群参数增加等待。模型判醒还可能增加额外网络延迟。 |
-| CPU 与内存 | 常规状态推进和 SQLite 操作较轻；首次打开指令菜单会在本地短时渲染 PNG，随后复用小型缓存。群话题整理和正文清洗也会短时增加占用。 |
-| Token | 日程、场景、梦境、连续话题和回复上下文会增加模型调用或 Prompt 长度；新闻批量整理、自我关联和自定义联网模型会进一步消耗 Token。 |
+| Token | 日程、场景、梦境、连续话题和回复上下文会增加模型调用或 Prompt 长度；新闻批量整理、自我关联和自定义联网模型会进一步消耗 Token。初步测量，平均会增加1M及以上的token消耗 |
 | 搜索 API 与费用 | 新闻默认每天最多 1 次，日程主动搜索默认每天最多 1 次；模型按需调用的联网 Tool 不设每日次数上限。主备 Key 和跨服务降级可能产生额外请求及费用，具体以服务商计费为准。 |
-| 网络 | 博查通常更适合中国大陆网络；Tavily、You.com 和海外中转可能受 DNS、代理、防火墙或出口质量影响。所有联网模块均可完全关闭。 |
 | 存储 | SQLite 保存生活、关系、摘要、作品、Key 健康指纹和调用统计；不保存搜索原始 Key 和图片二进制。TOML 中的 Key 与书柜明文需要限制文件权限。 |
-| 命中率 | 主动发言和联网见闻取决于日程、人格、网络、模型、自我关联阈值和 Planner 决策，不承诺固定百分比或固定次数。 |
 
 ## 指令
 
@@ -186,17 +215,8 @@ SQLite Schema v9 使用事务和异步锁。升级会删除旧技能表、技能
 
 ## 常见问题
 
-**WebUI 保存提示 `NoneType`**
-不要在 TOML 中填写 `null` 或 `None`。列表项未填写时使用空字符串、空列表或直接删除该未完成项。
-
 **搜索一直降级**
 使用 `/麦麦管理 来源` 查看服务类型、浏览器引擎、Key 指纹、状态和最近错误类别。先确认已安装 Chromium，再检查网络、验证码、搜索引擎页面变化；若浏览器失败，检查后续 API 备援的 Key、额度、自定义地址和模型名。
-
-**群聊仍有连续回复**
-群防抖默认关闭。开启后检查适配器是否提供真实群 QQ 号与发送者 QQ 号；该功能只合并同一用户在同一群中的连续补话。
-
-**撤回后仍发出了一段**
-适配器必须及时把 OneBot 撤回通知转发给 Host。已经完成平台发送的内容不会被插件追回，插件只取消尚未发送的部分。
 
 ## 开发测试
 

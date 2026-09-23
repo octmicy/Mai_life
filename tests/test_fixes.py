@@ -2003,15 +2003,23 @@ class V1146BedtimeManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.tick(morning.replace(hour=8, minute=20))
         self.assertEqual((await self.store.get_sleep_runtime())["phase"], "woken")
 
-    async def test_approaching_starts_lead_minutes_before_night_window(self):
-        before = datetime(2026, 9, 21, 22, 15, tzinfo=TZ)   # 夜窗前 15 分钟 > lead 10
-        self.assertFalse(self.manager.approaching(before))
-        inside = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)   # 夜窗前 5 分钟 < lead 10
-        self.assertTrue(self.manager.approaching(inside))
-        # 夜窗结束后不再注入（08:00 后）。
-        self.assertFalse(self.manager.approaching(datetime(2026, 9, 22, 9, 0, tzinfo=TZ)))
+    async def test_approaching_matches_gate_night_window_exactly(self):
+        # 睡前氛围窗口与闸门夜窗严格一致：默认 22:30-08:00，不提前、不延后。
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 21, 22, 29, tzinfo=TZ)))
+        self.assertTrue(self.manager.approaching(datetime(2026, 9, 21, 22, 30, tzinfo=TZ)))
+        self.assertTrue(self.manager.approaching(datetime(2026, 9, 21, 23, 0, tzinfo=TZ)))
+        self.assertTrue(self.manager.approaching(datetime(2026, 9, 22, 7, 59, tzinfo=TZ)))
+        # 夜窗结束后不再注入（08:00 整点已出窗）。
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 22, 8, 0, tzinfo=TZ)))
         self.config.rest_gate.enabled = False
-        self.assertFalse(self.manager.approaching(inside))
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 21, 23, 0, tzinfo=TZ)))
+
+    async def test_approaching_follows_customized_gate_times(self):
+        # 用户把闸门改成 23:21-08:00：氛围从 23:21 整点开始，不用默认 22:30、也没有提前量。
+        self.config.rest_gate.night_start = "23:21"
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 21, 23, 20, tzinfo=TZ)))
+        self.assertTrue(self.manager.approaching(datetime(2026, 9, 21, 23, 21, tzinfo=TZ)))
+        self.assertFalse(self.manager.approaching(datetime(2026, 9, 22, 8, 0, tzinfo=TZ)))
 
 
 class V1146AdvanceDeferTests(unittest.IsolatedAsyncioTestCase):
@@ -2111,17 +2119,17 @@ class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.store.close(); self.tmp.cleanup()
 
-    async def _plugin(self, now: datetime) -> MaiLifePlugin:
+    async def _plugin(self, now: datetime, *, real_llm: bool = False) -> MaiLifePlugin:
         return await build_plugin(self.store, self.config, users=[UserProfile(user_id="10001", role="owner")],
-                                  llm=DummyLLM(), now=now)
+                                  llm=None if real_llm else DummyLLM(), now=now)
 
     async def test_payload_marks_approaching_only_for_private_night(self):
-        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)  # 夜窗前 5 分钟（lead=10）
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)  # 夜窗内（默认 22:30 之后）
         plugin = await self._plugin(night)
         payload = await plugin._prompt_payload("stream-10001")
         self.assertEqual(payload["bedtime"], "approaching")
         # 夜窗开始前 15 分钟：不注入。
-        plugin_early = await self._plugin(datetime(2026, 9, 21, 22, 15, tzinfo=TZ))
+        plugin_early = await self._plugin(datetime(2026, 9, 21, 22, 29, tzinfo=TZ))
         self.assertEqual((await plugin_early._prompt_payload("stream-10001"))["bedtime"], "")
         # 群会话（即便匹配到用户）不注入。
         await self.store.sync_users([UserProfile(user_id="10002")])
@@ -2134,7 +2142,7 @@ class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await plugin_off._prompt_payload("stream-10001"))["bedtime"], "")
 
     async def test_planner_injection_carries_bot_name_and_bedtime_hint(self):
-        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
         plugin = await self._plugin(night)
         plugin._bot_name = "小米"
         result = await plugin.on_planner(session_id="stream-10001", items=[
@@ -2148,7 +2156,7 @@ class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("【睡前氛围】", note)
 
     async def test_bot_name_refresh_reads_host_nickname_and_propagates(self):
-        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
 
         class NicknameCtx(DummyCtx):
             class _Config:
@@ -2173,15 +2181,31 @@ class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plugin._creation.bot_name, "小米")
         self.assertEqual(plugin._creation.inspirations.bot_name, "小米")
 
+    async def test_config_update_reaches_bedtime_manager(self):
+        """v1.14.8：WebUI 改闸门时间后，睡前流程必须同步换新配置（否则沿用旧时间直到重启）。"""
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
+        # 真 LLMService：热更新分发会调用每个服务的 update_config，替身没有该方法。
+        plugin = await self._plugin(night, real_llm=True)
+        self.assertIs(plugin._bedtime.config, self.config)
+        updated = MaiLifeSettings.model_validate(self.config.model_dump(mode="python"))
+        updated.rest_gate.night_start = "23:21"
+        plugin.set_plugin_config(updated.model_dump(mode="python"))
+        await plugin._apply_config_update("self", {}, "")
+        self.assertIs(plugin._bedtime.config, plugin.config)
+        # 新时间立即生效：23:20 不在氛围窗内、23:21 起注入。
+        manager = plugin._bedtime
+        self.assertFalse(manager.approaching(datetime(2026, 9, 21, 23, 20, tzinfo=TZ)))
+        self.assertTrue(manager.approaching(datetime(2026, 9, 21, 23, 21, tzinfo=TZ)))
+
     async def test_config_reports_bedtime_flow(self):
-        night = datetime(2026, 9, 21, 22, 25, tzinfo=TZ)
+        night = datetime(2026, 9, 21, 23, 0, tzinfo=TZ)
         ctx = DummyContext(image_result=False)
         plugin = await build_plugin(self.store, self.config, ctx=ctx,
                                     users=[UserProfile(user_id="10001", role="owner")],
                                     llm=DummyLLM(), now=night)
         await plugin.cmd_config(user_id="10001", group_id="", stream_id="stream-10001", platform="qq")
         texts = [str(item.get("text") or "") for item in ctx.send.texts]
-        self.assertTrue(any("睡前流程：夜窗前 10 分钟道晚安，静默 10 分钟后入睡" in t for t in texts))
+        self.assertTrue(any("睡前流程：与夜间闸门同时段（静默 10 分钟后入睡）" in t for t in texts))
 
 
 class V1146BotNamePromptTests(unittest.IsolatedAsyncioTestCase):

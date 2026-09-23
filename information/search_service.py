@@ -161,21 +161,24 @@ class SearchService:
             payload={"query":query,"summary":True,"count":count}
             if freshness=="day":payload["freshness"]="oneDay"
             response=await self.http.post_json(_ENDPOINTS[kind],payload,timeout=timeout,
-                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
+                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                                               public_only=True)
         elif kind=="tavily":
             payload={"query":query,"max_results":count,"search_depth":"basic","include_answer":False}
             if freshness=="day":payload.update({"topic":"news","days":1})
             response=await self.http.post_json(_ENDPOINTS[kind],payload,timeout=timeout,
-                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
+                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                                               public_only=True)
         elif kind=="you":
             endpoint=self._query_url(_ENDPOINTS[kind],{"query":query,"num_web_results":count})
-            response=await self.http.get(endpoint,timeout=timeout,
+            response=await self.http.get(endpoint,timeout=timeout,public_only=True,
                                          headers={"X-API-Key":key,"Accept":"application/json"})
         elif kind=="openai_responses":
             endpoint=self._custom_endpoint(str(provider.endpoint),kind)
             payload={"model":str(provider.model),"input":query,"tools":[{"type":"web_search"}]}
             response=await self.http.post_json(endpoint,payload,timeout=timeout,
-                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
+                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                                               public_only=True)
         else:
             endpoint=self._custom_endpoint(str(provider.endpoint),kind)
             system=("你是联网检索助手。使用服务自身的联网能力回答查询，优先给出可核验来源 URL；"
@@ -183,7 +186,8 @@ class SearchService:
             payload={"model":str(provider.model),"messages":[{"role":"system","content":system},
                      {"role":"user","content":query}],"temperature":0.2}
             response=await self.http.post_json(endpoint,payload,timeout=timeout,
-                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
+                                               headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                                               public_only=True)
         payload=response.json(); payload_error=error_from_payload(payload)
         if payload_error:
             raise HttpRequestError("服务返回错误",error_class=payload_error,status_code=response.status,

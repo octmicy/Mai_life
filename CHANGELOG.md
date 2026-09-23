@@ -1,5 +1,21 @@
 # 更新日志
 
+## [1.14.7] - 2026-09-23
+
+### 安全修复
+
+- 搜索 API 自定义 endpoint 公网校验（SSRF/Key 外泄）：`HttpClient.post_json` 此前不接受 `public_only`，`openai_responses` 与通用 OpenAI 兼容 provider 的请求只做格式校验（`validate_url`），可填写 localhost、内网或云元数据地址（如 169.254.169.254）并把 API Key 与查询词发过去。现在：`post_json` 支持 `public_only`；内置（博查/Tavily/You）与自定义 OpenAI 兼容 provider 的**所有**请求一律 `public_only=True`——解析域名、拒绝非公网地址并按公网 IP 固定连接（阻断 DNS rebinding），逐跳重定向同样过公网校验。
+- 自定义 endpoint 增加同步静态校验（不做 DNS）：主机名为 localhost/保留内网域名或字面量环回、链路本地、内网、保留地址时，直接判配置错误（`unsafe_endpoint`），不发起请求、不惩罚 Key；域名解析到内网的 dynamic rebinding 由请求时固定 IP 校验兜底。非公网地址在失败处理里按配置错误记录（事件与搜索历史可见），不再误禁用/冷却 Key。
+
+### 改进
+
+- 仓库不再跟踪运行时配置：`config.toml` 从 git 移除并加入 `.gitignore`，改为提交模板 `config.toml.example`。`config.toml` 由 Runner 在插件首次加载时按 `config_model` 自动生成、之后由 WebUI 维护（SDK/Host 既有行为），本地修改不再与仓库升级产生 git 冲突；模板头部补充了说明。README 中手动编辑规范的描述依然有效（运行时文件仍在，只是不入库）。
+
+### 说明
+
+- 行为影响：仅对启用了自定义 OpenAI 兼容搜索 provider 且填写了非公网地址的部署——这类配置由“请求静默失败/Key 被罚”变为“明确的配置错误提示”。内置服务与公网自定义 endpoint 行为不变。
+- 升级兼容：`config.toml` 变为不跟踪文件后，已有部署的本地配置原样保留；新 clone 首次加载由 Runner 生成默认配置。契约测试与 CONTRIBUTING 的结构说明已同步。
+
 ## [1.14.6] - 2026-09-23
 
 ### 新增

@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 
 from Mai_life.config import PLUGIN_VERSION,MaiLifeSettings,SearchProviderProfile,SocialGroupProfile,UserProfile
 from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
+from Mai_life.information import http_client
 from Mai_life.information.feed_parser import readable_text
 from Mai_life.information.http_client import HttpClient,HttpRequestError,HttpResponse
 from Mai_life.information.information_service import InformationService
@@ -155,8 +156,16 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         self.old_endpoints=dict(search_module._ENDPOINTS)
         search_module._ENDPOINTS.update({"bocha":self.base+"/bocha","tavily":self.base+"/tavily","you":self.base+"/you"})
         self.now=datetime(2026,7,13,10,0,tzinfo=timezone(timedelta(hours=8)))
+        # 本类用例验证协议归一化与降级，不验证公网防火墙：临时放行回环地址，
+        # 让请求能以固定 IP 连上本地测试服务器（生产路径由 public_only 真校验兜底）。
+        self._real_public_check=http_client._validate_public_url_sync
+        self._real_private_reason=HttpClient.private_host_reason
+        http_client._validate_public_url_sync=lambda url:(url,"127.0.0.1")
+        HttpClient.private_host_reason=staticmethod(lambda url:"")
 
     async def asyncTearDown(self):
+        http_client._validate_public_url_sync=self._real_public_check
+        HttpClient.private_host_reason=self._real_private_reason
         search_module._ENDPOINTS.clear(); search_module._ENDPOINTS.update(self.old_endpoints)
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
         await self.store.close(); self.tmp.cleanup()
@@ -557,7 +566,12 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
         config=MaiLifeSettings(); service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
         result=await service.tick(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},[])
         self.assertEqual(result,{"news":0,"associated":0,"search":0}); self.assertEqual(LocalHandler.calls,[])
-        with self.assertRaises(HttpRequestError):HttpClient.validate_public_url(self.base+"/article")
+        # 这条断言的就是防火墙本身：临时换回真实校验（asyncSetUp 为本地服务器放行了回环）。
+        http_client._validate_public_url_sync=self._real_public_check
+        try:
+            with self.assertRaises(HttpRequestError):HttpClient.validate_public_url(self.base+"/article")
+        finally:
+            http_client._validate_public_url_sync=lambda url:(url,"127.0.0.1")
         self.assertEqual(readable_text("<script>bad()</script><p>useful article paragraph</p>",100),"useful article paragraph")
 
     def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,14)

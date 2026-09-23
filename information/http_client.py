@@ -142,16 +142,35 @@ class HttpClient:
     @staticmethod
     def validate_public_url(url:str)->str:return _validate_public_url_sync(url)[0]
 
+    @staticmethod
+    def private_host_reason(url:str)->str:
+        """不做 DNS 的静态主机判断：返回非空即明显非公网（字面量环回/内网/保留地址或保留后缀）。
+
+        供配置校验等同步路径使用；能把域名解析到内网的 rebinding 仍由请求时的
+        public_only 固定 IP 校验兜底（那条路在线程里解析，不阻塞事件循环）。
+        """
+        value=_validated_url(url); host=str(urlparse(value).hostname or "").strip("[]").casefold()
+        if host in {"localhost","localhost.localdomain"} or host.endswith((".localhost",".local",".internal",".home.arpa",".onion")):
+            return "主机名指向本机或保留内网域名"
+        try:address=ipaddress.ip_address(host)
+        except ValueError:return ""
+        if address.is_loopback:return "环回地址"
+        if address.is_link_local:return "链路本地地址（含云元数据 169.254.169.254）"
+        if address.is_private:return "内网地址"
+        if not address.is_global:return "保留地址"
+        return ""
+
     async def get(self,url:str,*,timeout:float=8,max_bytes:int=2_000_000,
                   headers:dict[str,str]|None=None,public_only:bool=False)->HttpResponse:
         return await self.request("GET",url,timeout=timeout,max_bytes=max_bytes,
                                   headers=headers,public_only=public_only)
 
     async def post_json(self,url:str,payload:Any,*,timeout:float=12,max_bytes:int=2_000_000,
-                        headers:dict[str,str]|None=None)->HttpResponse:
+                        headers:dict[str,str]|None=None,public_only:bool=False)->HttpResponse:
         body=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode("utf-8")
         merged={"Content-Type":"application/json",**(headers or {})}
-        return await self.request("POST",url,body=body,timeout=timeout,max_bytes=max_bytes,headers=merged)
+        return await self.request("POST",url,body=body,timeout=timeout,max_bytes=max_bytes,
+                                  headers=merged,public_only=public_only)
 
     async def request(self,method:str,url:str,*,body:bytes|None=None,timeout:float=8,
                       max_bytes:int=2_000_000,headers:dict[str,str]|None=None,

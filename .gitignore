@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local handover notes
 HANDOVER.md
+
+# 运行时配置：由 Runner 按 config_model 生成、WebUI 维护；仓库只提交模板 config.toml.example
+/config.toml

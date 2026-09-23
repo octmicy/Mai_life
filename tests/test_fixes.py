@@ -31,6 +31,9 @@ from Mai_life.config import MaiLifeSettings, SearchProviderProfile, SocialGroupP
 from Mai_life.core.environment import EnvironmentService
 from Mai_life.core.storage import LifeStore
 from Mai_life.creation.creation_service import CreationService
+from Mai_life.information.http_client import HttpClient, HttpRequestError
+from Mai_life.information.search_providers import ApiProvider, get_provider_strategy
+from Mai_life.information.search_service import SearchService
 from Mai_life.life.bedtime import BedtimeManager
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.memory_service import MemoryService
@@ -2260,6 +2263,108 @@ class V1146SchemaTests(unittest.IsolatedAsyncioTestCase):
                 await upgraded.close()
         finally:
             tmp.cleanup()
+
+
+# ==========v1.14.7==========
+# 搜索 endpoint 公网校验（防 SSRF/Key 外泄）与仓库只提交配置模板。
+
+
+class V1147PublicEndpointGuardTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.7：自定义/内置搜索 endpoint 一律走公网校验，非公网是配置错误不罚 Key。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_post_json_public_only_rejects_loopback(self):
+        http = HttpClient(DummyLogger())
+        with self.assertRaises(HttpRequestError) as ctx:
+            await http.post_json("http://127.0.0.1:9/v1", {"q": 1}, public_only=True)
+        self.assertEqual(ctx.exception.error_class, "unsafe_url")
+        # 元数据地址（云主机凭证窃取常规目标）同样拒绝。
+        with self.assertRaises(HttpRequestError):
+            await http.post_json("http://169.254.169.254/latest/meta-data", {}, public_only=True)
+
+    def test_private_host_reason_covers_literal_private_addresses(self):
+        for url in ("http://localhost/v1", "http://api.internal/v1", "http://10.0.0.8/v1",
+                    "http://192.168.1.2:8080/v1", "http://169.254.169.254/v1", "http://[::1]/v1",
+                    "http://127.0.0.1/v1"):
+            with self.subTest(url=url):
+                self.assertTrue(HttpClient.private_host_reason(url))
+        for url in ("https://api.bochaai.com/v1/web-search", "https://8.8.8.8/v1"):
+            with self.subTest(url=url):
+                self.assertEqual(HttpClient.private_host_reason(url), "")
+
+    async def test_private_custom_endpoint_is_config_error_without_key_penalty(self):
+        config = MaiLifeSettings()
+        config.search_api.history_enabled = True
+        config.search_api.providers = [SearchProviderProfile(
+            enabled=True, provider_type="openai_chat", api_keys=["good"],
+            endpoint="http://127.0.0.1:9/v1", model="grok-online")]
+        service = SearchService(config, HttpClient(DummyLogger()), self.store, DummyLogger())
+        response = await service.search("测试查询", operation="tool_search")
+        self.assertFalse(response.results)
+        self.assertEqual(service.last_error_class, "unsafe_endpoint")
+        runtime = await self.store.get_search_key_runtime(
+            service.providers()[0][0], service.key_fingerprint("good"))
+        self.assertEqual(runtime["status"], "healthy")  # 配置错误不禁用 Key
+        history = await self.store.recent_search_history(time.time(), 10)
+        self.assertTrue(history and not history[0]["success"])
+
+    async def test_resolved_private_endpoint_does_not_penalize_key(self):
+        """域名解析到内网（请求时命中）：unsafe_url 不惩罚 Key，仅记录后换下一个服务。"""
+        import Mai_life.information.http_client as http_client
+        config = MaiLifeSettings()
+        config.search_api.providers = [SearchProviderProfile(
+            enabled=True, provider_type="openai_chat", api_keys=["good"],
+            endpoint="https://rebind.evil.example/v1", model="grok-online")]
+        service = SearchService(config, HttpClient(DummyLogger()), self.store, DummyLogger())
+        real = http_client._validate_public_url_sync
+        def reject(url):
+            raise HttpRequestError("拒绝访问内网、回环或保留地址", error_class="unsafe_url")
+        http_client._validate_public_url_sync = reject
+        try:
+            response = await service.search("测试查询")
+        finally:
+            http_client._validate_public_url_sync = real
+        self.assertFalse(response.results)
+        self.assertEqual(service.last_error_class, "unsafe_url")
+        runtime = await self.store.get_search_key_runtime(
+            service.providers()[0][0], service.key_fingerprint("good"))
+        self.assertEqual(runtime["status"], "healthy")
+
+    async def test_public_custom_endpoint_passes_validation(self):
+        provider = SearchProviderProfile(
+            enabled=True, provider_type="openai_chat", api_keys=["good"],
+            endpoint="https://api.example.com/v1", model="grok-online")
+        strategy = get_provider_strategy("openai_chat")(None)
+        self.assertEqual(strategy.validate(provider), "")
+        self.assertIsInstance(strategy, ApiProvider)
+
+
+class V1147RepoConfigTemplateTests(unittest.TestCase):
+    """v1.14.7：仓库只提交 config.toml.example，运行时配置由 Runner 生成且不入库。"""
+
+    def test_template_is_committed_and_runtime_config_ignored(self):
+        import subprocess
+        root = Path(__file__).parents[1]
+        self.assertTrue((root / "config.toml.example").exists())
+        tracked = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
+                                 text=True).stdout.splitlines()
+        self.assertIn("config.toml.example", tracked)
+        self.assertNotIn("config.toml", tracked)
+        self.assertIn("/config.toml", (root / ".gitignore").read_text(encoding="utf-8"))
+
+    def test_template_validates_against_config_model(self):
+        import tomllib
+        root = Path(__file__).parents[1]
+        config = MaiLifeSettings.model_validate(
+            tomllib.loads((root / "config.toml.example").read_text(encoding="utf-8-sig")))
+        self.assertEqual(config.plugin.config_version, "1.11.0")
+        self.assertFalse(config.rest_gate.enabled)
 
 
 if __name__ == "__main__":

@@ -165,7 +165,7 @@ class ScheduleService:
         state=await self.store.get_state()
         weekend=now.weekday()>=5; fallback=self._apply_memory_hints(day,self._fallback(day,weekend),memory_context)
         variety=await self._variety_context(now)
-        calendar_bits=[str(environment.get(key)) for key in ("day_type","holiday","lunar","solar_term")
+        calendar_bits=[str(environment.get(key)) for key in ("day_type","holiday","lunar","solar_term","upcoming_festival")
                        if environment and environment.get(key) and environment.get(key)!="无"]
         if calendar_bits:
             variety=(variety+"\n今日历法："+ "，".join(calendar_bits[:4])).strip()

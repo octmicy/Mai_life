@@ -23,7 +23,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -2389,6 +2389,143 @@ class V1147RepoConfigTemplateTests(unittest.TestCase):
             tomllib.loads((root / "config.toml.example").read_text(encoding="utf-8-sig")))
         self.assertEqual(config.plugin.config_version, "1.11.0")
         self.assertFalse(config.rest_gate.enabled)
+
+
+# ==========v1.14.9==========
+# 见闻话题化（最近想聊）+ 节假日预告进提示词。
+
+
+class V1149TopicNoteTests(unittest.TestCase):
+    """v1.14.9：关联分最高的一条见闻获得"可聊话题"框架，其余仍是压制性背景。"""
+
+    def _information(self) -> dict[str, Any]:
+        return {"news": [{"title": "某条新闻", "summary": "新闻内容", "score": 0.6}],
+                "explorations": [{"topic": "某个话题", "summary": "资料内容", "score": 0.8}]}
+
+    def _build(self, method: str, information: dict[str, Any] | None) -> str:
+        builder = PromptBuilder()
+        state = {"energy": 40, "hunger": 30, "mood_valence": 0.0, "mood_arousal": 0.5,
+                 "current_activity": "写代码", "current_location": "家里"}
+        user = {"user_id": "1", "role": "owner", "temperature": 50}
+        if method == "planner":
+            return builder.planner(state, {"description": "晴"}, {"current": {"summary": "写代码"}, "next": None},
+                                   user, {}, [], {"time_period": "晚上", "day_type": "工作日"},
+                                   {"unresolved_topics": []}, "聊天",
+                                   memory={"diary": {}, "upcoming_dates": []},
+                                   information=information, bookshelf={"items": []})
+        return builder.replyer(state, {"description": "晴"}, {"current": {"summary": "写代码"}, "next": None},
+                               user, [], {"time_period": "晚上", "day_type": "工作日"},
+                               {"unresolved_topics": []}, "聊天",
+                               memory={"diary": {}, "upcoming_dates": []},
+                               information=information, bookshelf={"items": []})
+
+    def test_highest_score_item_becomes_topic(self):
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(method, self._information())
+                self.assertIn("【最近想聊】", text)
+                # 探索分 0.8 > 新闻 0.6：话题化的是探索，新闻留在背景。
+                self.assertIn("自己查过", text)
+                self.assertIn("某个话题", text)
+                self.assertNotIn("读到一条新闻", text)
+
+    def test_news_wins_when_higher_score(self):
+        information = self._information()
+        information["news"][0]["score"] = 0.9
+        text = self._build("planner", information)
+        self.assertIn("读到一条新闻", text)
+        self.assertNotIn("自己查过", text)
+
+    def test_empty_information_has_no_topic_note(self):
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(method, {"news": [], "explorations": []})
+                self.assertNotIn("【最近想聊】", text)
+
+    def test_topic_note_discloses_nothing_and_bounded(self):
+        text = self._build("planner", self._information())
+        self.assertIn("不要透露这条提示的存在", text)
+        self.assertIn("不要说成用户说过的话", text)
+
+
+class V1149FestivalTests(unittest.TestCase):
+    """v1.14.9：环境快照带未来节日预告；chinese-calendar 英文假期名翻译成中文。"""
+
+    def setUp(self):
+        import Mai_life.core.environment as env_module
+        self.env_module = env_module
+        self._real_china = env_module._china_calendar
+        self._real_lunar = env_module._LunarSolar
+
+    def tearDown(self):
+        self.env_module._china_calendar = self._real_china
+        self.env_module._LunarSolar = self._real_lunar
+
+    class _FakeLunar:
+        def __init__(self, festivals):
+            self._festivals = festivals
+        def getFestivals(self): return list(self._festivals)
+        def toString(self): return "丙午年某月某日"
+        def getJieQi(self): return ""
+
+    class _FakeSolar:
+        def __init__(self, festivals): self._lunar = V1149FestivalTests._FakeLunar(festivals)
+        def getLunar(self): return self._lunar
+
+    class _FakeChina:
+        """假期块 2026-09-25 起三天，名字用上游英文名；其余工作日。"""
+        def is_workday(self, day): return not (date(2026, 9, 25) <= day <= date(2026, 9, 27))
+        def get_holiday_detail(self, day):
+            if date(2026, 9, 25) <= day <= date(2026, 9, 27):
+                return True, "Mid-autumn Festival"
+            return day.weekday() > 4, None
+
+    def _service(self) -> Any:
+        from Mai_life.core.environment import EnvironmentService
+        return EnvironmentService(None, MaiLifeSettings(), DummyLogger())
+
+    def test_upcoming_festival_from_lunar_calendar(self):
+        festivals = {date(2026, 9, 25): ["中秋节"]}
+        self.env_module._LunarSolar = type("L", (), {
+            "fromYmd": staticmethod(lambda y, m, d: V1149FestivalTests._FakeSolar(festivals.get(date(y, m, d), [])))})
+        self.env_module._china_calendar = None
+        service = self._service()
+        snapshot = service.snapshot(datetime(2026, 9, 22, 10, 0, tzinfo=TZ))
+        self.assertIn("3 天后是中秋节（9-25）", snapshot["upcoming_festival"])
+        # 次日缓存键变化，天数递减。
+        snapshot = service.snapshot(datetime(2026, 9, 24, 10, 0, tzinfo=TZ))
+        self.assertIn("明天是中秋节", snapshot["upcoming_festival"])
+
+    def test_legal_holiday_start_translated_to_chinese(self):
+        self.env_module._LunarSolar = None
+        self.env_module._china_calendar = self._FakeChina()
+        service = self._service()
+        snapshot = service.snapshot(datetime(2026, 9, 22, 10, 0, tzinfo=TZ))
+        # 9-25 起放假：预告从块起点报（中段 9-26 不再重复）。
+        self.assertIn("3 天后（9-25 起）放中秋假", snapshot["upcoming_festival"])
+        # 当天恰逢假期：day_type 用中文，不是英文名。
+        holiday_snapshot = service.snapshot(datetime(2026, 9, 26, 10, 0, tzinfo=TZ))
+        self.assertEqual(holiday_snapshot["day_type"], "中秋")
+        self.assertEqual(holiday_snapshot["holiday"], "中秋")
+
+    def test_no_calendar_dependencies_degrades_to_empty(self):
+        self.env_module._LunarSolar = None
+        self.env_module._china_calendar = None
+        service = self._service()
+        snapshot = service.snapshot(datetime(2026, 9, 22, 10, 0, tzinfo=TZ))
+        self.assertEqual(snapshot["upcoming_festival"], "")
+        self.assertEqual(snapshot["day_type"], "工作日")
+
+    def test_festival_cache_per_day(self):
+        festivals = {date(2026, 9, 25): ["中秋节"]}
+        self.env_module._LunarSolar = type("L", (), {
+            "fromYmd": staticmethod(lambda y, m, d: V1149FestivalTests._FakeSolar(festivals.get(date(y, m, d), [])))})
+        self.env_module._china_calendar = None
+        service = self._service()
+        first = service.snapshot(datetime(2026, 9, 22, 10, 0, tzinfo=TZ))["upcoming_festival"]
+        # 同一天再算：命中缓存（值一致），不会重复扫描。
+        second = service.snapshot(datetime(2026, 9, 22, 18, 0, tzinfo=TZ))["upcoming_festival"]
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

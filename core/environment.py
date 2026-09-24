@@ -32,6 +32,19 @@ _WEATHER_CODES = {
     95: "雷雨", 96: "雷雨伴小冰雹", 99: "雷雨伴冰雹",
 }
 
+# chinese-calendar 的假期名 → 中文。get_holiday_detail 返回的可能是 Holiday 枚举
+# （str 子类，str() 后是英文名 value），两种键都收录，确保 day_type/预告是中文。
+_HOLIDAY_ZH = {
+    "new_years_day": "元旦", "spring_festival": "春节", "tomb_sweeping_day": "清明",
+    "labour_day": "劳动节", "dragon_boat_festival": "端午", "national_day": "国庆",
+    "mid_autumn_festival": "中秋",
+    "New Year's Day": "元旦", "Spring Festival": "春节", "Tomb-sweeping Day": "清明",
+    "Labour Day": "劳动节", "Dragon Boat Festival": "端午", "National Day": "国庆",
+    "Mid-autumn Festival": "中秋",
+}
+# 节日预告的扫描窗口与缓存：同一天内结果不变，按日期缓存成品文本。
+_FESTIVAL_LOOKAHEAD_DAYS = 30
+
 
 class EnvironmentService:
     """提供带时区的当前时间和后台天气缓存。"""
@@ -51,6 +64,8 @@ class EnvironmentService:
         self._last_weather_warning:tuple[float,str]=(0.0,"")
         # 时区数据缺失告警只打一次，避免每次 now() 都刷屏。
         self._tz_warned=False
+        # 节日预告按天缓存：(日期字符串, 成品文本)。跨天自动失效，无锁（单写读、竞态只会重复算一次）。
+        self._festival_cache:tuple[str,str]=("","")
 
     def update_config(self, config: Any) -> None:
         """更新配置；城市变化时清除内存中的地理编码结果。"""
@@ -214,6 +229,47 @@ class EnvironmentService:
         if 18<=hour<23:return "晚上"
         return "深夜"
 
+    def _upcoming_festival(self, day) -> str:
+        """未来 30 天内下一个节日/假期的中文预告；历法依赖缺失或数据未覆盖时返回空串。
+
+        农历传统节日（春节/元宵/端午/中秋/重阳/腊八/除夕…）来自 lunar_python，
+        法定假期起点（含调休语义）来自 chinese-calendar；两者互补、各报各的。
+        """
+        cached_day,cached_text=self._festival_cache
+        if cached_day==day.isoformat():return cached_text
+        text=""
+        candidates:list[tuple[int,str]]=[]  # (距今天数, 文案)
+        if _LunarSolar is not None:
+            try:
+                for offset in range(1,_FESTIVAL_LOOKAHEAD_DAYS+1):
+                    target=day+timedelta(days=offset)
+                    lunar=_LunarSolar.fromYmd(target.year,target.month,target.day).getLunar()
+                    names=[str(item) for item in (lunar.getFestivals() or [])]
+                    if names and names[0]:
+                        candidates.append((offset,f"{'明天' if offset==1 else f'{offset} 天后'}是{names[0]}（{target.month}-{target.day}）"))
+                        break
+            except Exception:pass
+        if _china_calendar is not None:
+            try:
+                for offset in range(1,_FESTIVAL_LOOKAHEAD_DAYS+1):
+                    target=day+timedelta(days=offset)
+                    detail=_china_calendar.get_holiday_detail(target)
+                    # 只认法定放假日块的起点（前一天不在假期），避免把连休中段当"即将到来"。
+                    if isinstance(detail,tuple) and detail[0] and detail[1]:
+                        previous=day+timedelta(days=offset-1)
+                        prev_detail=_china_calendar.get_holiday_detail(previous)
+                        prev_on=isinstance(prev_detail,tuple) and bool(prev_detail[0]) and bool(prev_detail[1])
+                        if not prev_on:
+                            name=_HOLIDAY_ZH.get(str(detail[1]),str(detail[1]))
+                            candidates.append((offset,f"{'明天起' if offset==1 else f'{offset} 天后（{target.month}-{target.day} 起）'}放{name}假"))
+                            break
+            except Exception:pass  # 年份数据未公布等，按无预告降级。
+        if candidates:
+            first=min(candidates,key=lambda item:item[0])
+            text=f"{first[1]}。"
+        self._festival_cache=(day.isoformat(),text)
+        return text
+
     def snapshot(self, now: datetime | None = None, *, platform: str = "qq", adapter: str = "unknown",
                  chat_type: str = "private", media: list[str] | None = None) -> dict[str, Any]:
         """构造完全离线的环境快照；历法不可用时明确降级而不编造。"""
@@ -223,7 +279,8 @@ class EnvironmentService:
             try:
                 is_workday=bool(_china_calendar.is_workday(day))
                 detail=_china_calendar.get_holiday_detail(day)
-                if isinstance(detail,tuple) and detail[0]:holiday_name=str(detail[1] or "法定节假日")
+                if isinstance(detail,tuple) and detail[0] and detail[1]:
+                    holiday_name=_HOLIDAY_ZH.get(str(detail[1]),str(detail[1]))
             except Exception:pass
         lunar_text="未知"; solar_term=""
         if _LunarSolar is not None:
@@ -233,11 +290,13 @@ class EnvironmentService:
                 jieqi=str(lunar.getJieQi() or "")
                 if jieqi:solar_term=jieqi
             except Exception:pass
+        upcoming=self._upcoming_festival(day)
         return {
             "iso_time":current.isoformat(timespec="seconds"),"timezone":str(self.config.environment.timezone),
             "date":day.isoformat(),"weekday":weekday,"time_period":self._time_period(current.hour),
             "is_workday":is_workday,"day_type":holiday_name or ("工作日" if is_workday else "休息日"),
             "holiday":holiday_name,"lunar":lunar_text,"solar_term":solar_term or "无",
+            "upcoming_festival":upcoming,
             "platform":platform or "unknown","adapter":adapter or "unknown","chat_type":chat_type,"media":list(media or ["text"]),
             "calendar_support":{"china_calendar":_china_calendar is not None,"lunar":_LunarSolar is not None},
         }

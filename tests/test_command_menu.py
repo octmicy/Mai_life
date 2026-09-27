@@ -145,7 +145,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_local_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.14.9")
+        self.assertEqual(manifest["version"],"1.14.10")
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])
 
@@ -282,6 +282,90 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result,(True,"指令结果已发送（后续页面降级为文本）",2))
         self.assertIn("第 2 页",ctx.send.texts[-1]["text"])
         self.assertNotIn("第 1 页",ctx.send.texts[-1]["text"])
+
+
+# ==========v1.14.10==========
+# 无中文字体时降级纯文本（不再发豆腐块图）+ 字体对象缓存。
+
+
+class NoFontRenderer(MaiLifeMenuRenderer):
+    """模拟系统没有任何中文字体：字体解析返回空路径（Pillow 本身可用）。"""
+
+    def _find_font_paths(self,font_path:str="")->tuple[str,str]:
+        return "",""
+
+
+class NoFontResultRenderer(MaiLifeCommandResultRenderer):
+    def _find_font_paths(self,font_path:str="")->tuple[str,str]:
+        return "",""
+
+
+class RendererFontGateTests(unittest.TestCase):
+    """v1.14.10 修复 1：无字体时渲染入口直接返回空，交给既有文本降级链。"""
+
+    def test_no_font_menu_returns_empty_bytes(self):
+        renderer=NoFontRenderer()
+        self.assertEqual(renderer.regular_font_path,"")
+        self.assertTrue(renderer.available)  # Pillow 可导入，缺的只是字体
+        self.assertIn("未找到中文字体",renderer.last_error)
+        self.assertEqual(renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.14.10"),b"")
+
+    def test_no_font_result_renderer_returns_empty_pages(self):
+        renderer=NoFontResultRenderer()
+        self.assertEqual(renderer.render("任意结果",title="麦麦生活 · 指令结果"),())
+
+
+class NoFontPluginFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_menu_command_falls_back_to_text_without_font(self):
+        ctx=DummyContext(); plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin._store=DummyStore()
+        plugin._menu_renderer=NoFontRenderer(); plugin._result_renderer=NoFontResultRenderer()
+        result=await plugin.cmd_menu(user_id="10001",group_id="",stream_id="stale",platform="qq",matched_groups={})
+        self.assertTrue(result[0]); self.assertEqual(result[2],2)
+        self.assertEqual(ctx.send.images,[])
+        self.assertTrue(any("麦麦生活 · 指令中心" in item["text"] for item in ctx.send.texts))
+
+    async def test_regular_command_falls_back_to_text_without_font(self):
+        ctx=DummyContext(); plugin=MaiLifePlugin(); plugin._set_context(ctx)
+        plugin._store=DummyStore()
+        plugin._menu_renderer=NoFontRenderer(); plugin._result_renderer=NoFontResultRenderer()
+        result=await plugin.cmd_status(user_id="10001",group_id="",stream_id="stale",platform="qq")
+        self.assertEqual(result[2],2)
+        self.assertEqual(ctx.send.images,[])
+        self.assertTrue(ctx.send.texts)
+
+
+class RendererFontCacheTests(unittest.TestCase):
+    """v1.14.10 修复 2：字体对象按 (字号,粗体) 缓存，冷渲染不再重复解析字体文件。"""
+
+    def setUp(self):
+        self.renderer=MaiLifeMenuRenderer()
+        if not self.renderer.available or not self.renderer.regular_font_path:
+            self.skipTest("当前环境没有 Pillow 或可用中文字体")
+
+    def test_font_objects_are_cached_per_size(self):
+        first=self.renderer._font(20,bold=True)
+        self.assertIs(first,self.renderer._font(20,bold=True))
+        self.assertIsNot(first,self.renderer._font(44,bold=True))
+
+    def test_repeated_cold_renders_do_not_reload_fonts(self):
+        import Mai_life.messaging.menu_renderer as menu_module
+        real_truetype=menu_module.ImageFont.truetype
+        calls={"n":0}
+        def counting(path,*,size):
+            calls["n"]+=1
+            return real_truetype(path,size=size)
+        menu_module.ImageFont.truetype=counting
+        try:
+            self.renderer._font_cache.clear(); self.renderer._cache.clear()
+            self.renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
+            self.assertGreater(calls["n"],0)
+            after_first=calls["n"]
+            self.renderer._cache.clear()  # 清掉 PNG 缓存，强制完整重渲（字体缓存保留）
+            self.renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
+            self.assertEqual(calls["n"],after_first)  # 第二次冷渲染零字体加载
+        finally:
+            menu_module.ImageFont.truetype=real_truetype
 
 
 if __name__=="__main__":unittest.main()

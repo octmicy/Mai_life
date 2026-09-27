@@ -101,7 +101,7 @@ class MaiLifeCommandResultRenderer(MaiLifeMenuRenderer):
 
     def render(self,text:str,*,title:str="麦麦生活 · 指令结果")->tuple[RenderedCommandPage,...]:
         """生成一页或多页 PNG；字体或 Pillow 异常时返回空元组触发文本降级。"""
-        if not self.available or Image is None or ImageDraw is None:return ()
+        if not self.available or Image is None or ImageDraw is None or not self.regular_font_path:return ()
         clean_text=self._clean_text(text); clean_title=" ".join(str(title or "麦麦生活 · 指令结果").split())[:36]
         cache_key=(clean_title,clean_text)
         if cache_key in self._result_cache:

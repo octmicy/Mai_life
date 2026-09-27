@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.14.9"
+PLUGIN_VERSION = "1.14.10"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 

@@ -370,3 +370,11 @@ external_reading_enabled = false
 external_reading_api_name = ""
 external_reading_max_items = 3
 reading_annotation_enabled = true
+
+
+[linkage]
+# 与其它插件的联动开关；目标插件未安装时对应开关不生效。
+# 麦麦绘图联动：开启后，私聊聊天中聊到日常生活（如"吃了xxx，拍照给你看看"）时，
+# 麦麦可以调用「麦麦绘图」插件的 draw 工具，把自己这边的生活画面画成随手拍照片发出去。
+# 前提：已安装 maimai-drawpic-plugin 并在其配置中填好至少一个绘图平台的 API Key。
+drawpic_enabled = false

@@ -2528,6 +2528,401 @@ class V1149FestivalTests(unittest.TestCase):
         self.assertEqual(first, second)
 
 
+# ==========v1.14.11==========
+# 麦麦绘图联动：生活分享时刻的信号识别（强/弱）、提示注入守卫与频控、
+# 绘图插件检测（_check_drawpic）与 /麦麦配置 三态展示。
+
+
+from Mai_life.messaging.task_context import ActivePluginTask
+from Mai_life.plugin import (
+    DRAWPIC_PLUGIN_ID,
+    MOMENT_HINT_COOLDOWN_HOURS,
+    MOMENT_HINT_DAILY_MAX,
+    MOMENT_JUDGE_COOLDOWN_MINUTES,
+    MOMENT_JUDGE_WINDOW_MAX,
+    MOMENT_STATE_COOLDOWN_HOURS,
+    _MOMENT_LIFE_WORDS,
+    _MOMENT_PHOTO_RE,
+)
+
+
+class _MomentJudgeLLM:
+    """弱信号判定替身：记录 generate_json 调用，可指定 share_moment 结果或抛异常。"""
+
+    def __init__(self, share: bool = True, error: Exception | None = None, available: bool = True) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.share = share
+        self.error = error
+        self.available = available
+
+    def task_available(self, kind: str) -> bool:
+        del kind
+        return self.available
+
+    async def generate_json(self, prompt: str, system: str, fallback: Any = None,
+                            max_tokens: int = 0, **kwargs: Any) -> Any:
+        self.calls.append({"prompt": prompt, "system": system, "fallback": fallback,
+                           "max_tokens": max_tokens, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return {"share_moment": self.share}
+
+
+class _ComponentStub:
+    """ctx.component 替身：list_loaded_plugins 可返回 dict/list 两种形态或抛异常。"""
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def list_loaded_plugins(self) -> Any:
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class _ComponentCtx(DummyCtx):
+    """带 component 的 ctx 替身：默认挂 RecordingLogger 供告警限流断言。"""
+
+    def __init__(self, result: Any) -> None:
+        super().__init__(RecordingLogger())
+        self.component = _ComponentStub(result)
+
+
+def _rewind_moment_clock(plugin: MaiLifePlugin, user_id: str, seconds: float) -> None:
+    """把 _moment_hints[user_id] 里所有 epoch 形态的秒值整体回拨，模拟时间流逝（不 mock time）。"""
+    record = plugin._moment_hints.get(user_id)
+    if not isinstance(record, dict):
+        return
+    for key, value in list(record.items()):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if 1_000_000_000 <= value <= 4_000_000_000:  # 只回拨秒级时间戳，避开计数与 YYYYMMDD 整数。
+            record[key] = value - seconds
+
+
+def _age_moment_day(plugin: MaiLifePlugin, user_id: str, days: int = 1) -> None:
+    """把 _moment_hints[user_id] 的日界标记回拨 N 天，模拟跨天重置。"""
+    record = plugin._moment_hints.get(user_id)
+    if not isinstance(record, dict):
+        return
+    for key, value in list(record.items()):
+        if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            record[key] = (date.fromisoformat(value) - timedelta(days=days)).isoformat()
+        elif isinstance(value, date) and not isinstance(value, datetime):
+            record[key] = value - timedelta(days=days)
+
+
+class V11411SignalTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.11 信号层：强/弱信号词汇、判定调用契约与判定冷却。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self, *, drawpic_enabled: bool = False) -> MaiLifePlugin:
+        config = MaiLifeSettings()
+        config.linkage.drawpic_enabled = drawpic_enabled
+        return await build_plugin(self.store, config, llm=DummyLLM())
+
+    def test_moment_signal_vocabulary_samples(self):
+        hits = ("等一下拍个照给你看看", "拍张照", "再拍一张甜点的", "照片", "随手拍", "晒晒")
+        misses = ("在吗", "发你个消息", "今天天气不错")
+        for text in hits:
+            with self.subTest(text=text):
+                self.assertTrue(_MOMENT_PHOTO_RE.search(text))
+        for text in misses:
+            with self.subTest(text=text):
+                self.assertIsNone(_MOMENT_PHOTO_RE.search(text))
+        for word in ("吃", "蛋糕", "猫", "散步"):
+            with self.subTest(word=word):
+                self.assertIn(word, _MOMENT_LIFE_WORDS)
+        # 弱信号样例不得同时命中强信号正则，否则轮不到快速模型判定。
+        self.assertIsNone(_MOMENT_PHOTO_RE.search("我今天做了蛋糕"))
+
+    async def test_strong_signal_short_circuits_and_weak_judge_contract(self):
+        plugin = await self._plugin(drawpic_enabled=True)
+        judge = _MomentJudgeLLM(share=True)
+        plugin._llm = judge
+        # 强信号不依赖开关/检测/模型：_drawpic_loaded 仍是未检测态也不调 LLM。
+        self.assertEqual(await plugin._detect_moment_signal("10001", "等一下拍个照给你看看"), "photo")
+        self.assertEqual(judge.calls, [])
+        # 弱信号：开关开 + 已装 + relevance 任务可用时走 generate_json 判定。
+        plugin._drawpic_loaded = True
+        self.assertEqual(await plugin._detect_moment_signal("10001", "我今天做了蛋糕"), "life")
+        self.assertEqual(len(judge.calls), 1)
+        self.assertEqual(judge.calls[0].get("task_kind"), "relevance")
+        self.assertEqual(judge.calls[0].get("request_type"), "moment_share_judge")
+        # 判定结果为不分享：丢弃。
+        plugin._llm = _MomentJudgeLLM(share=False)
+        self.assertEqual(await plugin._detect_moment_signal("10001", "我今天做了蛋糕"), "")
+
+    async def test_weak_signal_skips_llm_when_gates_closed(self):
+        for gate in ("switch_off", "plugin_missing", "task_unavailable"):
+            with self.subTest(gate=gate):
+                plugin = await self._plugin(drawpic_enabled=gate != "switch_off")
+                plugin._drawpic_loaded = gate != "plugin_missing"
+                judge = _MomentJudgeLLM(share=True, available=gate != "task_unavailable")
+                plugin._llm = judge
+                self.assertEqual(await plugin._detect_moment_signal("10001", "我今天做了蛋糕"), "")
+                self.assertEqual(judge.calls, [])
+
+    async def test_judge_cooldown_window_and_failure_not_consuming(self):
+        plugin = await self._plugin(drawpic_enabled=True)
+        plugin._drawpic_loaded = True
+        window = MOMENT_JUDGE_COOLDOWN_MINUTES * 60
+        judge = _MomentJudgeLLM(share=True)
+        plugin._llm = judge
+        # 冷却窗口内已判定 2 次：直接丢弃且不调模型。
+        plugin._moment_judges["10001"] = [time.time() - 300, time.time() - 600]
+        self.assertEqual(await plugin._detect_moment_signal("10001", "我今天做了蛋糕"), "")
+        self.assertEqual(judge.calls, [])
+        # 窗口外的历史不占额度：判定照常进行。
+        plugin._moment_judges["10001"] = [time.time() - window - 1200, time.time() - window - 300]
+        self.assertEqual(await plugin._detect_moment_signal("10001", "我今天做了蛋糕"), "life")
+        self.assertEqual(len(judge.calls), 1)
+        # 模型超时/异常：不引导，也不消耗判定次数。
+        plugin._moment_judges["10002"] = []
+        plugin._llm = _MomentJudgeLLM(share=True, error=RuntimeError("判定超时"))
+        self.assertEqual(await plugin._detect_moment_signal("10002", "我今天做了蛋糕"), "")
+        self.assertEqual(len(plugin._moment_judges.get("10002") or []), 0)
+
+
+class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.11 注入层：_moment_guide_note 的守卫、文案、一次性消费、频控与状态触发。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.linkage.drawpic_enabled = True
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self) -> MaiLifePlugin:
+        plugin = await build_plugin(self.store, self.config, llm=DummyLLM())
+        plugin._drawpic_loaded = True
+        return plugin
+
+    @staticmethod
+    def _payload(*, bedtime: str = "", kind: str = "leisure",
+                 festival: str = "3 天后是中秋节（9-25）") -> dict[str, Any]:
+        return {"user": {"user_id": "10001", "role": "owner", "temperature": 50},
+                "state": {"energy": 60, "hunger": 30, "mood_valence": 0.4, "mood_arousal": 0.5,
+                          "current_activity": "拼拼图", "current_location": "客厅"},
+                "weather": {"description": "晴"},
+                "context": {"current": {"summary": "拼拼图", "kind": kind}, "next": None},
+                "environment": {"time_period": "下午", "day_type": "周末", "upcoming_festival": festival},
+                "bedtime": bedtime}
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        return {"tool_definitions": [{"name": "draw"}]}
+
+    @staticmethod
+    def _armed(plugin: MaiLifePlugin, signal: str = "photo", session: str = "stream-10001") -> str:
+        plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": signal}
+        return session
+
+    async def test_guide_note_guards_block_injection(self):
+        session = "stream-10001"
+        kwargs = self._kwargs()
+        plugin = await self._plugin()
+        # 先逐项破坏守卫（此时无任何频控记录，空串只能来自被破坏的那一项）。
+        # 1) 开关关。
+        off_plugin = await build_plugin(self.store, MaiLifeSettings(), llm=DummyLLM())
+        off_plugin._drawpic_loaded = True
+        self._armed(off_plugin, session=session)
+        self.assertEqual(off_plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        # 2) 绘图插件未装。
+        plugin._drawpic_loaded = False
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        plugin._drawpic_loaded = True
+        # 3) 群聊被动消息。
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, True, kwargs), "")
+        # 4) 群会话。
+        plugin._group_sessions.add(session)
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        plugin._group_sessions.discard(session)
+        # 5) 已有活动插件任务。
+        active = ActivePluginTask(session_id=session, task_id="t-1", kind="proactive", record_id="r-1",
+                                  opportunity_id="o-1", created_at=time.time(), retain_until=time.time() + 600)
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), active, False, kwargs), "")
+        # 6) 工具定义为空。
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False,
+                                                         {"tool_definitions": []}), "")
+        # 7) payload 缺失。
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, None, None, False, kwargs), "")
+        # 8) 睡前时段。
+        self._armed(plugin, session=session)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(bedtime="approaching"),
+                                                         None, False, kwargs), "")
+        # 守卫齐全（正向对照）：注入成功。
+        self._armed(plugin, session=session)
+        note = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("【生活分享时刻】", note)
+
+    async def test_conversation_note_keywords_and_one_shot_consumption(self):
+        plugin = await self._plugin()
+        session = self._armed(plugin, "life")
+        note = plugin._moment_guide_note(session, self._payload(), None, False, self._kwargs())
+        for keyword in ("【生活分享时刻】", "「麦麦绘图」插件的 draw 工具", "不得包含对方原话", "等对方发图",
+                        "不要连续轮询 draw_status", "一次最多一张", "不要透露本提示", "麦麦",
+                        "拼拼图", "不错", "晴"):
+            with self.subTest(keyword=keyword):
+                self.assertIn(keyword, note)
+        # 一次性消费：runtime 信号被清空，频控记录建立；再次调用不再给出对话触发文案。
+        self.assertEqual(str(plugin._session_runtime[session].get("moment_signal") or ""), "")
+        self.assertTrue(plugin._moment_hints.get("10001"))
+        again = plugin._moment_guide_note(session, self._payload(), None, False, self._kwargs())
+        self.assertNotIn("【生活分享时刻】", again)
+
+    async def test_hint_frequency_cooldown_daily_max_and_cross_day_reset(self):
+        plugin = await self._plugin()
+        kwargs = self._kwargs()
+        gap = MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300
+        # 第 1 次注入成功并写入频控记录。
+        session = self._armed(plugin)
+        self.assertTrue(plugin._moment_guide_note(session, self._payload(), None, False, kwargs))
+        self.assertTrue(plugin._moment_hints.get("10001"))
+        # 2 小时冷却：冷却期内的新信号被拦下。
+        session = self._armed(plugin)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        _rewind_moment_clock(plugin, "10001", gap)
+        # 冷却已过：第 2、3 次注入成功，抵达每日上限。
+        for _ in range(2):
+            session = self._armed(plugin)
+            self.assertTrue(plugin._moment_guide_note(session, self._payload(), None, False, kwargs))
+            _rewind_moment_clock(plugin, "10001", gap)
+        # 冷却已过但每日 3 次已满：不再注入。
+        session = self._armed(plugin)
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        # 跨天重置：日界回拨后计数清零，可再次注入。
+        _age_moment_day(plugin, "10001")
+        session = self._armed(plugin)
+        self.assertTrue(plugin._moment_guide_note(session, self._payload(), None, False, kwargs))
+
+    async def test_state_note_cooldown_sleep_skip_and_festival_fields(self):
+        plugin = await self._plugin()
+        kwargs = self._kwargs()
+        session = "stream-10001"
+        plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": ""}
+        note = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("此刻的生活状态", note)
+        self.assertIn("3 天后是中秋节（9-25）", note)  # 节日预告字段入文。
+        # 12 小时冷却：短期内不重复注入。
+        plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": ""}
+        self.assertEqual(plugin._moment_guide_note(session, self._payload(), None, False, kwargs), "")
+        _rewind_moment_clock(plugin, "10001", MOMENT_STATE_COOLDOWN_HOURS * 3600 + 600)
+        # 冷却回拨后再次注入成功。
+        plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": ""}
+        self.assertIn("此刻的生活状态",
+                      plugin._moment_guide_note(session, self._payload(), None, False, kwargs))
+        # 睡眠/午休时段不触发（频控未满，空串只能来自时段守卫）。
+        _rewind_moment_clock(plugin, "10001", MOMENT_STATE_COOLDOWN_HOURS * 3600 + 600)
+        for kind in ("sleep", "nap"):
+            with self.subTest(kind=kind):
+                plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": ""}
+                self.assertEqual(plugin._moment_guide_note(session, self._payload(kind=kind),
+                                                                 None, False, kwargs), "")
+        # 没有节日预告时退回日型字段。
+        _rewind_moment_clock(plugin, "10001", MOMENT_STATE_COOLDOWN_HOURS * 3600 + 600)
+        plugin._session_runtime[session] = {"user_id": "10001", "moment_signal": ""}
+        note = plugin._moment_guide_note(session, self._payload(festival=""), None, False, kwargs)
+        self.assertIn("此刻的生活状态", note)
+        self.assertIn("周末", note)
+
+
+class V11411LinkageConfigTests(unittest.IsolatedAsyncioTestCase):
+    """v1.14.11 配置层：绘图插件检测、/麦麦配置 三态与 manifest 能力声明。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self, ctx: DummyCtx) -> MaiLifePlugin:
+        return await build_plugin(self.store, MaiLifeSettings(), ctx=ctx, llm=DummyLLM())
+
+    async def test_check_drawpic_accepts_dict_and_list_payloads(self):
+        # SDK 原始 dict 形态（带 plugins 键）：命中目标插件。
+        ctx = _ComponentCtx({"success": True, "plugins": ["maimai-drawpic-plugin", "mai-life"]})
+        plugin = await self._plugin(ctx)
+        self.assertTrue(await plugin._check_drawpic())
+        self.assertIs(plugin._drawpic_loaded, True)
+        # dict 形态但列表不含目标插件。
+        plugin = await self._plugin(_ComponentCtx({"success": True, "plugins": ["other-plugin"]}))
+        self.assertFalse(await plugin._check_drawpic())
+        self.assertIsNot(plugin._drawpic_loaded, True)
+        # SDK 解包后的裸 list 形态：两种结果都要识别。
+        plugin = await self._plugin(_ComponentCtx(["maimai-drawpic-plugin"]))
+        self.assertTrue(await plugin._check_drawpic())
+        self.assertIs(plugin._drawpic_loaded, True)
+        plugin = await self._plugin(_ComponentCtx([]))
+        self.assertFalse(await plugin._check_drawpic())
+        self.assertIsNot(plugin._drawpic_loaded, True)
+
+    async def test_check_drawpic_failure_returns_false_and_throttles_warning(self):
+        ctx = _ComponentCtx(RuntimeError("组件桥接不可用"))
+        plugin = await self._plugin(ctx)
+        self.assertFalse(await plugin._check_drawpic())
+        self.assertTrue(plugin._drawpic_check_warned)
+        self.assertFalse(await plugin._check_drawpic())  # 二次失败仍 False。
+        # 告警限流：两次失败只记一条告警。
+        self.assertEqual(len(ctx.logger.texts("warning")) + len(ctx.logger.texts("error")), 1)
+
+    async def test_cmd_config_reports_linkage_three_states(self):
+        async def build(config: MaiLifeSettings):
+            ctx = DummyContext(image_result=False)
+            plugin = await build_plugin(self.store, config, ctx=ctx,
+                                        users=[UserProfile(user_id="10001", role="owner")], llm=DummyLLM())
+            return plugin, ctx
+
+        # 关闭。
+        plugin, ctx = await build(MaiLifeSettings())
+        await plugin.cmd_config(user_id="10001", group_id="", stream_id="stream-10001", platform="qq")
+        self.assertIn("绘图联动：关闭", self._full_text(ctx))
+        # 开启但未检测到麦麦绘图插件。
+        config = MaiLifeSettings()
+        config.linkage.drawpic_enabled = True
+        plugin, ctx = await build(config)
+        await plugin.cmd_config(user_id="10001", group_id="", stream_id="stream-10001", platform="qq")
+        self.assertIn("绘图联动：开启（未检测到麦麦绘图插件，开关暂不生效）", self._full_text(ctx))
+        # 开启且已检测到。
+        plugin, ctx = await build(config)
+        plugin._drawpic_loaded = True
+        await plugin.cmd_config(user_id="10001", group_id="", stream_id="stream-10001", platform="qq")
+        self.assertIn("绘图联动：开启（已检测到麦麦绘图插件）", self._full_text(ctx))
+
+    @staticmethod
+    def _full_text(ctx: DummyContext) -> str:
+        return "\n".join(str(item.get("text") or "") for item in ctx.send.texts)
+
+    def test_linkage_constants_config_default_and_manifest(self):
+        self.assertEqual(DRAWPIC_PLUGIN_ID, "maimai-drawpic-plugin")
+        self.assertEqual(MOMENT_HINT_COOLDOWN_HOURS, 2)
+        self.assertEqual(MOMENT_HINT_DAILY_MAX, 3)
+        self.assertEqual(MOMENT_JUDGE_COOLDOWN_MINUTES, 60)
+        self.assertEqual(MOMENT_JUDGE_WINDOW_MAX, 2)
+        self.assertEqual(MOMENT_STATE_COOLDOWN_HOURS, 12)
+        self.assertIs(MaiLifeSettings().linkage.drawpic_enabled, False)
+        self.assertIsNone(MaiLifePlugin()._drawpic_loaded)
+        manifest = json.loads((Path(__file__).parents[1] / "_manifest.json").read_text(encoding="utf-8-sig"))
+        self.assertIn("component.list_loaded_plugins", manifest["capabilities"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -2,7 +2,7 @@
     "manifest_version":  2,
     "id":  "maibot-community.mai-life",
     "name":  "麦麦生活",
-  "version":  "1.14.10",
+  "version":  "1.14.11",
     "description":  "让麦麦拥有持续生活、消息体验、低频联网见闻以及自己的书柜与创作",
     "author":  {
                    "name":  "octmicy",
@@ -39,7 +39,8 @@
                          "message.get_by_id",
                          "api.call",
                          "maisaka.proactive.trigger",
-                         "config.get"
+                         "config.get",
+                         "component.list_loaded_plugins"
                      ],
     "i18n":  {
                  "default_locale":  "zh-CN",

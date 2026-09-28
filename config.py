@@ -86,9 +86,9 @@ class PluginSettings(PluginConfigBase):
     )
     enabled: bool = Field(
         default=True,
-        description="麦麦生活总开关。关闭后停止状态维护、日程生成和主动私聊。",
+        description="麦生活总开关。关闭后停止状态维护、日程生成和主动私聊。",
         json_schema_extra=_ui(
-            "启用麦麦生活", "关闭后保留数据库，但停止所有后台模拟与主动行为。", 0,
+            "启用麦生活", "关闭后保留数据库，但停止所有后台模拟与主动行为。", 0,
             label_en="Enable Mai Life", hint_en="Keep data but stop simulation and proactive behavior when disabled.",
         ),
     )
@@ -140,7 +140,7 @@ class UserProfile(PluginConfigBase):
         default="",
         description="QQ 用户 ID。",
         json_schema_extra=_ui(
-            "QQ 号", "填写允许进入麦麦生活系统的 QQ 号。", 0,
+            "QQ 号", "填写允许进入麦生活系统的 QQ 号。", 0,
             label_en="QQ User ID", hint_en="QQ account allowed to use Mai Life.", placeholder="123456789",
         ),
     )
@@ -264,9 +264,9 @@ class UsersSettings(PluginConfigBase):
 
     profiles: list[UserProfile] = Field(
         default_factory=list,
-        description="允许进入麦麦生活系统的私聊用户。",
+        description="允许进入麦生活系统的私聊用户。",
         json_schema_extra=_ui(
-            "私聊用户列表", "麦麦生活状态全局共享，但每位用户的关系、额度和免打扰相互独立。", 0,
+            "私聊用户列表", "麦生活状态全局共享，但每位用户的关系、额度和免打扰相互独立。", 0,
             label_en="Private User Profiles", hint_en="Life state is global while relationship, quota and quiet hours are per user.",
         ),
     )
@@ -441,7 +441,7 @@ class EnvironmentSettings(PluginConfigBase):
         default="Shanghai",
         description="Open-Meteo 查询天气时使用的城市。",
         json_schema_extra=_ui(
-            "天气城市", "填写麦麦生活所在地的城市名，插件会自动查询天气坐标。", 1,
+            "天气城市", "填写麦生活所在地的城市名，插件会自动查询天气坐标。", 1,
             label_en="Weather City", hint_en="City name used to automatically resolve weather coordinates.", placeholder="Shanghai",
         ),
     )
@@ -1131,7 +1131,7 @@ class LinkageSettings(PluginConfigBase):
 
 
 class MaiLifeSettings(PluginConfigBase):
-    """麦麦生活完整配置。"""
+    """麦生活完整配置。"""
 
     plugin: PluginSettings = Field(
         default_factory=PluginSettings,

@@ -315,7 +315,7 @@ class MaiLifeMenuRenderer:
             for x,color in ((78,"#F35F60"),(108,"#F4BF4F"),(138,"#4FC26B")):
                 draw.ellipse((x-10,72,x+10,92),fill=color)
             self._draw_text(draw,(margin,132),"MAI LIFE  /  LOCAL COMMAND MENU",font=fonts["eyebrow"],fill=self._PALETTE["accent"])
-            self._draw_text(draw,(margin,166),str(title or "麦麦生活 · 指令中心"),font=fonts["title"],fill=self._PALETTE["title"],stroke_width=1)
+            self._draw_text(draw,(margin,166),str(title or "麦生活 · 指令中心"),font=fonts["title"],fill=self._PALETTE["title"],stroke_width=1)
             self._draw_text(draw,(margin,226),"同一条生活时间线，安静记录每一天",font=fonts["subtitle"],fill=self._PALETTE["muted"])
             badge_width=120
             draw.rounded_rectangle((self.WIDTH-margin-badge_width,144,self.WIDTH-margin,188),radius=12,

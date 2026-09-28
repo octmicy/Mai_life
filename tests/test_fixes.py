@@ -1545,7 +1545,7 @@ class CommandFixTests(unittest.IsolatedAsyncioTestCase):
         renderer=MaiLifeMenuRenderer()
         if not renderer.available or not renderer.regular_font_path:
             self.skipTest("当前环境没有 Pillow 或可用中文字体")
-        png=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.14.4")
+        png=renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="1.14.4")
         self.assertGreater(len(png),10_000); self.assertLess(len(png),150_000)
         Path(self.tmp.name,"menu_v1144.png").write_bytes(png)
         from PIL import Image

@@ -158,8 +158,8 @@ class CommandCatalogTests(unittest.TestCase):
         if system_youyuan.is_file() and not bundled_font.is_file():
             self.assertEqual(Path(renderer.regular_font_path).name.casefold(),"simyou.ttf")
             self.assertEqual(Path(renderer.bold_font_path).name.casefold(),"simyou.ttf")
-        first=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.11.0")
-        second=renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.11.0")
+        first=renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="1.11.0")
+        second=renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="1.11.0")
         self.assertIs(first,second); self.assertGreater(len(first),10_000)
         from PIL import Image
         with Image.open(io.BytesIO(first)) as image:
@@ -238,7 +238,7 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
         relation=await plugin.cmd_relation(**common)
 
         self.assertTrue(menu[0]); self.assertTrue(admin[0]); self.assertTrue(relation[0])
-        self.assertIn("麦麦生活 · 指令中心",ctx.send.texts[0]["text"])
+        self.assertIn("麦生活 · 指令中心",ctx.send.texts[0]["text"])
         self.assertEqual(ctx.send.texts[1]["text"],"管理服务尚未初始化。")
         self.assertIn("管理员身份已生效",ctx.send.texts[2]["text"])
         self.assertNotIn("私聊用户或私聊管理员",ctx.send.texts[2]["text"])
@@ -269,7 +269,7 @@ class CommandReplyTests(unittest.IsolatedAsyncioTestCase):
             user_id="10001",group_id="",stream_id="stale",platform="qq",
         )
         self.assertEqual(result,(True,"指令结果已发送（文本降级）",2))
-        self.assertIn("麦麦生活尚未初始化",ctx.send.texts[-1]["text"])
+        self.assertIn("麦生活尚未初始化",ctx.send.texts[-1]["text"])
 
     async def test_partial_page_failure_only_falls_back_to_remaining_text(self):
         # 第一页成功；第二页的实时 stream 与原始 stream 两次图片发送均失败。
@@ -308,11 +308,11 @@ class RendererFontGateTests(unittest.TestCase):
         self.assertEqual(renderer.regular_font_path,"")
         self.assertTrue(renderer.available)  # Pillow 可导入，缺的只是字体
         self.assertIn("未找到中文字体",renderer.last_error)
-        self.assertEqual(renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="1.14.10"),b"")
+        self.assertEqual(renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="1.14.10"),b"")
 
     def test_no_font_result_renderer_returns_empty_pages(self):
         renderer=NoFontResultRenderer()
-        self.assertEqual(renderer.render("任意结果",title="麦麦生活 · 指令结果"),())
+        self.assertEqual(renderer.render("任意结果",title="麦生活 · 指令结果"),())
 
 
 class NoFontPluginFallbackTests(unittest.IsolatedAsyncioTestCase):
@@ -323,7 +323,7 @@ class NoFontPluginFallbackTests(unittest.IsolatedAsyncioTestCase):
         result=await plugin.cmd_menu(user_id="10001",group_id="",stream_id="stale",platform="qq",matched_groups={})
         self.assertTrue(result[0]); self.assertEqual(result[2],2)
         self.assertEqual(ctx.send.images,[])
-        self.assertTrue(any("麦麦生活 · 指令中心" in item["text"] for item in ctx.send.texts))
+        self.assertTrue(any("麦生活 · 指令中心" in item["text"] for item in ctx.send.texts))
 
     async def test_regular_command_falls_back_to_text_without_font(self):
         ctx=DummyContext(); plugin=MaiLifePlugin(); plugin._set_context(ctx)
@@ -358,11 +358,11 @@ class RendererFontCacheTests(unittest.TestCase):
         menu_module.ImageFont.truetype=counting
         try:
             self.renderer._font_cache.clear(); self.renderer._cache.clear()
-            self.renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
+            self.renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
             self.assertGreater(calls["n"],0)
             after_first=calls["n"]
             self.renderer._cache.clear()  # 清掉 PNG 缓存，强制完整重渲（字体缓存保留）
-            self.renderer.render("麦麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
+            self.renderer.render("麦生活 · 指令中心",COMMAND_SECTIONS,version="cold-render")
             self.assertEqual(calls["n"],after_first)  # 第二次冷渲染零字体加载
         finally:
             menu_module.ImageFont.truetype=real_truetype

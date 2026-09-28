@@ -108,7 +108,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(str((home_card.get("metadata") or {}).get("link_url")).startswith("/plugin-config"))
 
     def test_all_webui_fields_have_translated_labels(self):
-        schema=MaiLifePlugin.build_config_schema(plugin_id="maibot-community.mai-life",plugin_name="麦麦生活")
+        schema=MaiLifePlugin.build_config_schema(plugin_id="maibot-community.mai-life",plugin_name="麦生活")
         self.assertTrue(schema.get("sections"))
         for section_name,section in schema["sections"].items():
             self.assertNotEqual(section.get("title"),section_name)
@@ -133,9 +133,9 @@ class ContractTests(unittest.TestCase):
 
     def test_planner_context_is_injected_into_messages_contract(self):
         messages=[{"role":"system","content":"原系统提示"},{"role":"user","content":"当前消息"}]
-        result=MaiLifePlugin._planner_messages_with_context(messages,"\n【麦麦生活】背景")
-        self.assertIn("【麦麦生活】",result[0]["content"])
-        self.assertEqual(result[1],messages[1]); self.assertNotIn("【麦麦生活】",messages[0]["content"])
+        result=MaiLifePlugin._planner_messages_with_context(messages,"\n【麦生活】背景")
+        self.assertIn("【麦生活】",result[0]["content"])
+        self.assertEqual(result[1],messages[1]); self.assertNotIn("【麦生活】",messages[0]["content"])
 
     def test_only_one_owner_is_allowed(self):
         from pydantic import ValidationError

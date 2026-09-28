@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.14.9"
+PLUGIN_VERSION = "1.14.11"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -1112,6 +1112,24 @@ class ProactiveSettings(PluginConfigBase):
     )
 
 
+class LinkageSettings(PluginConfigBase):
+    """与其它插件的联动开关；目标插件未安装时开关不生效。"""
+
+    __ui_label__: ClassVar[str] = "插件联动"
+    __ui_order__: ClassVar[int] = 21
+
+    drawpic_enabled: bool = Field(
+        default=False,
+        description="启用麦麦绘图联动：聊天中麦麦想分享日常生活画面时，可调用麦麦绘图插件（maimai-drawpic-plugin）的工具生成并发送。",
+        json_schema_extra=_ui(
+            "启用麦麦绘图联动",
+            "默认关闭；需已安装麦麦绘图插件并配置好至少一个绘图平台的 Key，未安装时本开关不生效。",
+            0, label_en="Drawpic Linkage",
+            hint_en="Requires the maimai-drawpic-plugin with at least one platform key configured; ineffective otherwise.",
+        ),
+    )
+
+
 class MaiLifeSettings(PluginConfigBase):
     """麦麦生活完整配置。"""
 
@@ -1195,4 +1213,8 @@ class MaiLifeSettings(PluginConfigBase):
     usage: UsageSettings = Field(
         default_factory=UsageSettings,
         json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 20, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
+    )
+    linkage: LinkageSettings = Field(
+        default_factory=LinkageSettings,
+        json_schema_extra=_ui("插件联动", "与其它插件的协作开关；目标插件未安装时不生效。", 21, label_en="Plugin Linkage", hint_en="Collaboration switches; ineffective when the target plugin is absent."),
     )

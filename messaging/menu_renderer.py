@@ -36,6 +36,8 @@ class MaiLifeMenuRenderer:
     def __init__(self,font_path:str="")->None:
         self.regular_font_path,self.bold_font_path=self._find_font_paths(font_path)
         self._cache:OrderedDict[tuple[Any,...],bytes]=OrderedDict()
+        # 字体对象按 (字号,是否粗体) 缓存：字号组合由代码固定，同进程无需重复解析字体文件。
+        self._font_cache:dict[tuple[int,bool],Any]={}
         self.last_error=""
         if Image is not None and not self.regular_font_path:
             self.last_error=("未找到中文字体，菜单中文将显示为方块。"
@@ -150,10 +152,16 @@ class MaiLifeMenuRenderer:
         return regular,bold or regular
 
     def _font(self,size:int,*,bold:bool=False)->Any:
+        key=(int(size),bool(bold))
+        cached=self._font_cache.get(key)
+        if cached is not None:return cached
         path=self.bold_font_path if bold else self.regular_font_path
-        if path:return ImageFont.truetype(path,size=size)
-        try:return ImageFont.load_default(size=size)
-        except TypeError:return ImageFont.load_default()
+        if path:font=ImageFont.truetype(path,size=size)
+        else:
+            try:font=ImageFont.load_default(size=size)
+            except TypeError:font=ImageFont.load_default()
+        self._font_cache[key]=font
+        return font
 
     @staticmethod
     def _text_width(font:Any,text:str)->int:
@@ -274,7 +282,8 @@ class MaiLifeMenuRenderer:
 
     def render(self,title:str,sections:Sequence[CommandSection],*,version:str=PLUGIN_VERSION,notice:str="")->bytes:
         """测量双栏布局并生成 PNG；任何 Pillow/字体异常都返回空字节触发文本降级。"""
-        if not self.available:return b""
+        # 没有中文字体时 load_default 只会画出豆腐块，与其发不可读的图不如直接降级文本。
+        if not self.available or not self.regular_font_path:return b""
         clean_notice=" ".join(str(notice or "").replace("\x00","").split())[:120]
         cache_key=(str(title),str(version),clean_notice,tuple(sections))
         if cache_key in self._cache:

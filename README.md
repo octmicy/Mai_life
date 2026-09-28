@@ -80,6 +80,31 @@ RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/l
 
 - 不装 Chromium、chinese-calendar、lunar-python 不会阻止插件加载；联网搜索会记录 `browser_unavailable` 错误，并自动降级到后续 API 备援服务。
 
+### 安装中文字体（Linux 服务器，可选）
+
+指令菜单和指令结果卡片由 Pillow 本地渲染，需要系统里有一套中文字体。没装时插件不会报错、也不影响加载，只是图片自动降级为纯文本；想让图片正常显示中文，装一次字体即可：
+
+```bash
+# Debian / Ubuntu：推荐 Noto CJK
+sudo apt-get update
+sudo apt-get install -y fonts-noto-cjk
+
+# 或者更轻量的文泉驿微米黑
+sudo apt-get install -y fonts-wqy-microhei
+```
+
+其它发行版装任意含中文的 Noto CJK / 文泉驿字体即可，插件会通过 `fc-list` 或扫描 `/usr/share/fonts` 等系统字体目录自行找到它们。
+
+字体在插件加载时扫描：装完后在 WebUI 重载插件（或重启 MaiBot）即可生效。如果启动日志里出现过「未找到中文字体」，重载后不再出现就说明字体已被识别。
+
+Docker 用户和上面装 Chromium 一样，把字体装进镜像：
+
+```dockerfile
+RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
+```
+
+和 Chromium 一样，不装字体也不会阻塞插件其它功能。
+
 ### 推荐开关
 
 | 功能 | 默认 | 建议 |

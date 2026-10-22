@@ -2078,6 +2078,18 @@ class LifeStore:
                 )
                 return True
 
+    async def has_reply_turn(self, session_id: str, anchor_message_id: str, now: float) -> bool:
+        """检查当前轮次是否已被预留，并清理已经过期的预留。"""
+        if not session_id or not anchor_message_id:return False
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))
+                row=conn.execute(
+                    "SELECT 1 FROM reply_turns WHERE session_id=? AND anchor_message_id=?",
+                    (session_id,anchor_message_id),
+                ).fetchone()
+                return row is not None
+
     async def release_reply_turn(self, session_id: str, anchor_message_id: str) -> None:
         if not session_id or not anchor_message_id:return
         async with self._lock:

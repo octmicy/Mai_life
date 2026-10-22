@@ -1254,6 +1254,13 @@ class MaiLifePlugin(MaiBotPlugin):
         session=str(kwargs.get("session_id") or ""); suffix=""
         active=await self._activate_planner_task(session,self._planner_payload(kwargs))
         group_passive=bool(not active and self.config.debounce.group_enabled and self._has_recent_group_turn(session))
+        runtime=self._session_runtime.get(session) or {}
+        current_group_turn={}
+        if group_passive:
+            current_group_turn=next((item for (item_session,_anchor),item in reversed(tuple(self._group_turns.items()))
+                                     if item_session==session),{})
+        turn_anchor=str(current_group_turn.get("message_id") or runtime.get("message_id") or "")
+        turn_scope=str(current_group_turn.get("turn_scope") or session)
         payload:dict[str,Any]|None=None
         if self.config.context.enabled and not group_passive:
             payload=await self._prompt_payload(session)
@@ -1264,7 +1271,6 @@ class MaiLifePlugin(MaiBotPlugin):
                                              bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
         if self._recall and self.config.recall.enabled:
             suffix+=await self._recall.planner_context(session,include_ids=not self._is_group_session(session))
-            runtime=self._session_runtime.get(session) or {}
             if runtime.get("recall_query"):
                 user=await self._user_by_session(session)
                 if user:suffix+=await self._recall.query_prompt_context(session,str(user.get("user_id") or ""))
@@ -1276,10 +1282,15 @@ class MaiLifePlugin(MaiBotPlugin):
                 self._neutralize_recalled_latest_payload(kwargs)
                 suffix+=("\n【撤回处理】用户已撤回本轮要回复的最后一条消息。该消息视为不存在，"
                          "不要调用 reply 或任何发送类工具，直接结束本轮思考即可。\n")
+        # Core 的 Replyer Hook 没有“成功但不发送”的返回语义；在请求 Planner 前读取持久轮次锁，
+        # 让已经完成或正在发送的同一轮直接结束，避免走到 after_response 清空文本后被 Core 误报失败。
+        if not active and self.config.debounce.outbound_turn_guard and self._store and turn_anchor \
+                and await self._store.has_reply_turn(turn_scope,turn_anchor,time.time()):
+            suffix+=("\n【回复去重】当前消息已经生成过回复或正在发送。不要调用 reply 或任何发送类工具，"
+                     "直接结束本轮思考，不要说明去重原因。\n")
         if active:
             # reply 的 msg_id 必须引用会话最近一条真实用户消息：proactive:xxx 任务编号宿主 reply 工具
             # 查不到（find_source_message_by_id 不认），报错还会被 to_display_message_id 哈希成乱码。
-            runtime=self._session_runtime.get(session) or {}
             suffix+=self._active_tasks.planner_instruction(active,str(runtime.get("message_id") or ""))
         if active and active.kind=="relay" and self._relay and self.config.social.enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)

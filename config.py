@@ -633,11 +633,11 @@ class SearchProviderProfile(PluginConfigBase):
 
     enabled: bool = Field(default=False,description="是否启用该搜索服务。",json_schema_extra=_ui(
         "启用服务","列表顺序就是跨服务降级顺序。",0,label_en="Enable Provider",hint_en="List order defines provider failover priority."))
-    provider_type: Literal["playwright","bocha","tavily","you","openai_responses","openai_chat"] = Field(
+    provider_type: Literal["playwright","bocha","tavily","you","searxng","openai_responses","openai_chat"] = Field(
         default="playwright",description="搜索服务协议。",json_schema_extra=_ui(
             "服务类型","默认 Playwright 免 Key 浏览器搜索；API 服务可作为备援。",1,
             label_en="Provider Type",hint_en="Playwright is the default keyless provider; API providers can serve as fallbacks.",
-            enum_labels={"playwright":"Playwright 浏览器搜索","bocha":"博查","tavily":"Tavily","you":"You.com",
+            enum_labels={"playwright":"Playwright 浏览器搜索","bocha":"博查","tavily":"Tavily","you":"You.com","searxng":"SearXNG",
                          "openai_responses":"自定义 Responses 联网","openai_chat":"自定义 Chat 联网"}))
     browser_engine: Literal["bing","duckduckgo"] = Field(default="bing",description="Playwright 搜索引擎。",json_schema_extra=_ui(
         "浏览器搜索引擎","默认 Bing；DuckDuckGo 可作为搜索页结构变化时的浏览器备援。",2,
@@ -649,9 +649,9 @@ class SearchProviderProfile(PluginConfigBase):
     api_keys: list[str] = Field(default_factory=list,description="按优先级排列的 API Key。",json_schema_extra=_ui(
         "API Key 列表","仅 API 服务使用；Playwright 必须留空。",4,
         label_en="API Keys",hint_en="Used by API providers only; must remain empty for Playwright."))
-    endpoint: str = Field(default="",description="自定义 OpenAI 兼容服务地址。",json_schema_extra=_ui(
-        "自定义服务地址","内置服务留空；可填写基础地址或完整 responses/chat/completions 地址。",5,
-        label_en="Custom Endpoint",hint_en="Leave empty for built-ins; accepts a base URL or full endpoint."))
+    endpoint: str = Field(default="",description="自定义搜索服务地址。",json_schema_extra=_ui(
+        "自定义服务地址","SearXNG 填写实例基础地址或完整 /search 地址；OpenAI 兼容服务填写基础地址或完整 responses/chat/completions 地址。",5,
+        label_en="Custom Endpoint",hint_en="For SearXNG, use an instance base URL or /search endpoint; for OpenAI-compatible services, use a base URL or full endpoint."))
     model: str = Field(default="",description="自定义联网模型名称。",json_schema_extra=_ui(
         "自定义模型名","仅自定义 Responses/Chat 使用，例如中转提供的 Grok 模型名。",6,
         label_en="Custom Model",hint_en="Required for custom Responses or Chat providers."))
@@ -674,6 +674,9 @@ class SearchProviderProfile(PluginConfigBase):
     def validate_provider(self)->"SearchProviderProfile":
         if self.provider_type=="playwright" and self.api_keys:
             raise ValueError("Playwright 搜索不使用 API Key，请清空 API Key 列表")
+        if self.provider_type=="searxng":
+            if self.api_keys:raise ValueError("SearXNG 搜索不使用 API Key，请清空 API Key 列表")
+            if self.enabled and not self.endpoint:raise ValueError("启用 SearXNG 时必须填写服务地址")
         if self.enabled and self.provider_type in {"openai_responses","openai_chat"}:
             if not self.endpoint:raise ValueError("启用自定义联网服务时必须填写服务地址")
             if not self.model:raise ValueError("启用自定义联网服务时必须填写模型名")

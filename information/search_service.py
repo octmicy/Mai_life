@@ -155,6 +155,14 @@ class SearchService:
         return urlunsplit((parts.scheme,parts.netloc,path,parts.query,parts.fragment))
 
     @staticmethod
+    def _searxng_endpoint(value:str)->str:
+        """将 SearXNG 实例基础地址规范为 JSON 搜索端点。"""
+        raw=HttpClient.validate_url(value); parts=urlsplit(raw); path=parts.path.rstrip("/")
+        if not path:path="/search"
+        elif not path.endswith("/search"):path=path+"/search"
+        return urlunsplit((parts.scheme,parts.netloc,path,parts.query,parts.fragment))
+
+    @staticmethod
     def _query_url(endpoint:str,params:dict[str,Any])->str:
         parts=urlsplit(endpoint); query=dict(parse_qsl(parts.query,keep_blank_values=True))
         query.update({key:str(value) for key,value in params.items()})
@@ -184,6 +192,12 @@ class SearchService:
             endpoint=self._query_url(_ENDPOINTS[kind],params)
             response=await self.http.get(endpoint,timeout=timeout,public_only=True,
                                          headers={"X-API-Key":key,"Accept":"application/json"})
+        elif kind=="searxng":
+            params={"q":query,"format":"json"}
+            if freshness_key in _YOU_FRESHNESS:params["time_range"]=freshness_key
+            endpoint=self._query_url(self._searxng_endpoint(str(provider.endpoint)),params)
+            response=await self.http.get(endpoint,timeout=timeout,public_only=True,
+                                         headers={"Accept":"application/json"})
         elif kind=="openai_responses":
             endpoint=self._custom_endpoint(str(provider.endpoint),kind)
             payload={"model":str(provider.model),"input":query,"tools":[{"type":"web_search"}]}

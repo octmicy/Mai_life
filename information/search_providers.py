@@ -95,6 +95,49 @@ class PlaywrightProvider(SearchProvider):
                               parsed.completion_tokens,parsed.total_tokens)
 
 
+class SearXNGProvider(SearchProvider):
+    """SearXNG JSON 搜索策略：无 Key，使用管理员配置的公网实例。"""
+
+    @staticmethod
+    def matches(provider_type:str)->bool:
+        return provider_type=="searxng"
+
+    def validate(self,provider:Any)->str:
+        endpoint=str(provider.endpoint).strip()
+        if not endpoint:return "invalid_config"
+        try:
+            if HttpClient.private_host_reason(endpoint):return "unsafe_endpoint"
+        except HttpRequestError:return "invalid_config"
+        return ""
+
+    def fingerprints(self,provider:Any)->list[str]:
+        return ["endpoint"]
+
+    def available(self,provider:Any,runtimes:dict[str,dict[str,Any]],now:float)->list[tuple[str,str]]:
+        runtime=runtimes.get("endpoint",{})
+        status=str(runtime.get("status") or "healthy")
+        cooldown=float(runtime.get("cooldown_until") or 0)
+        if status=="disabled" or cooldown>now:return []
+        return [("endpoint","")]
+
+    async def attempt(self,provider_id:str,provider:Any,fingerprint:str,key:str,
+                      query:str,freshness:str)->SearchResponse:
+        try:
+            parsed=await self.service._request_provider(provider,"",query,freshness)
+        except HttpRequestError as exc:
+            config_error=exc.error_class in {"unsafe_url","invalid_url"}
+            raise SearchAttemptError("SearXNG 请求失败",error_class=exc.error_class,
+                                     status_code=exc.status_code,headers=exc.headers,
+                                     penalize=not config_error) from exc
+        except Exception:
+            raise SearchAttemptError("SearXNG 请求内部异常",error_class="internal",penalize=False)
+        if not parsed.results:
+            raise SearchAttemptError("SearXNG 未返回结果",error_class="empty_result",
+                                     status_code=200,penalize=False)
+        return SearchResponse(parsed.results,provider_id,"searxng",parsed.generated_text,parsed.cited,
+                              parsed.model,parsed.prompt_tokens,parsed.completion_tokens,parsed.total_tokens)
+
+
 class ApiProvider(SearchProvider):
     """API 搜索策略：管理 Key 级健康与冷却，区分鉴权/限流/配额与服务故障。"""
 
@@ -156,7 +199,7 @@ class ApiProvider(SearchProvider):
                               parsed.model,parsed.prompt_tokens,parsed.completion_tokens,parsed.total_tokens)
 
 
-PROVIDER_STRATEGIES:tuple[type[SearchProvider],...]=(PlaywrightProvider,ApiProvider)
+PROVIDER_STRATEGIES:tuple[type[SearchProvider],...]=(PlaywrightProvider,SearXNGProvider,ApiProvider)
 
 
 def get_provider_strategy(provider_type:str)->type[SearchProvider]:

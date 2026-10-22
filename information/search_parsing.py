@@ -119,12 +119,14 @@ def is_weak_result(query:str,title:str,snippet:str)->bool:
 
 
 def parse_standard(provider_type:str,payload:Any,max_results:int)->SearchResponse:
-    """把博查、Tavily 和 You.com 的不同字段归一化为统一搜索结果。"""
+    """把博查、Tavily、SearXNG 和 You.com 的不同字段归一化为统一搜索结果。"""
     if not isinstance(payload,dict):return SearchResponse([])
     if provider_type=="bocha":
         raw=_nested(payload,"data.webPages.value","data.web_pages.value","webPages.value","results")
         fields=("name","url","summary")
     elif provider_type=="tavily":
+        raw=payload.get("results"); fields=("title","url","content")
+    elif provider_type=="searxng":
         raw=payload.get("results"); fields=("title","url","content")
     else:
         raw=_nested(payload,"hits","results","data.hits"); fields=("title","url","description")
@@ -134,7 +136,8 @@ def parse_standard(provider_type:str,payload:Any,max_results:int)->SearchRespons
         snippet=(item.get(fields[2]) or item.get("snippet") or item.get("snippets")
                  or item.get("summary") or item.get("content") or "")
         if isinstance(snippet,list):snippet=" ".join(str(value) for value in snippet)
-        result=clean_result(item.get(fields[0]) or item.get("name"),item.get(fields[1]),snippet)
+        url=item.get(fields[1]) or (item.get("href") if provider_type=="searxng" else "")
+        result=clean_result(item.get(fields[0]) or item.get("name"),url,snippet)
         if result:results.append(result)
     limit=int(max_results)
     return SearchResponse(results[:limit],cited=any(item.url for item in results[:limit]))

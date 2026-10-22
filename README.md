@@ -139,6 +139,7 @@ RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/l
 | 博查 `bocha` | 一个或多个 Key | 通常更适合中国大陆服务器 |
 | Tavily `tavily` | 一个或多个 Key | 海外网络可能超时 |
 | You.com `you` | 一个或多个 Key | 海外网络可能超时 |
+| SearXNG `searxng` | 实例基础地址或完整 `/search` 地址 | 无需 API Key；仅允许公网实例，实例须启用 JSON 格式输出 |
 | Responses `openai_responses` | Key、地址、模型名 | 使用带 `web_search` 工具的兼容接口，可接支持该协议的中转 |
 | Chat `openai_chat` | Key、地址、模型名 | 模型本身必须具有联网能力，插件无法强制普通模型联网 |
 

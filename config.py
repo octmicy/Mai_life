@@ -649,9 +649,9 @@ class SearchProviderProfile(PluginConfigBase):
     api_keys: list[str] = Field(default_factory=list,description="按优先级排列的 API Key。",json_schema_extra=_ui(
         "API Key 列表","仅 API 服务使用；Playwright 必须留空。",4,
         label_en="API Keys",hint_en="Used by API providers only; must remain empty for Playwright."))
-    endpoint: str = Field(default="",description="自定义 OpenAI 兼容服务地址。",json_schema_extra=_ui(
-        "自定义服务地址","内置服务留空；可填写基础地址或完整 responses/chat/completions 地址。",5,
-        label_en="Custom Endpoint",hint_en="Leave empty for built-ins; accepts a base URL or full endpoint."))
+    endpoint: str = Field(default="",description="自定义搜索服务地址。",json_schema_extra=_ui(
+        "自定义服务地址","Tavily 可填写兼容网关完整地址，留空使用官方地址；OpenAI 兼容服务填写基础地址或完整 responses/chat/completions 地址。",5,
+        label_en="Custom Endpoint",hint_en="For Tavily, use a compatible gateway URL or leave blank for the official API; for OpenAI-compatible services, use a base URL or full endpoint."))
     model: str = Field(default="",description="自定义联网模型名称。",json_schema_extra=_ui(
         "自定义模型名","仅自定义 Responses/Chat 使用，例如中转提供的 Grok 模型名。",6,
         label_en="Custom Model",hint_en="Required for custom Responses or Chat providers."))

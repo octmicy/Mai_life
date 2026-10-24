@@ -69,12 +69,17 @@ def _validate_public_url_sync(url:str)->tuple[str,str]:
     try:addresses=[ipaddress.ip_address(host)]
     except ValueError:
         try:
-            addresses=list({ipaddress.ip_address(item[4][0].split("%",1)[0])
-                            for item in socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)})
+            addresses=sorted(
+                {ipaddress.ip_address(item[4][0].split("%",1)[0])
+                 for item in socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)},
+                key=lambda address:(address.version != 4,str(address)),
+            )
         except (socket.gaierror,OSError) as exc:
             raise HttpRequestError("域名解析失败",error_class="dns") from exc
     if not addresses or any(not address.is_global for address in addresses):
         raise HttpRequestError("拒绝访问内网、回环或保留地址",error_class="unsafe_url")
+    # 优先 IPv4：部分仅 IPv4 出网的服务器会同时解析到 AAAA 记录，
+    # 但不能实际连接 IPv6；仍在 IPv4 缺失时保留 IPv6 回退。
     pinned=next((str(address) for address in addresses if address.is_global),"")
     if not pinned:
         raise HttpRequestError("拒绝访问内网、回环或保留地址",error_class="unsafe_url")

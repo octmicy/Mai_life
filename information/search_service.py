@@ -155,6 +155,12 @@ class SearchService:
         return urlunsplit((parts.scheme,parts.netloc,path,parts.query,parts.fragment))
 
     @staticmethod
+    def _tavily_endpoint(value:str)->str:
+        """优先使用配置的 Tavily 兼容端点，留空时回退官方地址。"""
+        configured=str(value or "").strip()
+        return HttpClient.validate_url(configured) if configured else _ENDPOINTS["tavily"]
+
+    @staticmethod
     def _query_url(endpoint:str,params:dict[str,Any])->str:
         parts=urlsplit(endpoint); query=dict(parse_qsl(parts.query,keep_blank_values=True))
         query.update({key:str(value) for key,value in params.items()})
@@ -175,7 +181,7 @@ class SearchService:
             payload={"query":query,"max_results":count,"search_depth":"basic","include_answer":False}
             if freshness_key in _TAVILY_FRESHNESS:
                 payload.update({"topic":"news","days":_TAVILY_FRESHNESS[freshness_key]})
-            response=await self.http.post_json(_ENDPOINTS[kind],payload,timeout=timeout,
+            response=await self.http.post_json(self._tavily_endpoint(str(provider.endpoint)),payload,timeout=timeout,
                                                headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
                                                public_only=True)
         elif kind=="you":

@@ -1,6 +1,6 @@
 # 日程提供方接口（maibot.schedule 协议 v1）
 
-适合开发同一 MaiBot 实例内其他插件/工具的接入方（如 MaiTrace）。本页说明如何调用麦生活的日程查询接口、请求参数与返回格式。协议设计讨论见[调研报告](_plan_schedule_provider.md)。
+适合开发同一 MaiBot 实例内其他插件/工具的接入方（如 MaiTrace）。本页说明如何调用麦生活的日程查询接口、请求参数与返回格式。
 
 目录：[提供方信息](#提供方信息) · [调用方式](#调用方式) · [返回信封](#返回信封) · [快照接口](#get_schedule_snapshot-当前快照) · [时间线接口](#get_schedule_timeline-时间线查询) · [活动结构](#活动结构) · [错误一览](#错误一览) · [边界与保证](#边界与保证) · [版本约定](#版本约定)
 
@@ -186,6 +186,10 @@ info = await ctx.api.call("maibot-community.mai-life.get_schedule_provider_info"
 - **当日重生成**：同一天框架被重写（如热更新强制重生成）时活动 id 可能变化、场景清空——以 `revision` 变化为准做增量刷新，不要假设 id 永生不变。
 - **schedule_available=false 不重试生成**：快照只报告现状；想要日程生成是麦生活自己的后台循环的事，与查询无关。
 - **帧与并发**：快照单次读取内 `current`/`next_activities` 来自同一份框架，帧内一致；连续两次调用之间可能跨过重生成。
+
+## 已知修复
+
+- v1.23.7：Host 层 emoji 解析失败重试不再被 `duplicate_turn` 循环拦截（`retry_count>0` 时自动释放旧轮次锁）。
 
 ## 版本约定
 

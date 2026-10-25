@@ -23,7 +23,13 @@ webui_head_tmp.json
 webui_v1_backup.json
 webui_v2.json
 docs/_draft_*.md
-docs/_plan_*.md
-!docs/_plan_schedule_provider.md
 AGENTS.md
 CONTRIBUTING.md
+docs/plugin-guide.md
+docs/webui-development.md
+docs/webui-extension.md
+docs/_plan_drawpic_adapt.md
+docs/_plan_pillow_removal.md
+docs/_plan_retry_turn_lock.md
+docs/_plan_token_optimize.md
+docs/_draft_token_hitrate_survey.md

@@ -17,6 +17,11 @@ class LLMService:
         self.available_tasks: set[str] = set()
         self.health_error = "尚未检查"
         self._supports_task_name: bool | None = None
+        # P7 JSON 解析失败计数（内存态，按提供方时区自然日分桶，重启清零）：
+        # llm_usage_events 的 success 只记「模型有没有回话」，解析失败在那里不可见，
+        # 而它是定位最易碎 schema 的关键信号。不落库避免 SCHEMA 迁移。
+        self._json_failures: dict[str, int] = {}
+        self._json_failures_day: str = ""
 
     def update_config(self, config: Any) -> None:
         self.config = config
@@ -197,7 +202,26 @@ class LLMService:
             f"[MaiLife] 结构化响应解析失败 task={self.task_for(task_kind)} "
             f"type={request_type} chars={len(raw)}"
         )
+        self._count_json_failure(task_kind)
         return fallback
+
+    def _count_json_failure(self, task_kind: str) -> None:
+        """解析失败按「日|任务名」内存计数；日切用配置时区（坑 12：不用 time.localtime）。"""
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            day = datetime.now(ZoneInfo(str(self.config.environment.timezone or "Asia/Shanghai"))).strftime("%Y-%m-%d")
+        except Exception:
+            day = time.strftime("%Y-%m-%d")
+        if day != self._json_failures_day:
+            self._json_failures_day = day; self._json_failures = {}
+        task = self.task_for(task_kind)
+        self._json_failures[task] = self._json_failures.get(task, 0) + 1
+
+    def json_failure_snapshot(self) -> dict[str, Any]:
+        """webui_usage 只读快照：当日解析失败按任务计数（无失败/跨日则空）。"""
+        return {"day": self._json_failures_day,
+                "failures": dict(sorted(self._json_failures.items(), key=lambda kv: -kv[1]))}
 
     async def record_observed(self, *, source: str, task_name: str, request_type: str,
                               model_name: str, prompt_tokens: int, completion_tokens: int,

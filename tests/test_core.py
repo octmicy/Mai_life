@@ -1069,4 +1069,62 @@ class LLMRouteTests(unittest.TestCase):
         self.assertNotIn("task_name", captured["extra"])
 
 
+class V1236JsonFailureCounterTests(unittest.IsolatedAsyncioTestCase):
+    """v1.23.6 P7：JSON 解析失败按「日|任务」内存计数，webui_usage 透出。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.usage.enabled = True
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    def _service(self, response_text: str):
+        from Mai_life.core.llm_service import LLMService
+        from types import SimpleNamespace
+        ctx = SimpleNamespace(logger=DummyLogger())
+        class FakeLLM:
+            async def generate(self, **kwargs):
+                return {"success": True, "response": response_text,
+                        "model": "fast-x", "prompt_tokens": 10,
+                        "completion_tokens": 5, "total_tokens": 15}
+            async def get_available_models(self):
+                return ["utils-fast"]
+        service = LLMService(ctx, self.config, self.store)
+        service.ctx.llm = FakeLLM()
+        service.available_tasks = {"utils-fast"}
+        return service
+
+    async def test_parse_failure_counted_per_task(self):
+        service = self._service("这不是JSON")
+        await service.generate_json("p", "s", {"fb": 1}, task_kind="rest_wakeup", request_type="wake")
+        await service.generate_json("p", "s", {"fb": 1}, task_kind="rest_wakeup", request_type="wake")
+        await service.generate_json("p", "s", {"fb": 1}, task_kind="continuity", request_type="cont")
+        snapshot = service.json_failure_snapshot()
+        self.assertEqual(sum(snapshot["failures"].values()), 3)  # 两任务路由到同一模型任务
+        self.assertTrue(snapshot["day"])
+
+    async def test_valid_json_not_counted(self):
+        service = self._service('{"ok": true}')
+        await service.generate_json("p", "s", {"fb": 1}, task_kind="rest_wakeup")
+        self.assertEqual(service.json_failure_snapshot()["failures"], {})
+
+    async def test_webui_usage_exposes_parse_failures(self):
+        service = self._service("不是JSON")
+        await service.generate_json("p", "s", {"fb": 1}, task_kind="continuity", request_type="cont")
+        from types import SimpleNamespace
+        import datetime as _dt
+        def now(): return _dt.datetime(2026, 10, 25, 10, 0, tzinfo=_dt.timezone.utc)
+        async def usage_summary(since): return []
+        async def search_api_summary(since): return []
+        plugin = SimpleNamespace(_store=self.store, _env=SimpleNamespace(now=now), _llm=service)
+        from Mai_life.plugin import MaiLifePlugin
+        plugin.webui_usage = MaiLifePlugin.webui_usage.__get__(plugin)
+        data = await plugin.webui_usage()
+        self.assertGreaterEqual(data["totals"]["parse_failures_today"], 1)
+        self.assertGreaterEqual(sum(item["count"] for item in data["parse_failures"]["items"]), 1)
+
+
 if __name__=="__main__": unittest.main()

@@ -188,6 +188,34 @@ def _creation_result_text(result:dict[str,Any])->str:
     return f"本次未创作（{status or '未知状态'}）"
 
 
+class _PayloadCache:
+    """慢变背景块的会话级 TTL 缓存；同轮 planner/replyer 复用同一份快照（P4）。
+
+    只缓存分钟级变化的数据（memory/information/bookshelf/dream）；
+    state/weather/context/continuity/backlogs 保持每轮实时读取。
+    """
+
+    def __init__(self, ttl_seconds: float) -> None:
+        self._ttl = ttl_seconds
+        self._entries: dict[tuple[str, str], tuple[float, Any]] = {}
+
+    def get(self, key: tuple[str, str], now_ts: float) -> Any | None:
+        hit = self._entries.get(key)
+        if hit and now_ts - hit[0] < self._ttl:
+            return hit[1]
+        return None
+
+    def put(self, key: tuple[str, str], now_ts: float, value: Any) -> None:
+        self._entries[key] = (now_ts, value)
+
+    def invalidate(self, prefix: str = "") -> None:
+        """按 kind 前缀失效；空前缀清空全部（配置更新/卸载/创作结算时调用）。"""
+        if not prefix:
+            self._entries.clear(); return
+        for key in [k for k in self._entries if k[1] == prefix]:
+            del self._entries[key]
+
+
 class MaiLifePlugin(MaiBotPlugin):
     """组合生活模拟、消息增强和主动任务，并在 Hook 之间维护可追踪的发送状态。"""
 
@@ -206,6 +234,8 @@ class MaiLifePlugin(MaiBotPlugin):
         # bot 角色名：主程序 [bot] nickname，提示词用它而非硬编码；取不到时回落"麦麦"。
         self._bot_name="麦麦"
         # 麦麦绘图联动运行态：检测结果是内存态（None=未检测），频控/判定记录重启丢失可接受。
+        # 慢变背景块缓存（P4）：TTL 由 context.background_cache_minutes 控制，0=禁用。
+        self._payload_cache=_PayloadCache(0.0)
         self._drawpic_loaded:bool|None=None; self._drawpic_check_warned=False
         self._moment_hints:dict[str,dict[str,Any]]={}; self._moment_judges:dict[str,list[float]]={}
         self._continuity:Optional[ContinuityService]=None
@@ -334,6 +364,7 @@ class MaiLifePlugin(MaiBotPlugin):
         finally:self._reloading=False
 
     async def _apply_config_update(self,scope:str,config_data:dict[str,Any],version:str)->None:
+        if hasattr(self,"_payload_cache"):self._payload_cache.invalidate()
         """停止调度、按 scope 刷新对应服务引用、清理失效运行态，再按新开关恢复任务。"""
         del config_data,version
         await self._stop_tasks()
@@ -1138,6 +1169,18 @@ class MaiLifePlugin(MaiBotPlugin):
         if not session_id:return False
         return session_id in self._group_sessions or any(key[0]==session_id for key in self._group_turns)
 
+    async def _cached_block(self,kind:str,owner_key:str,now:Any,loader:Any,*args:Any)->Any:
+        """慢变背景块的 TTL 缓存读取（P4）：0 TTL 或未命中时实时加载。"""
+        ttl=float(getattr(self.config.context,"background_cache_minutes",0) or 0)*60
+        if ttl<=0:
+            return await loader(*args)
+        key=(owner_key,kind); now_ts=now.timestamp()
+        cached=self._payload_cache.get(key,now_ts)
+        if cached is not None:return cached
+        value=await loader(*args)
+        self._payload_cache.put(key,now_ts,value)
+        return value
+
     async def _prompt_payload(self,session_id:str,consume_backlog:bool=False)->dict[str,Any]|None:
         """只为已配置私聊组装背景，并按调用阶段选择读取或消费休息积压。"""
         if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return None
@@ -1157,13 +1200,20 @@ class MaiLifePlugin(MaiBotPlugin):
         if not self._is_group_session(session_id) and self._bedtime and self._bedtime.approaching(now):
             bedtime="approaching"
         return {"state":await self._store.get_state(),"weather":await self._store.get_weather() or {"description":"天气未知"},
-                "context":await self._schedule.context(now),"user":user,"dream":await self._store.latest_dream(),"backlogs":backlogs,
+                "context":await self._schedule.context(now),"user":user,"backlogs":backlogs,
                 "environment":self._env.snapshot(now,platform=str(runtime.get("platform") or "qq"),adapter=str(runtime.get("adapter") or "unknown"),
                                                  chat_type="private",media=runtime.get("media") or ["text"]),
                 "continuity":continuity,"intent":str(runtime.get("intent") or ""),
-                "memory":await self._memory.context_for_user(user,now),
-                "information":await self._information.context(now),
-                "bookshelf":await self._bookshelf.context_for_user(user),"bedtime":bedtime}
+                # P4 慢变块缓存：loader 签名不同（context_for_user 带 now、information.context 带 now、
+                # bookshelf/latest_dream 无参），键必须区分参数集，否则跨参数会误命中缓存。
+                "memory":await self._cached_block("memory",user["user_id"],now,
+                                                  self._memory.context_for_user,user,now),
+                "information":await self._cached_block("information",user["user_id"],now,
+                                                       self._information.context,now),
+                "bookshelf":await self._cached_block("bookshelf",user["user_id"],now,
+                                                     self._bookshelf.context_for_user,user),
+                "dream":await self._cached_block("dream","",now,self._store.latest_dream),
+                "bedtime":bedtime}
 
     @staticmethod
     def _planner_payload(kwargs:dict[str,Any])->Any:
@@ -1313,7 +1363,8 @@ class MaiLifePlugin(MaiBotPlugin):
                 suffix=self._prompts.replyer(payload["state"],payload["weather"],payload["context"],payload["user"],payload["backlogs"],
                                              payload["environment"],payload["continuity"],payload["intent"],
                                              min(2400,int(self.config.context.prompt_max_chars)),memory=payload["memory"],information=payload["information"],
-                                             bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
+                                             bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"],
+                                             detail=str(self.config.context.replyer_detail))
         if self._recall and self.config.recall.enabled:
             suffix+=await self._recall.planner_context(session,include_ids=not self._is_group_session(session))
             runtime=self._session_runtime.get(session) or {}
@@ -2551,13 +2602,18 @@ class MaiLifePlugin(MaiBotPlugin):
                                sum(int(row.get("calls") or 0) for row in tail)))
             daily=[{"day":boundaries[index][0],"tokens":max(0,boundaries[index][1]-boundaries[index+1][1]),
                     "calls":max(0,boundaries[index][2]-boundaries[index+1][2])} for index in range(7)]
+            _fsrc = self._llm if hasattr(self._llm, "json_failure_snapshot") else None
+            failures = (_fsrc.json_failure_snapshot() if _fsrc else {"day": "", "failures": {}})
+            failure_rows=[{"task_name":task,"count":count} for task,count in failures.get("failures",{}).items()]
             return {"day":start.date().isoformat(),"generated_at":now.isoformat(timespec="seconds"),
                     "totals":{"tokens_today":sum(int(item["total_tokens"]) for item in tokens),
                               "calls_today":sum(int(item["calls"]) for item in tokens),
                               "search_calls_today":sum(int(item["calls"]) for item in searches),
                               "tokens_7d":sum(int(item["tokens"]) for item in daily),
-                              "calls_7d":sum(int(item["calls"]) for item in daily)},
-                    "tokens":tokens,"searches":searches,"daily":daily}
+                              "calls_7d":sum(int(item["calls"]) for item in daily),
+                              "parse_failures_today":sum(int(item["count"]) for item in failure_rows)},
+                    "tokens":tokens,"searches":searches,"daily":daily,
+                    "parse_failures":{"day":failures.get("day",""),"items":failure_rows}}
         except Exception as exc:
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 

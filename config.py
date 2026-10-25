@@ -920,6 +920,25 @@ class ContextSettings(PluginConfigBase):
         description="朋友回复中禁止出现的主人专属称呼。",
         json_schema_extra=_ui("主人专属称呼", "朋友回复命中后会重生成一次，仍命中则静默。请只填写明确专属词。", 3, label_en="Owner-only Terms", hint_en="Terms forbidden in friend replies."),
     )
+    background_cache_minutes: int = Field(
+        default=5, ge=0, le=60,
+        description="慢变背景块（生活记忆/外界见闻/书柜/梦境）的会话级缓存分钟数；0 表示每轮实时读取。",
+        json_schema_extra=_ui(
+            "背景缓存（分钟）", "记忆/见闻/书柜/梦境按用户缓存指定分钟数，减少每轮重复读取与注入；0 关闭。",
+            5, label_en="Background Cache (min)",
+            hint_en="Cache slow-changing background blocks per user; 0 disables.",
+        ),
+    )
+    replyer_detail: Literal["full", "compact"] = Field(
+        default="full", description="Replyer 背景详略：full 完整背景；compact 精简（日记行省略、书柜/见闻预算减半）。",
+        json_schema_extra=_ui(
+            "回复背景详略", "full=与 Planner 同源完整背景；compact=精简版（省 token，日记余韵不进回复层、"
+            "书柜与见闻摘要减半）。默认 full 不改行为。",
+            6, label_en="Replyer Detail",
+            hint_en="full keeps parity with planner; compact slims replyer-only background to save tokens.",
+            enum_labels={"full": "full（完整）", "compact": "compact（精简）"},
+        ),
+    )
     prompt_max_chars: int = Field(
         default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
         json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),

@@ -166,6 +166,13 @@ awake_grace_minutes = 30
 # 推荐只保留夜间睡眠和午休。
 gate_segment_types = ["sleep", "nap"]
 
+# 慢变背景（记忆/见闻/书柜/梦境）按用户缓存的分钟数；0 = 每轮实时读取。
+background_cache_minutes = 5
+
+# 回复层（Replyer）背景详略：full = 完整（默认，行为不变）；compact = 精简
+#（日记余韵不进回复层、见闻/书柜摘要减半，更省 token）。
+replyer_detail = "full"
+
 # 时间窗与日程类型共同决定闸门是否生效，时间窗优先。
 night_start = "22:30"
 night_end = "08:00"

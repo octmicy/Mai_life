@@ -477,9 +477,9 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
             provider_type="playwright",key_fingerprint="fp1",status_code=200,success=True,result_count=3,
             latency_ms=120.0,error_class="")
         data=await self.plugin.webui_usage()
-        self.assertEqual(set(data),{"day","generated_at","totals","tokens","searches","daily"})
+        self.assertEqual(set(data),{"day","generated_at","totals","tokens","searches","daily","parse_failures"})
         self.assertEqual(set(data["totals"]),{"tokens_today","calls_today","search_calls_today",
-                                              "tokens_7d","calls_7d"})
+                                              "tokens_7d","calls_7d","parse_failures_today"})
         self.assertEqual(set(data["tokens"][0]),{"label","source","task_name","calls","successes",
                                                  "prompt_tokens","completion_tokens","total_tokens","avg_latency_ms"})
         self.assertEqual(data["tokens"][0]["label"],"plugin/diary")

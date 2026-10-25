@@ -143,6 +143,12 @@ enabled = false
 # 判醒模式：
 # - probability：规则边界 + 概率判断，速度快且不额外调用模型
 # - llm：规则边界 + LLM 判断，语义更准确但会增加延迟和模型消耗
+# 闸门生效方式：
+# - time_window：按设定时间，只在下方夜间/午休时间窗内生效
+# - schedule：按日程判断，日程进入「闸门生效的日程类型」所列段型时即生效
+#   （跟着日程作息走，忽略时间窗；晚安与入睡推迟同样跟随日程睡眠段）
+gate_mode = "time_window"
+
 mode = "probability"
 
 # probability 模式下，普通消息叫醒麦麦的概率。0.18 表示 18%。
@@ -155,11 +161,17 @@ llm_threshold = 70
 awake_grace_minutes = 30
 
 # 闸门生效的日程类型：sleep / nap / rest。
-# 夜窗/午休窗内闸门一定生效；本列表是时间窗未配置（起止相同）时的兜底，
-# rest 等无对应时间窗的类型列出后任意时间生效。配了起止不同的夜窗后，
-# 日程里的睡眠段不会让闸门提前生效（夜窗设 00:00 而日程 22:30 就寝，22:30 照常回复）。
+# gate_mode = schedule 时：日程进入所列段型即生效（主力开关，任意时间）；
+# gate_mode = time_window 时：本列表不参与闸门生效，仅用于判醒提示词描述。
 # 推荐只保留夜间睡眠和午休。
 gate_segment_types = ["sleep", "nap"]
+
+# 慢变背景（记忆/见闻/书柜/梦境）按用户缓存的分钟数；0 = 每轮实时读取。
+background_cache_minutes = 5
+
+# 回复层（Replyer）背景详略：full = 完整（默认，行为不变）；compact = 精简
+#（日记余韵不进回复层、见闻/书柜摘要减半，更省 token）。
+replyer_detail = "full"
 
 # 时间窗与日程类型共同决定闸门是否生效，时间窗优先。
 night_start = "22:30"
@@ -181,8 +193,8 @@ group_night_end = "08:00"
 group_nap_start = "12:00"
 group_nap_end = "14:30"
 
-# 群闸门生效的日程类型：群时间窗内一定生效；本列表是群时间窗未配置（起止相同）时的兜底，
-# rest 等无对应窗口的类型列出后任意时间生效。与私聊 gate_segment_types 同构，
+# 群闸门生效的日程类型：gate_mode = schedule 时日程进入所列段型即群静音（任意时间）；
+# gate_mode = time_window 时不参与生效。与私聊 gate_segment_types 同构，
 # 默认只保留夜间睡眠和午休。
 group_gate_segment_types = ["sleep", "nap"]
 

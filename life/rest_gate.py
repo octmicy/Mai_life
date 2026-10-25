@@ -46,6 +46,8 @@ class RestGate:
         普通消息全部放行（outside_gate_window），表现为"夜间闸门失效"。
         """
         cfg=self.config.rest_gate
+        if str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule":
+            return ""  # 按日程判断：时间窗不参与闸门生效，退化窗无从谈起
         if str(getattr(cfg,"night_start",""))==str(getattr(cfg,"night_end","")):
             return f"night_start=night_end={cfg.night_start}"
         if getattr(cfg,"group_enabled",False) and str(
@@ -89,27 +91,13 @@ class RestGate:
                 return bool(getattr(item,"enabled",False) and getattr(item,"rest_gate_enabled",False))
         return False
 
-    @staticmethod
-    def _kind_path_active(kind:str,*,night_start:str,night_end:str,nap_start:str,nap_end:str)->bool:
-        """日程类型路径是否生效：时间窗优先。
-
-        用户配了起止不同的时间窗后闸门只按时间窗走——日程里的睡眠/午休段不会让
-        闸门提前生效（night_start 设 00:00 而日程 22:30 就寝，22:30 照常回复，
-        用户实测踩坑）；对应窗口起止相同（主动停用该窗）时才回退日程类型兜底；
-        没有对应窗口的类型（rest 等）维持“列出即任意时间生效”。
-        """
-        if kind=="sleep":return night_start==night_end
-        if kind=="nap":return nap_start==nap_end
-        return True
-
     def decide_group(self,text:str,now:Any,group_id:str,segment:dict[str,Any]|None=None)->tuple[bool,str]:
         """群聊轻量版闸门：总闸/分群开关 → 时间窗或日程类型 → 强制唤醒词放行 / 勿扰词阻断 / 其余静默。
 
         不放行概率、不建待醒候选、不写积压——每条群消息独立判定；
         被阻断的消息不进入主程序，因此不产生 Planner/Replyer/VLM 等请求。
-        生效条件与私聊同构：群夜窗/群午休窗内一定生效；group_gate_segment_types
-        是群时间窗未配置（起止相同）时的兜底，rest 等无对应窗口的类型列出后
-        任意时间生效（默认夜间睡眠+午休）。
+        生效条件与私聊同构，共用「闸门生效方式」开关：按设定时间=群夜窗/群午休窗内
+        生效；按日程判断=日程段型命中 group_gate_segment_types 即生效（任意时间）。
         """
         cfg=self.config.rest_gate
         if not getattr(cfg,"group_enabled",False):return True,"group_gate_disabled"
@@ -117,11 +105,12 @@ class RestGate:
         if not self.group_gate_enabled_for(group_id):return True,"group_not_enabled"
         segment_kind=str((segment or {}).get("kind") or "")
         kind_match=segment_kind in set(getattr(cfg,"group_gate_segment_types",None) or [])
-        # 与私聊同构的时间窗优先：群时间窗配了起止时间后，日程睡眠/午休段不让闸门提前生效。
-        kind_effective=kind_match and self._kind_path_active(
-            segment_kind,night_start=cfg.group_night_start,night_end=cfg.group_night_end,
-            nap_start=cfg.group_nap_start,nap_end=cfg.group_nap_end)
-        if not (self.in_group_quiet_window(now) or kind_effective):return True,"outside_group_window"
+        # v1.23.5 闸门生效方式（私聊群聊共用）：schedule=段型命中即静默；time_window=只认群时间窗。
+        if str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule":
+            gate_active=kind_match
+        else:
+            gate_active=self.in_group_quiet_window(now)
+        if not gate_active:return True,"outside_group_window"
         compact=re.sub(r"\s+","",str(text or "").lower())
         for term in (getattr(cfg,"group_force_wake_terms",None) or []):
             word=str(term or "").strip().lower()
@@ -158,23 +147,24 @@ class RestGate:
         self._warn_degenerate_window(now.timestamp())
         if not cfg.enabled:return True,"disabled"
         if str(text or "").lstrip().startswith("/"):return True,"command"
-        # 时间窗与日程类型共同决定闸门是否生效，时间窗优先：
-        # 夜窗/午休窗内一定生效——避免默认框架的 leisure/meal 段把闸门静默收窄；
-        # gate_segment_types 是时间窗未配置（起止相同）时的兜底，rest 等无对应
-        # 窗口的类型列出后任意时间生效（"加入 rest 后普通休息段也可能不回复"由此落实）。
+        # v1.23.5 闸门生效方式（私聊群聊共用 gate_mode）：
+        # schedule=日程段型命中 gate_segment_types 即生效（跟着日程作息走，任意时间）；
+        # time_window=只认夜窗/午休窗——用户设定几点休息就几点休息，日程段型不提前触发。
         current=now.strftime("%H:%M")
-        night=self._in_window(cfg.night_start,cfg.night_end,current)
-        nap=self._in_window(cfg.nap_start,cfg.nap_end,current)
         segment_kind=str((segment or {}).get("kind") or "")
         kind_match=segment_kind in set(cfg.gate_segment_types)
-        # 时间窗优先：配了起止不同的夜窗/午休窗后，日程睡眠/午休段不让闸门提前生效
-        # （night_start 设 00:00 而日程 22:30 就寝的实测踩坑）；窗口起止相同才兜底。
-        kind_effective=kind_match and self._kind_path_active(
-            segment_kind,night_start=cfg.night_start,night_end=cfg.night_end,
-            nap_start=cfg.nap_start,nap_end=cfg.nap_end)
-        if not (night or nap or kind_effective):return True,"outside_gate_window"
-        # 生效类型命中时用它细化（LLM 提示词里的"正在做什么"），否则按窗推断。
-        kind=segment_kind if kind_effective else ("sleep" if night else "nap")
+        schedule_mode=str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule"
+        night=nap=False
+        if schedule_mode:
+            gate_active=kind_match
+        else:
+            night=self._in_window(cfg.night_start,cfg.night_end,current)
+            nap=self._in_window(cfg.nap_start,cfg.nap_end,current)
+            gate_active=night or nap
+        if not gate_active:return True,"outside_gate_window"
+        # 段型命中时用它细化（LLM 提示词里的"正在做什么"）；未命中时按生效路径推断
+        # （时间窗模式 night→sleep/nap→nap；日程模式无窗口可依，按 sleep）。
+        kind=segment_kind if kind_match else ("sleep" if (schedule_mode or night) else "nap")
         # 明确勿扰先于一切窗内分支：协商期/宽限期说"别烦我"同样要拦住（不入 backlog）。
         action,reason=self.boundary(text)
         if action=="block":return False,reason

@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.23.4"
+PLUGIN_VERSION = "1.23.5"
 CONFIG_SCHEMA_VERSION = "1.11.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -775,6 +775,15 @@ class RestGateSettings(PluginConfigBase):
             enum_labels={"probability": "规则边界 + 概率", "llm": "LLM 模型判断"},
         ),
     )
+    gate_mode: Literal["time_window", "schedule"] = Field(
+        default="time_window", description="闸门生效方式：按设定时间窗，或按日程段型自行判断。",
+        json_schema_extra=_ui(
+            "闸门生效方式", "按设定时间：只在下方夜间/午休时间窗内闸门生效；按日程判断：日程进入「闸门生效的日程类型」所列段型时即生效（跟着日程作息走，如日程 22:30 就寝则 22:30 开始休息，忽略时间窗），晚安与入睡推迟同样跟随日程睡眠段。", 1,
+            label_en="Gate Mode",
+            hint_en="time_window: gate only inside configured windows; schedule: gate whenever the schedule enters listed segment kinds.",
+            enum_labels={"time_window": "按设定时间", "schedule": "按日程判断"},
+        ),
+    )
     wake_probability: float = Field(
         default=0.18, ge=0, le=1,
         description="概率模式下普通消息叫醒麦麦的概率。",
@@ -801,10 +810,10 @@ class RestGateSettings(PluginConfigBase):
     )
     gate_segment_types: list[Literal["sleep", "nap", "rest"]] = Field(
         default_factory=lambda: ["sleep", "nap"],
-        description="哪些日程类型启用休息回复闸门。",
+        description="按日程判断模式下启用闸门的日程类型；按设定时间模式下不参与生效。",
         json_schema_extra=_ui(
-            "闸门生效的日程类型", "夜窗/午休窗内闸门一定生效；本列表是时间窗未配置（起止相同）时的兜底，rest 等无对应时间窗的类型列出后任意时间生效。注意：配了起止不同的夜窗后，日程里的睡眠段不会让闸门提前生效（夜窗设 00:00 而日程 22:30 就寝，22:30 照常回复）；只想完全按时间窗控制就清空本列表。加入 rest 后，普通休息段也可能不回复。", 5,
-            label_en="Gated Schedule Types", hint_en="Night/nap windows always gate; this list is the fallback when a window is unset, plus kinds with no window. Adding rest also gates ordinary rest periods.",
+            "闸门生效的日程类型", "按日程判断模式下：日程进入所列段型时闸门即生效（主力开关，任意时间）；按设定时间模式下：本列表不参与闸门生效，仅用于判醒提示词里的活动描述。加入 rest 后，按日程判断时普通休息段也可能不回复。", 5,
+            label_en="Gated Schedule Types", hint_en="In schedule mode the gate activates on listed segment kinds; in time-window mode this list only labels the wake-judgment prompt.",
             enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）"},
         ),
     )
@@ -817,7 +826,7 @@ class RestGateSettings(PluginConfigBase):
     )
     night_start: str = Field(
         default="22:30", description="夜间闸门开始时间。",
-        json_schema_extra=_ui("夜间闸门开始", "默认 22:30，支持跨午夜；与结束时间相同则该窗口永不生效（只剩日程类型一条路）。", 6, label_en="Night Gate Start", hint_en="Night gate start in HH:MM format."),
+        json_schema_extra=_ui("夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 6, label_en="Night Gate Start", hint_en="Night gate start in HH:MM format."),
     )
     night_end: str = Field(
         default="08:00", description="夜间闸门结束时间。",
@@ -825,7 +834,7 @@ class RestGateSettings(PluginConfigBase):
     )
     nap_start: str = Field(
         default="12:00", description="午休闸门开始时间。",
-        json_schema_extra=_ui("午休闸门开始", "默认 12:00。", 8, label_en="Nap Gate Start", hint_en="Nap gate start in HH:MM format."),
+        json_schema_extra=_ui("午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 8, label_en="Nap Gate Start", hint_en="Nap gate start in HH:MM format."),
     )
     nap_end: str = Field(
         default="14:30", description="午休闸门结束时间。",
@@ -846,7 +855,7 @@ class RestGateSettings(PluginConfigBase):
     )
     group_night_start: str = Field(
         default="22:30", description="群夜间闸门开始时间。",
-        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；与结束时间相同则该窗口永不生效。", 11, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
+        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 11, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
     )
     group_night_end: str = Field(
         default="08:00", description="群夜间闸门结束时间。",
@@ -854,7 +863,7 @@ class RestGateSettings(PluginConfigBase):
     )
     group_nap_start: str = Field(
         default="12:00", description="群午休闸门开始时间。",
-        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。", 13, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
+        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 13, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
     )
     group_nap_end: str = Field(
         default="14:30", description="群午休闸门结束时间。",
@@ -862,11 +871,11 @@ class RestGateSettings(PluginConfigBase):
     )
     group_gate_segment_types: list[Literal["sleep", "nap", "rest", "study", "work", "leisure", "meal", "travel"]] = Field(
         default_factory=lambda: ["sleep", "nap"],
-        description="哪些日程类型在群时间窗未配置（起止相同）或该类型无对应时间窗时触发群闸门（与群时间窗 OR）。",
+        description="按日程判断模式下触发群闸门的日程类型；按设定时间模式下不参与生效。",
         json_schema_extra=_ui("群闸门生效的日程类型",
-            "群夜窗/午休窗内一定生效；本列表是群时间窗未配置（起止相同）时的兜底，rest 等无对应窗口的类型列出后任意时间生效。默认与私聊一致：夜间睡眠+午休。", 16,
+            "按日程判断模式下：日程进入所列段型时群闸门即生效（任意时间）；按设定时间模式下不参与生效。默认与私聊一致：夜间睡眠+午休。", 16,
             label_en="Group Gated Schedule Types",
-            hint_en="Group quiet windows always gate; this list is the fallback when the matching window is unset, plus kinds with no window."),
+            hint_en="In schedule mode the group gate activates on listed kinds; in time-window mode this list is inert."),
         enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）",
                      "study": "学习（study）", "work": "工作（work）", "leisure": "休闲（leisure）",
                      "meal": "餐饮（meal）", "travel": "出行（travel）"})
@@ -910,6 +919,25 @@ class ContextSettings(PluginConfigBase):
         default_factory=lambda: ["主人", "老公", "老婆", "亲爱的主人"],
         description="朋友回复中禁止出现的主人专属称呼。",
         json_schema_extra=_ui("主人专属称呼", "朋友回复命中后会重生成一次，仍命中则静默。请只填写明确专属词。", 3, label_en="Owner-only Terms", hint_en="Terms forbidden in friend replies."),
+    )
+    background_cache_minutes: int = Field(
+        default=5, ge=0, le=60,
+        description="慢变背景块（生活记忆/外界见闻/书柜/梦境）的会话级缓存分钟数；0 表示每轮实时读取。",
+        json_schema_extra=_ui(
+            "背景缓存（分钟）", "记忆/见闻/书柜/梦境按用户缓存指定分钟数，减少每轮重复读取与注入；0 关闭。",
+            5, label_en="Background Cache (min)",
+            hint_en="Cache slow-changing background blocks per user; 0 disables.",
+        ),
+    )
+    replyer_detail: Literal["full", "compact"] = Field(
+        default="full", description="Replyer 背景详略：full 完整背景；compact 精简（日记行省略、书柜/见闻预算减半）。",
+        json_schema_extra=_ui(
+            "回复背景详略", "full=与 Planner 同源完整背景；compact=精简版（省 token，日记余韵不进回复层、"
+            "书柜与见闻摘要减半）。默认 full 不改行为。",
+            6, label_en="Replyer Detail",
+            hint_en="full keeps parity with planner; compact slims replyer-only background to save tokens.",
+            enum_labels={"full": "full（完整）", "compact": "compact（精简）"},
+        ),
     )
     prompt_max_chars: int = Field(
         default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
@@ -1028,7 +1056,7 @@ class ModelRoutingSettings(PluginConfigBase):
     search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 12, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
     relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 13, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
     group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务覆盖", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
-    relay_summary_task: str = Field(default="", description="群聊短摘要任务覆盖。", json_schema_extra=_ui("群转述摘要任务覆盖", "留空继承快速任务。", 16, label_en="Relay Summary Override", hint_en="Leave empty to inherit fast task."))
+    relay_summary_task: str = Field(default="", description="群聊短摘要任务覆盖。", json_schema_extra=_ui("群转述摘要任务覆盖", "v1.23.6 起摘要已并入群观察判定调用，此字段暂无效果，保留兼容旧配置。", 16, label_en="Relay Summary Override", hint_en="Merged into the group judgment call since v1.23.6; kept for compatibility."))
     creation_outline_task: str = Field(default="", description="创作提纲任务覆盖。", json_schema_extra=_ui("创作提纲任务覆盖", "留空继承推理任务。", 17, label_en="Creation Outline Override", hint_en="Leave empty to inherit reasoning task."))
     creation_body_task: str = Field(default="", description="创作正文任务覆盖。", json_schema_extra=_ui("创作正文任务覆盖", "留空继承创作任务。", 18, label_en="Creation Body Override", hint_en="Leave empty to inherit creative task."))
     creation_review_task: str = Field(default="", description="创作审校任务覆盖。", json_schema_extra=_ui("创作审校任务覆盖", "留空继承推理任务。", 19, label_en="Creation Review Override", hint_en="Leave empty to inherit reasoning task."))

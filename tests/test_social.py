@@ -97,6 +97,16 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         directory=await self.store.get_group_directory("100")
         self.assertEqual(directory["group_name"],"Host 自动群名")
 
+    async def test_group_summarize_uses_single_merged_call(self):
+        """v1.23.6：判定与摘要合并为一次 group_judgment 调用（原先喂两次：判定+relay_summary）。"""
+        llm=SpyLLM(); observer=GroupObserver(self.store,self.config,llm,DummyLogger())
+        now=datetime(2026,7,13,18,0,tzinfo=timezone(timedelta(hours=8)))
+        first=asyncio.create_task(observer.observe(group_message("m1","小王说今晚游戏更新了","napcat"),now))
+        await asyncio.sleep(0.005)
+        second=asyncio.create_task(observer.observe(group_message("m2","有人要一起看看新活动吗？","napcat"),now))
+        old,new=await asyncio.gather(first,second)
+        self.assertEqual(new["status"],"saved"); self.assertEqual(llm.calls,1)  # 单次调用完成判定+摘要
+
     async def test_sensitive_group_fragment_is_rejected_before_model_call(self):
         llm=SpyLLM(); observer=GroupObserver(self.store,self.config,llm,DummyLogger())
         now=datetime(2026,7,13,18,0,tzinfo=timezone(timedelta(hours=8)))

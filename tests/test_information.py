@@ -577,8 +577,8 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
             "tool_search",start.timestamp(),(start+timedelta(days=1)).timestamp(),
         ),2)
 
-    async def test_web_search_tool_reports_weak_only_as_not_found(self):
-        """结果整体弱相关时，工具路径明确告知未找到密切相关的结果，不静默当成成功。"""
+    async def test_web_search_tool_soft_lands_weak_only_results(self):
+        """v1.23.6 软着陆：整体弱相关时低可信度放行（success=True + weak 标记），不再弃答。"""
         config=MaiLifeSettings(); config.information.enabled=True
         config.search_api.tool_enabled=True; config.search_api.providers=[self._provider("bocha")]
         service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
@@ -590,8 +590,9 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
             ],provider_id="p1",provider_type="playwright",cited=True)
         service.search.search=fake_search
         result=await service.search_for_tool("zzqqxx-nonexistent-query-91827364",self.now)
-        self.assertFalse(result["success"]); self.assertTrue(result.get("weak"))
-        self.assertIn("未找到",result["content"]); self.assertIn("密切相关",result["content"])
+        self.assertTrue(result["success"]); self.assertTrue(result.get("weak"))
+        self.assertIn("可信度存疑",result["content"]); self.assertIn("换更具体的词",result["content"])
+        self.assertNotIn("未找到",result["content"]); self.assertNotIn("不要据此回答",result["content"])
 
     async def test_web_search_tool_respects_connected_discovery_switch(self):
         config=MaiLifeSettings(); config.search_api.providers=[self._provider("bocha")]

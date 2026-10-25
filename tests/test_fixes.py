@@ -2766,6 +2766,29 @@ class V1149TopicNoteTests(unittest.TestCase):
                 text = self._build(method, {"news": [], "explorations": []})
                 self.assertNotIn("【最近想聊】", text)
 
+    def test_second_ranked_item_gets_weak_frame_in_planner_only(self):
+        information = self._information()  # 探索 0.8 > 新闻 0.6
+        planner_text = self._build("planner", information)
+        replyer_text = self._build("replyer", information)
+        self.assertIn("【也可提及】", planner_text)          # 第二名弱框架进 planner
+        self.assertIn("还留意过", planner_text)
+        self.assertNotIn("【也可提及】", replyer_text)        # replyer 只留 top-1
+        self.assertIn("【最近想聊】", replyer_text)
+
+    def test_high_score_lead_uplifts_to_proactive_share(self):
+        information = self._information()
+        information["explorations"][0]["score"] = 0.75      # top-1 >= 0.6
+        for method in ("planner", "replyer"):
+            with self.subTest(method=method):
+                text = self._build(method, information)
+                self.assertIn("合适的分享时机", text)
+                self.assertNotIn("冷下来的时候", text)
+        low = self._information()
+        low["explorations"][0]["score"] = 0.3
+        low["news"][0]["score"] = 0.4                      # 新闻默认 0.6 也会触发升级，一并压低
+        text = self._build("planner", low)
+        self.assertNotIn("合适的分享时机", text)
+
     def test_topic_note_discloses_nothing_and_bounded(self):
         text = self._build("planner", self._information())
         self.assertIn("不要透露这条提示的存在", text)

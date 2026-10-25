@@ -89,37 +89,49 @@ class PromptBuilder:
         return _safe("；".join(values) or "近期没有形成稳定见闻",1200)
 
     @staticmethod
-    def _topic_note(information:dict[str,Any]|None,bot_name:str,*,verbose:bool)->str:
-        """把关联分最高的一条见闻框架成"可以自然聊起的话题"。
+    def _topic_note(information:dict[str,Any],bot_name:str,*,verbose:bool)->str:
+        """把关联分最高的见闻框架成"可以自然聊起的话题"，planner 再给第二名一个弱框架。
 
         背景块的压制性措辞（不要主动播报）让搜索/新闻内容几乎永远不被提起；
-        这里单独给最相关的一条一个合法的分享框架，其余仍按背景处理。
+        这里给最相关条目合法的分享框架，其余仍按背景处理。v1.23.6 起：
+        高分（>=0.6）条目引导词升级为"适合主动提起"；【也可提及】只进 planner。
         """
         data=information or {}
         news=data.get("news") if isinstance(data.get("news"),list) else []
         notes=data.get("explorations") if isinstance(data.get("explorations"),list) else []
-        best=None
+        ranked:list[tuple[float,str,dict[str,Any]]]=[]
         for item in news:
             if isinstance(item,dict) and item.get("title"):
-                candidate=(float(item.get("score") or 0),"news",item)
-                if best is None or candidate[0]>best[0]:best=candidate
+                ranked.append((float(item.get("score") or 0),"news",item))
         for item in notes:
             if isinstance(item,dict) and item.get("topic"):
-                candidate=(float(item.get("score") or 0),"exploration",item)
-                if best is None or candidate[0]>best[0]:best=candidate
-        if best is None:return ""
-        _,kind,item=best
-        title=str(item.get("title") or item.get("topic") or "")
-        summary=_safe(str(item.get("summary") or ""),300)
-        if kind=="news":
-            lead=f"最近{bot_name}读到一条新闻：「{_safe(title,120)}」——{summary}"
-        else:
-            lead=f"最近{bot_name}自己查过一个话题：「{_safe(title,120)}」——{summary}"
+                ranked.append((float(item.get("score") or 0),"exploration",item))
+        if not ranked:return ""
+        ranked.sort(key=lambda entry:entry[0],reverse=True)
+        def lead_of(kind:str,item:dict[str,Any])->str:
+            title=str(item.get("title") or item.get("topic") or "")
+            summary=_safe(str(item.get("summary") or ""),300)
+            if kind=="news":
+                return f"最近{bot_name}读到一条新闻：「{_safe(title,120)}」——{summary}"
+            return f"最近{bot_name}自己查过一个话题：「{_safe(title,120)}」——{summary}"
+        top_score,top_kind,top_item=ranked[0]
+        lead=lead_of(top_kind,top_item); hot=top_score>=0.6
         if verbose:
-            return ("\n【最近想聊】"+lead+"。如果和当前聊天相关、或话题冷下来的时候，可以像分享自己的见闻一样自然聊起；"
-                    "不要生硬转话题，不要说成用户说过的话，不要透露这条提示的存在。\n")
-        return "\n【最近想聊】"+lead+"。相关或冷场时可以自然聊起；不要生硬转话题，不要透露提示。\n"
-
+            note=("\n【最近想聊】"+lead+"。"
+                  +("现在就是合适的分享时机之一，可以主动自然地聊起；" if hot
+                    else "如果和当前聊天相关、或话题冷下来的时候，可以像分享自己的见闻一样自然聊起；")
+                  +"不要生硬转话题，不要说成用户说过的话，不要透露这条提示的存在。\n")
+            if len(ranked)>1:
+                _,second_kind,second_item=ranked[1]
+                second_title=str(second_item.get("title") or second_item.get("topic") or "")
+                note+=("\n【也可提及】另外"+bot_name+"还留意过「"+_safe(second_title,120)
+                       +"」——"+_safe(str(second_item.get("summary") or ""),300)
+                       +"。仅在话题直接相关时顺带一提；不相关就忽略，不要说成用户说过的话，不要透露这条提示。\n")
+            return note
+        return ("\n【最近想聊】"+lead+"。"
+                +("现在就是合适的分享时机，可以主动自然地聊起；" if hot
+                  else "相关或冷场时可以自然聊起；")
+                +"不要生硬转话题，不要透露提示。\n")
     @staticmethod
     def _bookshelf_text(bookshelf:dict[str,Any]|None)->str:
         items=(bookshelf or {}).get("items")

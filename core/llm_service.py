@@ -94,7 +94,8 @@ class LLMService:
             if self.config.news.enabled:kinds.add("news")
             if self.config.search.enabled:kinds.add("search")
             if self.config.information.association_enabled:kinds.add("relevance")
-        if self.config.social.enabled:kinds.update({"group_judgment","relay_summary"})
+        # relay_summary 已并入群观察的单次 group_judgment 调用（v1.23.6），不再单列必查。
+        if self.config.social.enabled:kinds.add("group_judgment")
         if self.config.creation.enabled:
             kinds.update({"creation_outline","creation_body","creation_review"})
             if self.config.creation.external_reading_enabled and self.config.creation.reading_annotation_enabled:

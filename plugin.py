@@ -1,7 +1,7 @@
-"""Mai_life v1.23.4 插件入口。"""
+"""Mai_life v1.23.5 插件入口。"""
 from __future__ import annotations
 
-from datetime import date,datetime,timedelta
+from datetime import date,datetime,timedelta,timezone
 
 from maibot_sdk import API,Command,HomeCard,HookHandler,MaiBotPlugin,Tool
 from maibot_sdk.types import HookMode,HookOrder,ToolParameterInfo,ToolParamType
@@ -14,6 +14,7 @@ import re
 import shutil
 import time
 import uuid
+from zoneinfo import ZoneInfo
 
 from .config import MaiLifeSettings,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
@@ -1904,8 +1905,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         text=(f"麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n"
               f"配置用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
-              f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{'开启' if self.config.rest_gate.enabled else '关闭'}\n"
-              f"睡前流程：{'与夜间闸门同时段（静默 %d 分钟后入睡）' % BEDTIME_SILENCE_MINUTES if self.config.rest_gate.enabled else '关闭'}\n"
+              f"消息收口：私聊 {'开启' if self.config.debounce.enabled else '关闭'} / 群聊 {'开启' if self.config.debounce.group_enabled else '关闭'}\n休息闸门：{('开启（按设定时间）' if self.config.rest_gate.gate_mode=='time_window' else '开启（按日程判断）') if self.config.rest_gate.enabled else '关闭'}\n"
+              f"睡前流程：{('跟随日程睡眠段' if self.config.rest_gate.gate_mode=='schedule' else '与夜间闸门同时段')+'（静默 %d 分钟后入睡）' % BEDTIME_SILENCE_MINUTES if self.config.rest_gate.enabled else '关闭'}\n"
               f"绘图联动：{'开启（已检测到麦麦绘图插件）' if (self.config.linkage.drawpic_enabled and self._drawpic_loaded is True) else ('开启（未检测到麦麦绘图插件，开关暂不生效）' if self.config.linkage.drawpic_enabled else '关闭')}\n"
               f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.social.groups if g.enabled and g.rest_gate_enabled) if self.config.rest_gate.group_enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
@@ -1999,9 +2000,12 @@ class MaiLifePlugin(MaiBotPlugin):
         if phase not in _SLEEPING_PHASES:return "清醒"
         gate=self.config.rest_gate; kind=str(segment.get("kind") or "")
         if kind not in set(gate.gate_segment_types):
-            current=now.strftime("%H:%M")
-            kind="sleep" if _time_in_window(gate.night_start,gate.night_end,current) else (
-                "nap" if _time_in_window(gate.nap_start,gate.nap_end,current) else "rest")
+            if str(getattr(gate,"gate_mode","time_window") or "time_window")!="schedule":
+                current=now.strftime("%H:%M")
+                kind="sleep" if _time_in_window(gate.night_start,gate.night_end,current) else (
+                    "nap" if _time_in_window(gate.nap_start,gate.nap_end,current) else "rest")
+            else:
+                kind=kind or "rest"  # 按日程判断：不按时间窗推断，未细化时按普通休息展示
         return _SCHEDULE_KIND_ZH.get(kind,kind)
 
     @API(name="get_life_state",description="获取麦麦全局生活状态",version="1",public=True)
@@ -2018,6 +2022,100 @@ class MaiLifePlugin(MaiBotPlugin):
         if not self._ready:return []
         assert self._store and self._env
         return await self._store.get_framework(day or self._env.now().date().isoformat())
+
+    # ── 日程提供方协议（maibot.schedule v1，MaiTrace 等外部消费方）：统一信封返回，业务错误不抛异常 ──
+
+    def _schedule_tz(self)->Any:
+        """日程接口统一时区：读配置 IANA 名，解析失败回退 UTC+8（与 EnvironmentService 同款回退）。"""
+        try:
+            return ZoneInfo(str(self.config.environment.timezone or "Asia/Shanghai"))
+        except Exception:
+            return timezone(timedelta(hours=8))
+
+    def _schedule_tz_name(self)->str:
+        return str(self.config.environment.timezone or "Asia/Shanghai")
+
+    def _schedule_activity(self,node:dict[str,Any],day:str,tz:Any,scene:str="")->dict[str,Any]:
+        """节点 → maibot.schedule 活动结构：分钟换算当日时刻（配置时区 aware ISO），保留原始起止。"""
+        base=datetime.fromisoformat(day).replace(tzinfo=tz)
+        start=base+timedelta(minutes=int(node.get("start_minute") or 0))
+        end=base+timedelta(minutes=int(node.get("end_minute") or 0))
+        return {"id":str(node.get("id") or ""),"kind":str(node.get("kind") or ""),
+                "name":str(node.get("summary") or ""),"description":"",
+                "start_at":start.isoformat(),"end_at":end.isoformat(),
+                "location":str(node.get("location") or ""),"scene":scene}
+
+    @staticmethod
+    def _framework_revision(nodes:list[dict[str,Any]])->str:
+        """当日框架内容指纹：节点 id 序列哈希，内容不变则不变（节点 id 本身是内容哈希）。"""
+        if not nodes: return ""
+        return hashlib.sha1(":".join(str(n.get("id") or "") for n in nodes).encode("utf-8")).hexdigest()[:16]
+
+    @API(name="get_schedule_provider_info",description="日程提供方协议与能力声明",version="1",public=True)
+    async def api_schedule_provider_info(self,**kwargs:Any)->dict[str,Any]:
+        """maibot.schedule 协议入口：识别提供方、时区与支持的查询形态；不依赖服务就绪。"""
+        return {"success":True,"error":None,"data":{
+            "provider_id":"maibot-community.mai-life","protocol":"maibot.schedule",
+            "protocol_version":1,"api_version":"1","scope":"global",
+            "timezone":self._schedule_tz_name(),"capabilities":["snapshot","timeline"],
+            "max_query_hours":72}}
+
+    @API(name="get_schedule_snapshot",description="当前活动、场景与近期活动快照（只读，不生成日程）",version="1",public=True)
+    async def api_schedule_snapshot(self,future_limit:int=3,**kwargs:Any)->dict[str,Any]:
+        if not self._ready or not self._schedule or not self._env or not self._store:
+            return {"success":False,"error":"日程服务尚未初始化","data":None}
+        try:limit=max(0,min(20,int(future_limit)))
+        except (TypeError,ValueError):limit=3
+        now=self._env.now(); tz=self._schedule_tz(); day=now.strftime("%Y-%m-%d")
+        nodes=await self._store.get_framework(day); minute=now.hour*60+now.minute
+        current=next((n for n in nodes if int(n.get("start_minute") or 0)<=minute<int(n.get("end_minute") or 0)),None)
+        boundary=int(current.get("end_minute") or 0) if current else minute
+        upcoming=[n for n in nodes if int(n.get("start_minute") or 0)>=boundary][:limit]
+        wanted=([current] if current else [])+upcoming
+        scenes=(await self._store.get_scenes_by_framework_ids([str(n.get("id")) for n in wanted])) if wanted else {}
+        def scene_of(node:dict[str,Any])->str:
+            return str((scenes.get(str(node.get("id"))) or {}).get("scene") or "")
+        return {"success":True,"error":None,"data":{
+            "timezone":self._schedule_tz_name(),"as_of":now.isoformat(),
+            "revision":self._framework_revision(nodes),"schedule_available":bool(nodes),
+            "current":self._schedule_activity(current,day,tz,scene_of(current)) if current else None,
+            "next_activities":[self._schedule_activity(n,day,tz,scene_of(n)) for n in upcoming]}}
+
+    @API(name="get_schedule_timeline",description="按时间范围查询已保存的日程活动（只读，不生成、不模板补齐）",version="1",public=True)
+    async def api_schedule_timeline(self,start_at:str="",end_at:str="",**kwargs:Any)->dict[str,Any]:
+        if not self._ready or not self._store or not self._env:
+            return {"success":False,"error":"日程服务尚未初始化","data":None}
+        tz=self._schedule_tz()
+        def parse(value: Any)->Any:
+            try:parsed=datetime.fromisoformat(str(value or ""))
+            except (TypeError,ValueError):return None
+            if parsed.tzinfo is None:return parsed.replace(tzinfo=tz)
+            return parsed.astimezone(tz)
+        start=parse(start_at); end=parse(end_at)
+        if start is None or end is None:
+            return {"success":False,"error":"start_at/end_at 必须是 ISO 8601 时间","data":None}
+        if start>=end:
+            return {"success":False,"error":"start_at 必须早于 end_at","data":None}
+        if (end-start).total_seconds()>72*3600:
+            return {"success":False,"error":"查询跨度超过 max_query_hours=72 小时","data":None}
+        matched:list[tuple[str,dict[str,Any]]]=[]; missing:list[str]=[]
+        cursor=start.date(); last=(end-timedelta(microseconds=1)).date()
+        while cursor<=last:
+            day=cursor.isoformat(); nodes=await self._store.get_framework(day)
+            if not nodes:missing.append(day)
+            else:
+                base=datetime.fromisoformat(day).replace(tzinfo=tz)
+                for node in nodes:
+                    a_start=base+timedelta(minutes=int(node.get("start_minute") or 0))
+                    a_end=base+timedelta(minutes=int(node.get("end_minute") or 0))
+                    if a_start<end and a_end>start:matched.append((day,node))
+            cursor+=timedelta(days=1)
+        scenes=(await self._store.get_scenes_by_framework_ids([str(n.get("id")) for _,n in matched])) if matched else {}
+        activities=[self._schedule_activity(node,day,tz,str((scenes.get(str(node.get("id"))) or {}).get("scene") or ""))
+                    for day,node in matched]
+        activities.sort(key=lambda item:str(item.get("start_at") or ""))
+        return {"success":True,"error":None,"data":{
+            "timezone":self._schedule_tz_name(),"activities":activities,"missing_days":missing}}
 
     @API(name="get_user_relationship",description="获取指定用户关系状态",version="1",public=True)
     async def api_get_relationship(self,user_id:str="",**kwargs:Any)->dict[str,Any]:
@@ -2485,7 +2583,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                "continuity_enabled":_switch(cfg.context.continuity_enabled),
                                "continuity_interval_minutes":int(cfg.context.continuity_interval_minutes),
                                "prompt_max_chars":int(cfg.context.prompt_max_chars)},
-                    "rest_gate":{"enabled":_switch(gate.enabled),"mode":str(gate.mode),
+                    "rest_gate":{"enabled":_switch(gate.enabled),"mode":str(gate.mode),"gate_mode":str(gate.gate_mode),
                                  "wake_probability":round(float(gate.wake_probability),2),
                                  "llm_threshold":int(gate.llm_threshold),
                                  "awake_grace_minutes":int(gate.awake_grace_minutes),

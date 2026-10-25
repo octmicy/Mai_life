@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import tempfile
+import time
 import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ class ContractTests(unittest.TestCase):
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
         readme=(root/"README.md").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.23.4")
+        self.assertEqual(manifest["version"],"1.23.5")
         self.assertIn("playwright>=1.49,<2",requirements)
         self.assertIn("python -m playwright install chromium",readme)
         self.assertIn("Playwright/Bing",readme)
@@ -38,10 +39,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.23.4")
+        self.assertEqual(PLUGIN_VERSION,"1.23.5")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.23.4，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.23.5，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -415,7 +416,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         await self.store.sync_users([UserProfile(user_id="10001",role="owner",enabled=True),
                                      UserProfile(user_id="10002",role="friend",enabled=False)])
         await self.store.update_user_display_name("10001","主人")
-        await self.store.record_interaction("10001","今晚吃了火锅",self.now.timestamp(),20)
+        await self.store.record_interaction("10001","今晚吃了火锅",time.time(),20)
         data=await self.plugin.webui_users()
         self.assertEqual(set(data),{"counts","users"})
         self.assertEqual(set(data["counts"]),{"total","enabled","disabled","owners","proactive_enabled"})
@@ -497,7 +498,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data),{"plugin","users","models","environment","linkage","debounce","recall",
                                     "context","rest_gate","memory","information","news","search","search_api",
                                     "social","creation","schedule","proactive","usage"})
-        self.assertEqual(set(data["rest_gate"]),{"enabled","mode","wake_probability","llm_threshold",
+        self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
                                                  "awake_grace_minutes","silence_minutes","night_window",
                                                  "nap_window","group_enabled","group_mode",
                                                  "group_night_window","group_nap_window",

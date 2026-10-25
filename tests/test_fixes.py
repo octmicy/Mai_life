@@ -416,6 +416,199 @@ class V1234ScheduleToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"]); self.assertIn("失败",str(result["content"]))
 
 
+class V1235ScheduleProviderTests(unittest.IsolatedAsyncioTestCase):
+    """v1.23.5：maibot.schedule 协议三接口（信封化、只读、72h 时间线、不生成）。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self.plugin = await build_plugin(self.store, MaiLifeSettings(), now=self.now)
+        await self.store.replace_framework("2026-10-25", [
+            {"id": "a1", "day": "2026-10-25", "start_minute": 540, "end_minute": 660,
+             "kind": "study", "summary": "图书馆自习", "location": "图书馆",
+             "energy_load": 2, "shareability": 0.3},
+            {"id": "a2", "day": "2026-10-25", "start_minute": 660, "end_minute": 720,
+             "kind": "meal", "summary": "午饭", "location": "食堂",
+             "energy_load": 1, "shareability": 0.5},
+        ])
+        await self.store.replace_framework("2026-10-24", [
+            {"id": "b1", "day": "2026-10-24", "start_minute": 1320, "end_minute": 1440,
+             "kind": "sleep", "summary": "睡觉", "location": "卧室",
+             "energy_load": 8, "shareability": 0.05},
+        ])
+        await self.store.save_scene("a1", "坐在窗边整理今天的笔记", {}, [])
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_provider_info_declares_protocol_and_timezone(self):
+        result = await self.plugin.api_schedule_provider_info()
+        self.assertTrue(result["success"]); self.assertIsNone(result["error"])
+        data = result["data"]
+        self.assertEqual(data["provider_id"], "maibot-community.mai-life")
+        self.assertEqual(data["protocol"], "maibot.schedule")
+        self.assertEqual(data["protocol_version"], 1)
+        self.assertEqual(data["api_version"], "1")
+        self.assertEqual(data["scope"], "global")
+        self.assertEqual(data["timezone"], "Asia/Shanghai")
+        self.assertEqual(data["capabilities"], ["snapshot", "timeline"])
+        self.assertEqual(data["max_query_hours"], 72)
+        bare = MaiLifePlugin(); bare.set_plugin_config(MaiLifeSettings().model_dump(mode="python"))
+        self.assertTrue((await bare.api_schedule_provider_info())["success"])  # 声明类不依赖就绪
+
+    async def test_snapshot_maps_current_next_and_scene(self):
+        result = await self.plugin.api_schedule_snapshot(future_limit=5)
+        self.assertTrue(result["success"])
+        data = result["data"]
+        self.assertTrue(data["schedule_available"])
+        self.assertTrue(data["as_of"].startswith("2026-10-25T10:00:00+08:00"))
+        current = data["current"]
+        self.assertEqual(current["id"], "a1")  # 09:00-11:00 含 10:00
+        self.assertEqual(current["kind"], "study")
+        self.assertEqual(current["name"], "图书馆自习")
+        self.assertEqual(current["description"], "")
+        self.assertEqual(current["start_at"], "2026-10-25T09:00:00+08:00")
+        self.assertEqual(current["end_at"], "2026-10-25T11:00:00+08:00")
+        self.assertEqual(current["location"], "图书馆")
+        self.assertEqual(current["scene"], "坐在窗边整理今天的笔记")
+        self.assertEqual([item["id"] for item in data["next_activities"]], ["a2"])
+        self.assertEqual(data["next_activities"][0]["scene"], "")  # 未细化场景为空
+        self.assertTrue(data["revision"])
+
+    async def test_snapshot_empty_day_reports_unavailable(self):
+        await self.store.replace_framework("2026-10-25", [])
+        result = await self.plugin.api_schedule_snapshot()
+        data = result["data"]
+        self.assertFalse(data["schedule_available"])
+        self.assertIsNone(data["current"])
+        self.assertEqual(data["next_activities"], [])
+        self.assertEqual(data["revision"], "")
+
+    async def test_timeline_intersects_sorts_and_keeps_original_bounds(self):
+        result = await self.plugin.api_schedule_timeline(
+            "2026-10-24T00:00:00+08:00", "2026-10-26T00:00:00+08:00")
+        data = result["data"]
+        self.assertEqual([item["id"] for item in data["activities"]], ["b1", "a1", "a2"])
+        self.assertEqual(data["missing_days"], [])  # 两天都有框架；end 当日不遍历
+        b1 = data["activities"][0]
+        self.assertEqual(b1["start_at"], "2026-10-24T22:00:00+08:00")
+        self.assertEqual(b1["end_at"], "2026-10-25T00:00:00+08:00")  # 跨午夜保留原始起止
+        self.assertEqual(b1["scene"], "")  # 过去节点无场景
+
+    async def test_timeline_rejects_bad_range_without_generating(self):
+        bad = await self.plugin.api_schedule_timeline("not-a-time", "2026-10-26T00:00:00+08:00")
+        self.assertFalse(bad["success"]); self.assertIsNone(bad["data"])
+        wide = await self.plugin.api_schedule_timeline(
+            "2026-10-01T00:00:00+08:00", "2026-10-26T00:00:00+08:00")
+        self.assertFalse(wide["success"]); self.assertIn("72", wide["error"])
+        result = await self.plugin.api_schedule_timeline(
+            "2026-10-20T00:00:00+08:00", "2026-10-22T00:00:00+08:00")
+        self.assertEqual(result["data"]["missing_days"], ["2026-10-20", "2026-10-21"])
+        self.assertEqual(await self.store.get_framework("2026-10-21"), [])  # 查询不生成
+
+    async def test_not_ready_returns_error_envelope(self):
+        bare = MaiLifePlugin(); bare.set_plugin_config(MaiLifeSettings().model_dump(mode="python"))
+        snapshot = await bare.api_schedule_snapshot()
+        self.assertFalse(snapshot["success"]); self.assertIn("尚未初始化", snapshot["error"])
+        self.assertIsNone(snapshot["data"])
+        timeline = await bare.api_schedule_timeline(
+            "2026-10-25T00:00:00+08:00", "2026-10-26T00:00:00+08:00")
+        self.assertFalse(timeline["success"]); self.assertIsNone(timeline["data"])
+
+
+class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
+    """v1.23.5：闸门生效方式（按设定时间/按日程判断）——私聊、群聊、睡前流程与群观察。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+        self.config.rest_gate.wake_probability = 0.0
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    def _gate(self) -> RestGate:
+        return RestGate(self.store, self.config, DummyLLM(), DummyStateEngine(), DummyLogger())
+
+    async def test_default_mode_is_time_window(self):
+        self.assertEqual(self.config.rest_gate.gate_mode, "time_window")
+
+    async def test_schedule_mode_gates_on_segment_ignoring_windows(self):
+        self.config.rest_gate.gate_mode = "schedule"
+        gate = self._gate()
+        # 15:00 睡眠段：在时间窗外，但按日程判断段型命中即拦
+        allowed, reason = await gate.decide("1", "在吗", datetime(2026, 10, 25, 15, 0, tzinfo=TZ), {"kind": "sleep"})
+        self.assertFalse(allowed); self.assertEqual(reason, "probability:0.00")
+        # 23:00 在默认夜窗内，但段型 leisure 不在列表 → 放行：日程模式忽略时间窗
+        allowed, reason = await gate.decide("1", "在吗", datetime(2026, 10, 25, 23, 0, tzinfo=TZ), {"kind": "leisure"})
+        self.assertTrue(allowed); self.assertEqual(reason, "outside_gate_window")
+
+    async def test_schedule_mode_group_gate_follows_segment(self):
+        self.config.rest_gate.gate_mode = "schedule"
+        self.config.rest_gate.group_enabled = True
+        gate = self._gate()
+        allowed, _ = gate.decide_group("在吗", datetime(2026, 10, 25, 15, 0, tzinfo=TZ), "100", {"kind": "sleep"})
+        self.assertFalse(allowed)
+        allowed, reason = gate.decide_group("在吗", datetime(2026, 10, 25, 23, 0, tzinfo=TZ), "100", {"kind": "leisure"})
+        self.assertTrue(allowed); self.assertEqual(reason, "outside_group_window")
+
+    async def _bedtime(self):
+        env = EnvironmentService(self.store, self.config, DummyLogger())
+        state = LifeStateEngine(self.store, self.config, DummyLLM(), DummyLogger())
+        manager = BedtimeManager(DummyCtx(), self.store, self.config, env, state, DummyLogger())
+        return manager, state
+
+    async def test_schedule_mode_bedtime_follows_sleep_segment(self):
+        self.config.rest_gate.gate_mode = "schedule"
+        await self.store.replace_framework("2026-10-25", [
+            {"id": "s1", "day": "2026-10-25", "start_minute": 840, "end_minute": 960,
+             "kind": "sleep", "summary": "午睡", "location": "卧室",
+             "energy_load": 5, "shareability": 0.05},
+            {"id": "s2", "day": "2026-10-25", "start_minute": 960, "end_minute": 1200,
+             "kind": "leisure", "summary": "下午自由", "location": "家里",
+             "energy_load": 2, "shareability": 0.5},
+        ])
+        manager, _ = await self._bedtime()
+        now = datetime(2026, 10, 25, 14, 30, tzinfo=TZ)  # 睡眠段 14:00-16:00 内
+        await manager.tick(now)
+        runtime = await self.store.get_sleep_runtime()
+        self.assertEqual(float(runtime.get("sleep_defer_until") or 0),
+                         datetime(2026, 10, 25, 14, 0, tzinfo=TZ).timestamp())  # 下限=段开始
+        self.assertTrue(manager.approaching(now))  # 默认夜窗 22:30 才开始，但日程段已生效
+        later = datetime(2026, 10, 25, 17, 0, tzinfo=TZ)  # leisure 段：时间窗被忽略
+        await manager.tick(later)
+        runtime = await self.store.get_sleep_runtime()
+        self.assertEqual(float(runtime.get("sleep_defer_until") or 0), 0.0)
+        self.assertFalse(manager.approaching(later))
+
+    async def test_schedule_mode_resleep_inside_sleep_segment(self):
+        from Mai_life.social.group_observer import GroupObserver
+        self.config.rest_gate.gate_mode = "schedule"
+        await self.store.replace_framework("2026-10-25", [
+            {"id": "s1", "day": "2026-10-25", "start_minute": 840, "end_minute": 960,
+             "kind": "sleep", "summary": "午睡", "location": "卧室",
+             "energy_load": 5, "shareability": 0.05},
+        ])
+        manager, state = await self._bedtime()
+        now = datetime(2026, 10, 25, 14, 30, tzinfo=TZ)
+        await state.mark_woken(now, "test")
+        runtime = await self.store.get_sleep_runtime()
+        runtime["awake_grace_until"] = now.timestamp() - 1  # 宽限已过
+        await self.store.save_sleep_runtime(runtime)
+        await manager.tick(now)
+        runtime = await self.store.get_sleep_runtime()
+        self.assertEqual(runtime["phase"], "falling_asleep")  # 睡眠段内重新入睡
+        self.assertEqual(runtime["last_event"], "叫醒后重新入睡")
+        # 群观察静音跟随：15:10 睡眠段内静音；23:00（群夜窗内）无段命中不静音
+        self.config.rest_gate.group_enabled = True
+        observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
+        self.assertTrue(await observer._group_quiet_now(datetime(2026, 10, 25, 15, 10, tzinfo=TZ)))
+        self.assertFalse(await observer._group_quiet_now(datetime(2026, 10, 25, 23, 0, tzinfo=TZ)))
+
+
 class SettleWarningTests(unittest.IsolatedAsyncioTestCase):
     """F2：重复发送确认应记 info（已结算过），只有真未命中才记 warning。"""
 
@@ -1158,9 +1351,13 @@ class GateTimeWindowTests(unittest.IsolatedAsyncioTestCase):
         allowed, reason = await self.gate.decide(
             "1", "普通消息", datetime(2026, 9, 21, 10, 0, tzinfo=TZ), {"kind": "sleep"})
         self.assertTrue(allowed); self.assertEqual(reason, "outside_gate_window")
-        # 夜窗起止相同（停用）时才回退日程类型兜底。
+        # v1.23.5：起止相同=停用该窗，按设定时间模式不拦；按日程判断后 sleep 段拦。
         self.config.rest_gate.night_start = "10:00"
         self.config.rest_gate.night_end = "10:00"
+        allowed, reason = await self.gate.decide(
+            "1", "普通消息", datetime(2026, 9, 21, 10, 0, tzinfo=TZ), {"kind": "sleep"})
+        self.assertTrue(allowed); self.assertEqual(reason, "outside_gate_window")
+        self.config.rest_gate.gate_mode = "schedule"
         allowed, reason = await self.gate.decide(
             "1", "普通消息", datetime(2026, 9, 21, 10, 0, tzinfo=TZ), {"kind": "sleep"})
         self.assertFalse(allowed); self.assertEqual(reason, "probability:0.00")
@@ -1747,6 +1944,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """无对应时间窗的类型（rest）列出后任意时间生效（v1.23.3 时间窗优先后保持不变）。"""
         config = make_group_config(group_gate=True)
         config.rest_gate.group_gate_segment_types = ["sleep", "nap", "rest"]
+        config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("下午好呀", DAYTIME, "100", {"kind": "rest"})
         self.assertFalse(allowed)
@@ -1769,6 +1967,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """日程类型命中时，强制唤醒词仍然放行（与时间窗内行为一致）。"""
         config = make_group_config(group_gate=True)
         config.rest_gate.group_gate_segment_types = ["sleep", "nap", "rest"]
+        config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("出事了救命啊", DAYTIME, "100", {"kind": "rest"})
         self.assertTrue(allowed)
@@ -1778,6 +1977,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """配置改成 study 后，rest 段不再闸群、study 段才闸。"""
         config = make_group_config(group_gate=True)
         config.rest_gate.group_gate_segment_types = ["study"]
+        config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, _ = gate.decide_group("在吗", DAYTIME, "100", {"kind": "rest"})
         self.assertTrue(allowed)
@@ -3808,7 +4008,7 @@ class V11412WebuiUsersTests(unittest.IsolatedAsyncioTestCase):
             UserProfile(user_id="3", initial_temperature=10, enabled=False)])
         await self.store.update_user_display_name("1", "主人甲")
         await self.store.record_interaction("1", "最近一条互动" + "很" * 200,
-                                            self.now.timestamp(), 15)
+                                            time.time(), 15)
         # 直接补运行态列：互动时间/主动时间/主动计数/关系结算日/小数温度。
         self.store.conn.execute(
             "UPDATE users SET last_user_message_at=?,last_proactive_at=?,proactive_count=?,"
@@ -4193,7 +4393,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
                                                 "continuity_interval_minutes", "prompt_max_chars"})
         self.assertEqual(data["context"]["enabled"], "开启")
         # 休息闸门：窗口串由起止时刻拼接，静默时长取 bedtime 常量。
-        self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "wake_probability",
+        self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
                                                   "llm_threshold", "awake_grace_minutes",
                                                   "silence_minutes", "night_window", "nap_window",
                                                   "group_enabled", "group_mode",
@@ -5022,6 +5222,7 @@ class V11412GateSegmentTypeTests(unittest.IsolatedAsyncioTestCase):
     async def test_listed_segment_type_gates_outside_windows(self):
         """rest 进入生效列表后，15:00 的普通休息段也拦消息（修复前窗外一律放行）。"""
         self.config.rest_gate.gate_segment_types = ["sleep", "nap", "rest"]
+        self.config.rest_gate.gate_mode = "schedule"
         allowed, reason = await self._gate().decide(
             "1", "在吗", datetime(2026, 9, 21, 15, 0, tzinfo=TZ), {"kind": "rest"})
         self.assertFalse(allowed); self.assertEqual(reason, "probability:0.00")
@@ -5047,23 +5248,33 @@ class V11412GateSegmentTypeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "outside_gate_window")
 
-    async def test_sleep_segment_falls_back_when_night_window_unset(self):
-        """夜窗起止相同（主动停用）时回退日程类型兜底：睡眠段仍拦消息。"""
+    async def test_sleep_segment_gates_only_in_schedule_mode(self):
+        """v1.23.5：停用夜窗后按设定时间模式不拦；按日程判断模式下睡眠段任意时间拦。"""
         self.config.rest_gate.night_start = "00:00"
         self.config.rest_gate.night_end = "00:00"
+        allowed, reason = await self._gate().decide(
+            "1", "在吗", datetime(2026, 9, 21, 22, 30, tzinfo=TZ), {"kind": "sleep"})
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "outside_gate_window")
+        self.config.rest_gate.gate_mode = "schedule"
         allowed, reason = await self._gate().decide(
             "1", "在吗", datetime(2026, 9, 21, 22, 30, tzinfo=TZ), {"kind": "sleep"})
         self.assertFalse(allowed)
         self.assertEqual(reason, "probability:0.00")
 
     async def test_nap_segment_respects_configured_nap_window(self):
-        """午休窗配了起止时间后窗外 nap 段不拦；起止相同才回退兜底（与夜窗同构）。"""
+        """午休窗窗外 nap 段不拦（按设定时间，起止相同也不拦）；按日程判断模式才拦（与夜窗同构）。"""
         allowed, reason = await self._gate().decide(
             "1", "在吗", datetime(2026, 9, 21, 15, 0, tzinfo=TZ), {"kind": "nap"})
         self.assertTrue(allowed)
         self.assertEqual(reason, "outside_gate_window")
         self.config.rest_gate.nap_start = "15:00"
         self.config.rest_gate.nap_end = "15:00"
+        allowed, reason = await self._gate().decide(
+            "1", "在吗", datetime(2026, 9, 21, 15, 0, tzinfo=TZ), {"kind": "nap"})
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "outside_gate_window")
+        self.config.rest_gate.gate_mode = "schedule"
         allowed, reason = await self._gate().decide(
             "1", "在吗", datetime(2026, 9, 21, 15, 0, tzinfo=TZ), {"kind": "nap"})
         self.assertFalse(allowed)
@@ -5088,6 +5299,7 @@ class V11412GateSegmentTypeTests(unittest.IsolatedAsyncioTestCase):
         self.config.rest_gate.mode = "llm"
         self.config.rest_gate.llm_threshold = 99
         self.config.rest_gate.gate_segment_types = ["rest"]
+        self.config.rest_gate.gate_mode = "schedule"
         llm = RecordingLLM()
         gate = RestGate(self.store, self.config, llm, DummyStateEngine(), DummyLogger())
         allowed, reason = await gate.decide(

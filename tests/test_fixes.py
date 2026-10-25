@@ -713,6 +713,51 @@ class V1236PayloadCacheTests(unittest.TestCase):
         self.assertEqual(MaiLifeSettings().context.background_cache_minutes, 5)
 
 
+class V1237RetryTurnLockTests(unittest.IsolatedAsyncioTestCase):
+    """v1.23.7：Host 重试（retry_count>0）释放旧轮次锁，emoji 解析失败不再循环拦截。
+    retry_count=0 的同 anchor 重试仍然拦（防真重复）。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = False
+        from Mai_life.config import UserProfile
+        await self.store.sync_users([UserProfile(user_id="10001",role="owner",enabled=True)])
+        await self.store.set_user_stream("10001","s1")
+        self.plugin = await build_plugin(self.store, self.config)
+        self.plugin._set_context(DummyCtx())
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _fire(self, session, anchor, retry_count=0):
+        kwargs = {"session_id": session, "reply_message_id": anchor,
+                  "response": "好啦，原来是逗我玩的呀", "retry_count": retry_count,
+                  "max_retries": 3}
+        result = await self.plugin.on_replyer_after(**kwargs)
+        modified = result.get("modified_kwargs", result)
+        suppressed = modified.get("response", "有内容") == ""
+        return suppressed
+
+    async def test_first_reply_not_suppressed(self):
+        self.assertFalse(await self._fire("s1", "m1"))
+
+    async def test_same_anchor_zero_retry_suppressed(self):
+        await self._fire("s1", "m1", retry_count=0)
+        self.assertTrue(await self._fire("s1", "m1", retry_count=0))
+
+    async def test_retry_count_releases_lock(self):
+        await self._fire("s1", "m1", retry_count=0)     # 第一轮：锁预留
+        self.assertFalse(await self._fire("s1", "m1", retry_count=1))  # Host 重试：旧锁释放，新锁预留
+        # 重试后新锁在：再同 anchor 无 retry 仍拦
+        self.assertTrue(await self._fire("s1", "m1", retry_count=0))
+
+    async def test_different_anchor_not_affected(self):
+        await self._fire("s1", "m1")
+        self.assertFalse(await self._fire("s1", "m2"))  # 不同 anchor 不受影响
+
+
 class SettleWarningTests(unittest.IsolatedAsyncioTestCase):
     """F2：重复发送确认应记 info（已结算过），只有真未命中才记 warning。"""
 

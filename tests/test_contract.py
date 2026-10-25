@@ -30,7 +30,7 @@ class ContractTests(unittest.TestCase):
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
         readme=(root/"README.md").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.23.5")
+        self.assertEqual(manifest["version"],"1.23.7")
         self.assertIn("playwright>=1.49,<2",requirements)
         self.assertIn("python -m playwright install chromium",readme)
         self.assertIn("Playwright/Bing",readme)
@@ -39,10 +39,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.23.5")
+        self.assertEqual(PLUGIN_VERSION,"1.23.7")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.23.5，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.23.7，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):

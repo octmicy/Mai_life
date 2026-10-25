@@ -1,4 +1,4 @@
-"""Mai_life v1.23.5 插件入口。"""
+"""Mai_life v1.23.7 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -1488,6 +1488,17 @@ class MaiLifePlugin(MaiBotPlugin):
             turn_reserved=await self._store.reserve_reply_turn(
                 turn_scope,turn_anchor,time.time(),time.time()+int(self.config.debounce.turn_expire_seconds),
             )
+            if not turn_reserved:
+                # Host 主动重试（retry_count>0）意味着上一轮发送/解析失败：释放旧锁让重试通过，
+                # 否则 emoji 解析失败等 Host 层错误会触发 duplicate_turn 循环拦截约两分钟。
+                retry_count=int(kwargs.get("retry_count") or 0)
+                if retry_count>0:
+                    await self._store.release_reply_turn(turn_scope,turn_anchor)
+                    turn_reserved=await self._store.reserve_reply_turn(
+                        turn_scope,turn_anchor,time.time(),time.time()+int(self.config.debounce.turn_expire_seconds),
+                    )
+                    self._get_logger().info(
+                        f"[MaiLife] 重试轮释放旧轮次锁 session={session} anchor={turn_anchor} retry={retry_count}")
             if not turn_reserved:
                 self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=duplicate_turn session={session} anchor={turn_anchor}")
                 return self._suppress_response(kwargs,"duplicate_turn")

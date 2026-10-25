@@ -105,7 +105,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_browse_web_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.23.5")
+        self.assertEqual(manifest["version"],"1.23.7")
         # v1.23.0 移除 Pillow 生图链后，send.image 唯一消费者是 mai_life_browse_web 网页截图。
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])

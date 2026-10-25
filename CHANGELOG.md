@@ -4,7 +4,7 @@
 
 ### 新增
 
-- **日程提供方三接口（maibot.schedule 协议 v1，供 MaiTrace 等外部消费方）**：`get_schedule_provider_info`（协议/时区/能力声明）、`get_schedule_snapshot`（当前活动+场景+近期活动快照，只读不生成）、`get_schedule_timeline`（≤72h 时间线，纯读不模板补齐、空日记入 `missing_days`）。统一 `{success,error,data}` 信封、业务错误不抛异常；活动 id 透出节点内容哈希，跨天稳定。设计文档 `docs/_plan_schedule_provider.md`。
+- **日程提供方三接口（maibot.schedule 协议 v1，供 MaiTrace 等外部消费方）**：`get_schedule_provider_info`（协议/时区/能力声明）、`get_schedule_snapshot`（当前活动+场景+近期活动快照，只读不生成）、`get_schedule_timeline`（≤72h 时间线，纯读不模板补齐、空日记入 `missing_days`）。统一 `{success,error,data}` 信封、业务错误不抛异常；活动 id 透出节点内容哈希，跨天稳定。设计文档 `docs/_plan_schedule_provider.md`，面向外部接入方的接口文档 `docs/schedule-provider-api.md`。
 - **闸门生效方式 `gate_mode`（按设定时间/按日程判断，私聊群聊共用）**：`time_window`（默认）=只认夜/午休时间窗；`schedule`=日程进入 `gate_segment_types` 所列段型即生效（任意时间，跟着日程作息走），晚安/入睡推迟跟随日程睡眠段、群观察静音按段型、被叫醒后回睡看当前段型。v1.23.3 的“窗口起止相同回退日程类型”兜底移除，由显式模式取代。
 
 ### 修复

@@ -11,7 +11,7 @@ from unittest.mock import PropertyMock,patch
 from Mai_life.config import MaiLifeSettings,SocialGroupProfile,UserProfile
 from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
 from Mai_life.messaging.adapter_compat import adapter_name,recall_notice
-from Mai_life.messaging.message_pipeline import MessageDebouncer,direct_text
+from Mai_life.messaging.message_pipeline import direct_text
 from Mai_life.messaging.recall_service import RecallService
 from Mai_life.plugin import MaiLifePlugin
 from Mai_life.social.group_observer import GroupObserver
@@ -113,30 +113,6 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         columns={row[1] for row in self.store.conn.execute("PRAGMA table_info(recall_events)")}
         self.assertIn("summary_expires_at",columns)
 
-    async def test_recall_removes_only_item_from_waiting_burst(self):
-        object.__setattr__(self.config.debounce,"text_wait_seconds",0.05)
-        debouncer=MessageDebouncer(self.config,DummyLogger())
-        pending=asyncio.create_task(debouncer.collect(private_message("m1")))
-        await asyncio.sleep(0.01)
-        removed=await debouncer.recall("private-1","m1")
-        allowed,_message,reason=await pending
-        self.assertEqual(removed["message_id"],"m1")
-        self.assertFalse(allowed); self.assertEqual(reason,"superseded")
-
-    async def test_recall_one_merged_item_keeps_remaining_message(self):
-        object.__setattr__(self.config.debounce,"text_wait_seconds",0.05)
-        debouncer=MessageDebouncer(self.config,DummyLogger())
-        first=asyncio.create_task(debouncer.collect(private_message("m1","第一句")))
-        await asyncio.sleep(0.005)
-        second=asyncio.create_task(debouncer.collect(private_message("m2","第二句")))
-        await asyncio.sleep(0.005)
-        await debouncer.recall("private-1","m1")
-        old_result,new_result=await asyncio.gather(first,second)
-        self.assertFalse(old_result[0]); self.assertTrue(new_result[0])
-        self.assertEqual(direct_text(new_result[1]),"第二句")
-        additional=new_result[1]["message_info"]["additional_config"]
-        self.assertEqual(additional["mai_life_merged_message_ids"],["m2"])
-
     async def test_summary_default_off_and_enabled_cache_is_private_to_sender(self):
         service=RecallService(self.ctx,self.store,self.config,DummyLogger())
         service.note_inbound(private_message("m1","不会保存",with_binary=True))
@@ -234,7 +210,6 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         plugin=MaiLifePlugin(); plugin._set_context(self.ctx)
         plugin.set_plugin_config(self.config.model_dump(mode="python")); plugin._store=self.store
         plugin._recall=RecallService(self.ctx,self.store,plugin.config,DummyLogger())
-        plugin._debouncer=MessageDebouncer(plugin.config,DummyLogger())
         with patch.object(MaiLifePlugin,"_ready",new_callable=PropertyMock,return_value=True):
             private=await plugin.on_receive(message=recall_message("napcat","m1"))
             group=await plugin.on_receive(message=recall_message("snowluma","g1",group_id="100"))

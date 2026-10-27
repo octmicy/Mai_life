@@ -39,7 +39,7 @@ class RecallService:
     def _retention_seconds(self)->int:
         return max(
             int(self.config.recall.summary_ttl_minutes)*60,
-            int(self.config.debounce.turn_expire_seconds)+120,
+            int(self.config.context.turn_expire_seconds)+120,
             600,
         )
 

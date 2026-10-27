@@ -63,10 +63,10 @@ class GroupObserver:
         与群闸门共用「闸门生效方式」：按日程判断=当前段型命中群列表即静音；
         按设定时间=群夜间/午休窗内静音。
         """
-        cfg=getattr(self.config,"rest_gate",None)
-        if cfg is None or not getattr(cfg,"group_enabled",False):return False
-        if str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule":
-            kinds=set(getattr(cfg,"group_gate_segment_types",None) or [])
+        cfg=getattr(self.config,"group",None)
+        if cfg is None or not getattr(cfg,"gate_enabled",False):return False
+        if str(getattr(self.config.rest_gate,"gate_mode","time_window") or "time_window")=="schedule":
+            kinds=set(getattr(cfg,"gate_segment_types",None) or [])
             if not kinds:return False
             nodes=await self.store.get_framework(now.strftime("%Y-%m-%d"))
             minute=now.hour*60+now.minute
@@ -75,8 +75,8 @@ class GroupObserver:
                     return str(node.get("kind") or "") in kinds
             return False
         current=now.strftime("%H:%M")
-        start=str(getattr(cfg,"group_night_start","22:30")); end=str(getattr(cfg,"group_night_end","08:00"))
-        nap_start=str(getattr(cfg,"group_nap_start","12:00")); nap_end=str(getattr(cfg,"group_nap_end","14:30"))
+        start=str(getattr(cfg,"night_start","22:30")); end=str(getattr(cfg,"night_end","08:00"))
+        nap_start=str(getattr(cfg,"nap_start","12:00")); nap_end=str(getattr(cfg,"nap_end","14:30"))
         def in_window(a:str,b:str)->bool:
             if a==b:return False
             return a<=current<b if a<b else current>=a or current<b

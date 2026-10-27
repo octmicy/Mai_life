@@ -13,7 +13,7 @@ from Mai_life.core.storage import LifeStore
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.rest_gate import RestGate
 from Mai_life.messaging.adapter_compat import adapter_name,reply_target_ids
-from Mai_life.messaging.message_pipeline import MessageDebouncer,direct_text,is_command,media_types,plain_text
+from Mai_life.messaging.message_pipeline import direct_text,is_command,media_types,plain_text
 from Mai_life.plugin import MaiLifePlugin
 
 
@@ -64,14 +64,6 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         await self.store.set_proactive_task_id(event_id,task_id)
         return now
 
-    def test_adapter_image_placeholders_use_single_image_wait(self):
-        config=MaiLifeSettings(); debouncer=MessageDebouncer(config,DummyLogger())
-        for marker in ({"napcat_message_type":"private"},{"snowluma_message_type":"private"}):
-            message={"processed_plain_text":"[image]","message_info":{"additional_config":marker},
-                     "raw_message":[{"type":"image","binary_data_base64":"AA=="}]}
-            self.assertEqual(plain_text(message),"")
-            self.assertEqual(debouncer._quiet_wait([message]),config.debounce.image_wait_seconds)
-
     def test_forwarded_text_is_not_trusted_as_direct_control_text(self):
         message={"processed_plain_text":"【合并转发消息】/麦麦状态 醒醒救命",
                  "raw_message":[{"type":"forward","data":[{"content":[
@@ -102,7 +94,7 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["modified_kwargs"]["response"],"")
 
     async def test_group_turn_guard_uses_physical_group_and_sender_scope(self):
-        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        config=MaiLifeSettings(); config.group.turn_enabled=True
         plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
         now=time.time(); plugin._group_turns={
             ("focus","g1"):{"turn_scope":"group:qq:100:1","message_id":"g1","source_message_ids":["g1"],"updated_at":now},
@@ -119,7 +111,7 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(first_confirmation.get("cancelled")))
 
     async def test_focus_shared_group_turn_never_injects_private_context(self):
-        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        config=MaiLifeSettings(); config.group.turn_enabled=True
         await self.store.sync_users([UserProfile(user_id="10001",role="owner")])
         await self.store.set_user_stream("10001","focus")
         plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
@@ -131,7 +123,7 @@ class MessageExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(planner,{"action":"continue"}); self.assertEqual(replyer,{"action":"continue"})
 
     async def test_new_group_message_only_cancels_older_same_sender_turn(self):
-        config=MaiLifeSettings(); config.debounce.group_enabled=True
+        config=MaiLifeSettings(); config.group.turn_enabled=True
         plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
         now=time.time(); plugin._group_turns={
             ("focus","old"):{"turn_scope":"group:qq:100:1","message_id":"old","generation":1,"updated_at":now},

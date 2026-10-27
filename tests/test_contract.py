@@ -30,7 +30,7 @@ class ContractTests(unittest.TestCase):
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
         readme=(root/"README.md").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.23.7")
+        self.assertEqual(manifest["version"],"1.24.0")
         self.assertIn("playwright>=1.49,<2",requirements)
         self.assertIn("python -m playwright install chromium",readme)
         self.assertIn("Playwright/Bing",readme)
@@ -39,10 +39,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.23.7")
+        self.assertEqual(PLUGIN_VERSION,"1.24.0")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.23.7，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.24.0，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -56,14 +56,14 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         # 仓库只提交模板 config.toml.example；实际 config.toml 由 Runner 生成且不入库。
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml.example").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.11.0")
+        self.assertEqual(config.plugin.config_version,"1.12.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
-        self.assertTrue(config.debounce.enabled)
-        self.assertEqual(config.debounce.merge_separator,"\n")
-        self.assertTrue(config.debounce.ignore_empty_message)
-        self.assertTrue(config.debounce.log_detail)
+        self.assertTrue(config.context.outbound_turn_guard)
+        self.assertEqual(config.context.turn_expire_seconds,120)
+        self.assertFalse(config.group.gate_enabled)
+        self.assertTrue(config.group.turn_enabled)
         self.assertTrue(config.recall.enabled)
         self.assertFalse(config.recall.cache_summary_enabled)
         self.assertTrue(config.search_api.tool_enabled)
@@ -73,7 +73,6 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(config.memory.date_model_analysis_enabled)
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
         self.assertEqual(len(config.search_api.providers),1); self.assertEqual(config.search_api.providers[0].provider_type,"playwright")
-        self.assertFalse(config.debounce.group_enabled)
         self.assertFalse(config.social.enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
         self.assertFalse(config.creation.enabled); self.assertFalse(config.creation.plaintext_storage_acknowledged)
@@ -167,8 +166,8 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.11.0")
-        self.assertTrue(config.debounce.enabled)
+        self.assertEqual(config.plugin.config_version,"1.12.0")
+        self.assertTrue(config.context.outbound_turn_guard)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):
         config=MaiLifeSettings.model_validate({"users":{"profiles":[
@@ -495,19 +494,18 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_webui_config_summary_has_every_section_and_no_keys(self):
         data=await self.plugin.webui_config_summary()
-        self.assertEqual(set(data),{"plugin","users","models","environment","linkage","debounce","recall",
+        self.assertEqual(set(data),{"plugin","users","models","environment","linkage","recall",
                                     "context","rest_gate","memory","information","news","search","search_api",
                                     "social","creation","schedule","proactive","usage"})
         self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
                                                  "awake_grace_minutes","silence_minutes","night_window",
-                                                 "nap_window","group_enabled","group_mode",
+                                                 "nap_window","gate_enabled","gate_scope",
                                                  "group_night_window","group_nap_window",
                                                  "group_segment_types"})
         self.assertEqual(set(data["search_api"]),{"tool_enabled","history_enabled","history_retention_days",
                                                   "timeout_seconds","max_attempts","max_results","provider_count"})
         # 布尔一律翻成「开启/关闭」，不出现裸布尔；数值型参数与 version 不参与该检查。
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
-                       "debounce":{"private","group"},
                        "recall":{"enabled","cache_summary"},
                        "context":{"enabled","continuity_enabled"},
                        "memory":{"enabled","dream_fragments_enabled","diary_enabled",

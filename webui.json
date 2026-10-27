@@ -2800,32 +2800,6 @@
                           }
                         }
                       ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "私聊收口",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "debounce.private"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "群聊收口",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "debounce.group"
-                          }
-                        }
-                      ]
                     }
                   ]
                 }
@@ -2939,7 +2913,7 @@
                           "type": "text",
                           "value": {
                             "source": "config",
-                            "field": "rest_gate.group_enabled"
+                            "field": "rest_gate.gate_enabled"
                           }
                         }
                       ]
@@ -2952,7 +2926,7 @@
                           "type": "text",
                           "value": {
                             "source": "config",
-                            "field": "rest_gate.group_mode"
+                            "field": "rest_gate.gate_scope"
                           }
                         }
                       ]

@@ -115,7 +115,6 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     from Mai_life.life.rest_gate import RestGate
     from Mai_life.life.schedule_service import ScheduleService
     from Mai_life.management.admin_service import AdminService
-    from Mai_life.messaging.message_pipeline import MessageDebouncer
     from Mai_life.messaging.recall_service import RecallService
     from Mai_life.plugin import MaiLifePlugin
     from Mai_life.social.group_observer import GroupObserver
@@ -142,7 +141,6 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     plugin._schedule = ScheduleService(store, config, llm, plugin_dir, logger)
     plugin._rest = RestGate(store, config, llm, plugin._state, logger)
     plugin._proactive = ProactiveEngine(ctx, store, config, plugin._env, logger)
-    plugin._debouncer = MessageDebouncer(config, logger)
     plugin._recall = RecallService(ctx, store, config, logger)
     plugin._continuity = ContinuityService(store, config, llm, logger)
     plugin._memory = MemoryService(store, config, llm, logger)
@@ -174,8 +172,8 @@ def make_group_config(*, group_gate: bool, group_ids: tuple[str, ...] = ("100",)
     from Mai_life.config import SocialGroupProfile
 
     config = MaiLifeSettings()
-    config.rest_gate.group_enabled = group_gate
-    config.rest_gate.group_mode = group_mode
+    config.group.gate_enabled = group_gate
+    config.group.gate_scope = group_mode
     config.social.enabled = True
     config.social.groups = [
         SocialGroupProfile(group_id=gid, enabled=True, observe_enabled=True,

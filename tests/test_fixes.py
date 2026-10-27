@@ -42,7 +42,6 @@ from Mai_life.life.rest_gate import BLOCK_REASON, RestGate
 from Mai_life.life.schedule_service import ScheduleService
 from Mai_life.management.admin_service import AdminService
 from Mai_life.messaging.adapter_compat import recall_notice
-from Mai_life.messaging.message_pipeline import MessageDebouncer
 from Mai_life.messaging.prompt_builder import PromptBuilder
 from Mai_life.messaging.recall_service import RecallService
 from Mai_life.messaging.task_context import (
@@ -548,7 +547,7 @@ class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schedule_mode_group_gate_follows_segment(self):
         self.config.rest_gate.gate_mode = "schedule"
-        self.config.rest_gate.group_enabled = True
+        self.config.group.gate_enabled = True
         gate = self._gate()
         allowed, _ = gate.decide_group("在吗", datetime(2026, 10, 25, 15, 0, tzinfo=TZ), "100", {"kind": "sleep"})
         self.assertFalse(allowed)
@@ -603,7 +602,7 @@ class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime["phase"], "falling_asleep")  # 睡眠段内重新入睡
         self.assertEqual(runtime["last_event"], "叫醒后重新入睡")
         # 群观察静音跟随：15:10 睡眠段内静音；23:00（群夜窗内）无段命中不静音
-        self.config.rest_gate.group_enabled = True
+        self.config.group.gate_enabled = True
         observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
         self.assertTrue(await observer._group_quiet_now(datetime(2026, 10, 25, 15, 10, tzinfo=TZ)))
         self.assertFalse(await observer._group_quiet_now(datetime(2026, 10, 25, 23, 0, tzinfo=TZ)))
@@ -1568,39 +1567,6 @@ class ForceWakeGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed); self.assertEqual(reason, "明确叫醒、紧急或安全需要")
 
 
-class ForceWakeDebounceTests(unittest.IsolatedAsyncioTestCase):
-    """P2-9：强制唤醒词在防抖入口单独立即结算，不与后续消息合并。"""
-
-    @staticmethod
-    def _message(mid: str, text: str):
-        return {"message_id": mid, "session_id": "s1", "platform": "qq",
-                "processed_plain_text": text,
-                "message_info": {"user_info": {"user_id": "1", "user_nickname": "u"},
-                                 "group_info": None, "additional_config": {}},
-                "raw_message": [{"type": "text", "data": text}],
-                "is_command": False, "is_notify": False}
-
-    async def test_force_term_settles_immediately(self):
-        config = MaiLifeSettings()
-        config.debounce.text_wait_seconds = 3.0
-        config.debounce.max_wait_seconds = 5.0
-        service = MessageDebouncer(config, DummyLogger())
-        allowed, merged, reason = await asyncio.wait_for(
-            service.collect(self._message("m1", "救命，出事了")), 0.5)
-        self.assertTrue(allowed)
-        self.assertEqual(reason, "merged:1")
-        self.assertIn("救命", merged["processed_plain_text"])
-
-    async def test_plain_message_waits_for_debounce_window(self):
-        config = MaiLifeSettings()
-        config.debounce.text_wait_seconds = 3.0
-        config.debounce.max_wait_seconds = 5.0
-        service = MessageDebouncer(config, DummyLogger())
-        with self.assertRaises(asyncio.TimeoutError):
-            await asyncio.wait_for(service.collect(self._message("m2", "在吗")), 0.2)
-        await service.close()
-
-
 class GroupPrivateSwitchTests(unittest.IsolatedAsyncioTestCase):
     """P2-5：群转私对主人是全局开关 AND 档案开关；朋友只看档案开关。"""
 
@@ -1679,71 +1645,6 @@ class GroupMergedSourceTests(unittest.IsolatedAsyncioTestCase):
         removed = await observer.recall("100", "m1", self.now)
         self.assertGreaterEqual(removed["saved"], 1)
         self.assertEqual(await self.store.recent_group_observations(self.now.timestamp(), 5), [])
-
-
-class MergeCommandAndCorruptRawTests(unittest.IsolatedAsyncioTestCase):
-    """P3-11/P3-15：合并轮命令判定与坏 raw_message 防御。"""
-
-    @staticmethod
-    def _message(mid: str, text: str, command: bool = False):
-        return {"message_id": mid, "session_id": "s1", "platform": "qq",
-                "processed_plain_text": text,
-                "message_info": {"user_info": {"user_id": "1", "user_nickname": "u"},
-                                 "group_info": None, "additional_config": {}},
-                "raw_message": [{"type": "text", "data": text}],
-                "is_command": command, "is_notify": False}
-
-    async def test_merged_round_is_command_when_any_segment_is_command(self):
-        config = MaiLifeSettings(); config.debounce.text_wait_seconds = 0.04
-        service = MessageDebouncer(config, DummyLogger())
-        # 连发拆分命令：第二段是命令，合并轮按命令处理。
-        first = asyncio.create_task(service.collect(self._message("m1", "先看看这个")))
-        await asyncio.sleep(0.01)
-        second = asyncio.create_task(service.collect(self._message("m2", "/麦麦状态")))
-        old, new = await asyncio.gather(first, second)
-        self.assertFalse(old[0]); self.assertTrue(new[0])
-        self.assertTrue(new[1]["is_command"])
-        # 两段都是普通文本 → 不是命令。
-        service = MessageDebouncer(config, DummyLogger())
-        first = asyncio.create_task(service.collect(self._message("m3", "第一段")))
-        await asyncio.sleep(0.01)
-        second = asyncio.create_task(service.collect(self._message("m4", "第二段")))
-        old, new = await asyncio.gather(first, second)
-        self.assertTrue(new[0]); self.assertFalse(new[1]["is_command"])
-
-    def test_command_flag_and_forwarded_text_are_handled(self):
-        config = MaiLifeSettings(); service = MessageDebouncer(config, DummyLogger())
-        flagged = service._merge([self._message("m5", "普通"), self._message("m6", "继续", command=True)])
-        self.assertTrue(flagged["is_command"])
-        # 转发里的命令原文不算命令：direct_text 只读顶层。
-        forward = {"message_id": "m7", "session_id": "s1", "platform": "qq",
-                   "processed_plain_text": "【合并转发消息】/麦麦状态",
-                   "message_info": {"user_info": {"user_id": "1"}, "group_info": None,
-                                    "additional_config": {}},
-                   "raw_message": [{"type": "forward", "data": [{"content": [
-                       {"type": "text", "data": "/麦麦状态"}]}]}],
-                   "is_command": False}
-        merged = service._merge([self._message("m8", "看看这个"), forward])
-        self.assertFalse(merged["is_command"])
-
-    async def test_non_list_raw_message_is_skipped_without_crashing(self):
-        config = MaiLifeSettings(); config.debounce.text_wait_seconds = 0.04
-        service = MessageDebouncer(config, DummyLogger())
-        corrupt = {"message_id": "m9", "session_id": "s1", "platform": "qq",
-                   "processed_plain_text": "坏组件消息",
-                   "message_info": {"user_info": {"user_id": "1"}, "group_info": None,
-                                    "additional_config": {}},
-                   "raw_message": {"type": "text", "data": "x"}, "is_command": False}
-        first = asyncio.create_task(service.collect(self._message("m10", "正常消息")))
-        await asyncio.sleep(0.01)
-        second = asyncio.create_task(service.collect(corrupt))
-        old, new = await asyncio.gather(first, second)
-        self.assertTrue(new[0])
-        # 非列表组件被跳过：只剩正常消息的文本组件与分隔符。
-        self.assertEqual([part.get("data") for part in new[1]["raw_message"]], ["正常消息", "\n"])
-        self.assertEqual(new[1]["processed_plain_text"], "正常消息\n坏组件消息")
-        merged = service._merge([self._message("m11", "单独"), corrupt])
-        self.assertEqual([part.get("data") for part in merged["raw_message"]], ["单独", "\n"])
 
 
 class LatestDreamOrderTests(unittest.IsolatedAsyncioTestCase):
@@ -2092,7 +1993,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
     async def test_listed_segment_type_gates_outside_window(self):
         """无对应时间窗的类型（rest）列出后任意时间生效（v1.23.3 时间窗优先后保持不变）。"""
         config = make_group_config(group_gate=True)
-        config.rest_gate.group_gate_segment_types = ["sleep", "nap", "rest"]
+        config.group.gate_segment_types = ["sleep", "nap", "rest"]
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("下午好呀", DAYTIME, "100", {"kind": "rest"})
@@ -2115,7 +2016,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
     async def test_segment_type_gate_respects_force_wake_term(self):
         """日程类型命中时，强制唤醒词仍然放行（与时间窗内行为一致）。"""
         config = make_group_config(group_gate=True)
-        config.rest_gate.group_gate_segment_types = ["sleep", "nap", "rest"]
+        config.group.gate_segment_types = ["sleep", "nap", "rest"]
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("出事了救命啊", DAYTIME, "100", {"kind": "rest"})
@@ -2125,7 +2026,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
     async def test_configured_segment_types_replace_defaults(self):
         """配置改成 study 后，rest 段不再闸群、study 段才闸。"""
         config = make_group_config(group_gate=True)
-        config.rest_gate.group_gate_segment_types = ["study"]
+        config.group.gate_segment_types = ["study"]
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, _ = gate.decide_group("在吗", DAYTIME, "100", {"kind": "rest"})
@@ -2162,7 +2063,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_custom_group_force_wake_terms(self):
         config = make_group_config(group_gate=True)
-        config.rest_gate.group_force_wake_terms = ["服务器炸了"]
+        config.group.force_wake_terms = ["服务器炸了"]
         gate = self._gate(config)
         allowed, reason = gate.decide_group("不好了服务器炸了", NIGHT, "100")
         self.assertTrue(allowed)
@@ -2189,7 +2090,6 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin._store = self.store
         plugin._env = EnvironmentService(self.store, config, logger)
         plugin._rest = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), logger)
-        plugin._debouncer = MessageDebouncer(config, logger)
         plugin._group_observer = GroupObserver(self.store, config, DummyLLM(), logger)
         plugin._relay = RelayService(DummyCtx(logger), self.store, config, logger)
         plugin._recall = RecallService(DummyCtx(logger), self.store, config, logger)
@@ -2215,7 +2115,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
             {"message": group_message("g2", "群友们出事了我很难受")}, group_message("g2", "群友们出事了我很难受"),
             "30001", "group-stream-100", "g2", ["g2"])
         self.assertEqual(result.get("action"), "continue")
-        # 群防抖默认关：不登记 group_turns，但消息被放行到主程序。
+        # 群轮次注册默认开启：放行到主程序前会登记 group_turns。
         self.assertIn("message", result.get("modified_kwargs", {}))
 
     async def test_group_command_passes_even_in_window(self):
@@ -2318,26 +2218,26 @@ class GroupGateConfigTests(unittest.TestCase):
 
     def test_defaults_are_off(self):
         config = MaiLifeSettings()
-        self.assertFalse(config.rest_gate.group_enabled)
-        self.assertEqual(config.rest_gate.group_mode, "all")
-        self.assertEqual(config.rest_gate.group_night_start, "22:30")
-        self.assertEqual(config.rest_gate.group_night_end, "08:00")
-        self.assertEqual(config.rest_gate.group_nap_start, "12:00")
-        self.assertEqual(config.rest_gate.group_nap_end, "14:30")
-        self.assertIn("救命", config.rest_gate.group_force_wake_terms)
+        self.assertFalse(config.group.gate_enabled)
+        self.assertEqual(config.group.gate_scope, "all")
+        self.assertEqual(config.group.night_start, "22:30")
+        self.assertEqual(config.group.night_end, "08:00")
+        self.assertEqual(config.group.nap_start, "12:00")
+        self.assertEqual(config.group.nap_end, "14:30")
+        self.assertIn("救命", config.group.force_wake_terms)
         profile = SocialGroupProfile(group_id="1")
         self.assertFalse(profile.rest_gate_enabled)
 
     def test_invalid_group_times_restore_defaults(self):
         config = MaiLifeSettings.model_validate({"rest_gate": {
             "group_night_start": "99:99", "group_nap_end": "xx"}})
-        self.assertEqual(config.rest_gate.group_night_start, "22:30")
-        self.assertEqual(config.rest_gate.group_nap_end, "14:30")
+        self.assertEqual(config.group.night_start, "22:30")
+        self.assertEqual(config.group.nap_end, "14:30")
 
     def test_private_gate_unchanged(self):
         """群/私设置互不影响：改群窗口不动私聊窗口。"""
         config = MaiLifeSettings()
-        config.rest_gate.group_night_start = "20:00"
+        config.group.night_start = "20:00"
         self.assertEqual(config.rest_gate.night_start, "22:30")
         self.assertTrue(config.rest_gate.force_wake_terms)
 
@@ -2860,7 +2760,7 @@ class V1147RepoConfigTemplateTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         config = MaiLifeSettings.model_validate(
             tomllib.loads((root / "config.toml.example").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version, "1.11.0")
+        self.assertEqual(config.plugin.config_version, "1.12.0")
         self.assertFalse(config.rest_gate.enabled)
 
 
@@ -4511,7 +4411,7 @@ class V11412WebuiUsageTests(unittest.IsolatedAsyncioTestCase):
 class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
     """webui_config_summary：19 个配置节键齐全、布尔转「开启/关闭」、窗口串与本 API 不出 Key。"""
 
-    SECTIONS = ("plugin", "users", "models", "environment", "linkage", "debounce", "recall",
+    SECTIONS = ("plugin", "users", "models", "environment", "linkage", "recall",
                 "context", "rest_gate", "memory", "information", "news", "search",
                 "search_api", "social", "creation", "schedule", "proactive", "usage")
 
@@ -4526,7 +4426,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.config.models.fast_task = "fast-x"
         self.config.models.reasoning_task = "reason-x"
         self.config.linkage.drawpic_enabled = True
-        self.config.debounce.group_enabled = True
+        self.config.group.turn_enabled = True
         self.config.recall.cache_summary_enabled = True
         self.config.rest_gate.wake_probability = 0.42
         self.config.rest_gate.night_start = "23:00"
@@ -4556,7 +4456,6 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["environment"]["city"], "杭州")
         self.assertEqual(data["environment"]["weather_refresh_minutes"], 45)
         self.assertEqual(data["linkage"], {"drawpic_enabled": "开启", "drawpic_detected": "开启"})
-        self.assertEqual(data["debounce"], {"private": "开启", "group": "开启"})
         self.assertEqual(set(data["recall"]), {"enabled", "cache_summary", "summary_ttl_minutes",
                                                "summary_max_chars"})
         self.assertEqual(data["recall"]["cache_summary"], "开启")
@@ -4569,7 +4468,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
                                                   "llm_threshold", "awake_grace_minutes",
                                                   "silence_minutes", "night_window", "nap_window",
-                                                  "group_enabled", "group_mode",
+                                                  "gate_enabled", "gate_scope",
                                                   "group_night_window", "group_nap_window",
                                                   "group_segment_types"})
         self.assertEqual(data["rest_gate"]["night_window"], "23:00-07:30")
@@ -4580,7 +4479,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["rest_gate"]["mode"], "probability")
         self.assertAlmostEqual(data["rest_gate"]["wake_probability"], 0.42)
         self.assertEqual(data["rest_gate"]["enabled"], "关闭")
-        self.assertEqual(data["rest_gate"]["group_enabled"], "关闭")
+        self.assertEqual(data["rest_gate"]["gate_enabled"], "关闭")
         self.assertEqual(set(data["memory"]), {"enabled", "dream_fragments_enabled",
                                                "dream_fragment_count", "diary_enabled", "diary_hour",
                                                "diary_max_chars", "important_dates_enabled",

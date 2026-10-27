@@ -12,8 +12,8 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.23.7"
-CONFIG_SCHEMA_VERSION = "1.11.0"
+PLUGIN_VERSION = "1.24.0"
+CONFIG_SCHEMA_VERSION = "1.12.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -332,7 +332,7 @@ class SocialSettings(PluginConfigBase):
                               label_en="Share Group Topics with Owner", hint_en="Requires observation, inactivity proof and proactive quota."))
     observation_wait_seconds: float = Field(default=3.0, ge=0.5, le=20, description="群聊话题收口等待。",
         json_schema_extra=_ui("群话题等待（秒）", "使用独立群缓冲，不复用私聊防抖参数。", 2,
-                              label_en="Group Topic Wait (sec)", hint_en="Uses a separate group buffer from private debounce."))
+                              label_en="Group Topic Wait (sec)", hint_en="Separate buffer from the host debounce."))
     max_buffer_messages: int = Field(default=20, ge=2, le=100, description="单个群话题最多暂存消息数。",
         json_schema_extra=_ui("群缓冲消息上限", "只在内存中短暂保留，入库前会整理成摘要。", 3,
                               label_en="Group Buffer Limit", hint_en="Kept briefly in memory and summarized before storage."))
@@ -841,59 +841,76 @@ class RestGateSettings(PluginConfigBase):
         json_schema_extra=_ui("午休闸门结束", "默认 14:30。", 9, label_en="Nap Gate End", hint_en="Nap gate end in HH:MM format."),
     )
 
-    # ── 群聊闸门（与私聊完全独立；轻量版：强制词放行 + 勿扰词阻断 + 其余静默）──
-    group_enabled: bool = Field(
+    # v1.24.0：群聊闸门字段迁移到 GroupChatSettings（[group] 节）。
+
+    @field_validator("night_start", "night_end", "nap_start", "nap_end", mode="before")
+    @classmethod
+    def validate_gate_time(cls, value: Any, info: ValidationInfo) -> str:
+        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30"}
+        return _time(value,defaults.get(info.field_name,"00:00"))
+
+
+class GroupChatSettings(PluginConfigBase):
+    """群聊集中设置：休息闸门（与私聊独立）与回复轮次注册。"""
+
+    __ui_label__: ClassVar[str] = "群聊设置"
+    __ui_order__: ClassVar[int] = 2
+
+    gate_enabled: bool = Field(
         default=False, description="群聊休息闸门总开关。",
-        json_schema_extra=_ui("启用群聊休息闸门", "默认关闭。开启后，在下方群时间窗内，群里只有含强制唤醒词的消息会被回复，其余静默（不回复、不积压、不进主程序）。", 10,
+        json_schema_extra=_ui("启用群聊休息闸门", "默认关闭。开启后，在群时间窗（按设定时间）或日程段型（按日程判断）期间，群里只有含强制唤醒词的消息会被回复，其余静默。", 0,
                               label_en="Enable Group Rest Gate", hint_en="During group quiet windows only force-wake terms get replies."),
     )
-    group_mode: Literal["all", "selected"] = Field(
+    gate_scope: Literal["all", "selected"] = Field(
         default="all", description="群闸门作用范围：all=所有群；selected=只对群聊白名单中开了「夜间静音」的群生效。",
-        json_schema_extra=_ui("群闸门作用范围", "「所有群」开箱即用；「指定群」需先在社交转述白名单登记该群并打开「夜间静音」。", 10,
+        json_schema_extra=_ui("群闸门作用范围", "「所有群」开箱即用；「指定群」需先在社交转述白名单登记该群并打开「夜间静音」。", 1,
                               label_en="Group Gate Scope", hint_en="All groups, or only selected groups from the social allowlist.",
                               enum_labels={"all": "所有群", "selected": "指定群（白名单）"}),
     )
-    group_night_start: str = Field(
-        default="22:30", description="群夜间闸门开始时间。",
-        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 11, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
-    )
-    group_night_end: str = Field(
-        default="08:00", description="群夜间闸门结束时间。",
-        json_schema_extra=_ui("群夜间闸门结束", "默认 08:00。", 12, label_en="Group Night End", hint_en="Group night window end in HH:MM format."),
-    )
-    group_nap_start: str = Field(
-        default="12:00", description="群午休闸门开始时间。",
-        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 13, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
-    )
-    group_nap_end: str = Field(
-        default="14:30", description="群午休闸门结束时间。",
-        json_schema_extra=_ui("群午休闸门结束", "默认 14:30。", 14, label_en="Group Nap End", hint_en="Group nap window end in HH:MM format."),
-    )
-    group_gate_segment_types: list[Literal["sleep", "nap", "rest", "study", "work", "leisure", "meal", "travel"]] = Field(
+    gate_segment_types: list[Literal["sleep", "nap", "rest", "study", "work", "leisure", "meal", "travel"]] = Field(
         default_factory=lambda: ["sleep", "nap"],
         description="按日程判断模式下触发群闸门的日程类型；按设定时间模式下不参与生效。",
         json_schema_extra=_ui("群闸门生效的日程类型",
-            "按日程判断模式下：日程进入所列段型时群闸门即生效（任意时间）；按设定时间模式下不参与生效。默认与私聊一致：夜间睡眠+午休。", 16,
+            "按日程判断模式下：日程进入所列段型时群闸门即生效（任意时间）；按设定时间模式下不参与生效。默认与私聊一致：夜间睡眠+午休。", 2,
             label_en="Group Gated Schedule Types",
             hint_en="In schedule mode the group gate activates on listed kinds; in time-window mode this list is inert."),
         enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）",
                      "study": "学习（study）", "work": "工作（work）", "leisure": "休闲（leisure）",
                      "meal": "餐饮（meal）", "travel": "出行（travel）"})
-    group_force_wake_terms: list[str] = Field(
+    night_start: str = Field(
+        default="22:30", description="群夜间闸门开始时间。",
+        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 3, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
+    )
+    night_end: str = Field(
+        default="08:00", description="群夜间闸门结束时间。",
+        json_schema_extra=_ui("群夜间闸门结束", "默认 08:00。", 4, label_en="Group Night End", hint_en="Group night window end in HH:MM format."),
+    )
+    nap_start: str = Field(
+        default="12:00", description="群午休闸门开始时间。",
+        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 5, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
+    )
+    nap_end: str = Field(
+        default="14:30", description="群午休闸门结束时间。",
+        json_schema_extra=_ui("群午休闸门结束", "默认 14:30。", 6, label_en="Group Nap End", hint_en="Group nap window end in HH:MM format."),
+    )
+    force_wake_terms: list[str] = Field(
         default_factory=lambda: ["救命","急事","报警","醒醒","快醒","叫醒","出事了","很难受","撑不住","危险","轻生","自杀"],
         description="群强制唤醒词：群消息含其中任意一词时放行；独立于私聊词表。",
-        json_schema_extra=_ui("群强制唤醒词","群消息含任意一词立即放行；可自由增删",15,
+        json_schema_extra=_ui("群强制唤醒词","群消息含任意一词立即放行；可自由增删",7,
                               label_en="Group Force Wake Terms",
                               hint_en="Group messages containing any term bypass the group silence."),
     )
+    turn_enabled: bool = Field(
+        default=True, description="群聊中为每条消息注册回复轮次锁，防止同一条群消息触发多次回复。",
+        json_schema_extra=_ui("群聊轮次注册", "开启后按群号和发送者隔离轮次；关闭则群聊不做防重。", 8,
+                              label_en="Group Turn Registration",
+                              hint_en="Register reply turns for group messages, isolated by group and sender."),
+    )
 
-    @field_validator("night_start", "night_end", "nap_start", "nap_end",
-                     "group_night_start", "group_night_end", "group_nap_start", "group_nap_end", mode="before")
+    @field_validator("night_start", "night_end", "nap_start", "nap_end", mode="before")
     @classmethod
     def validate_gate_time(cls, value: Any, info: ValidationInfo) -> str:
-        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30",
-                  "group_night_start":"22:30","group_night_end":"08:00",
-                  "group_nap_start":"12:00","group_nap_end":"14:30"}
+        defaults={"night_start":"22:30","night_end":"08:00","nap_start":"12:00","nap_end":"14:30"}
         return _time(value,defaults.get(info.field_name,"00:00"))
 
 
@@ -939,62 +956,22 @@ class ContextSettings(PluginConfigBase):
             enum_labels={"full": "full（完整）", "compact": "compact（精简）"},
         ),
     )
+    # v1.24.0：防抖移除后，轮次锁字段从 DebounceSettings 迁入此处。
+    outbound_turn_guard: bool = Field(
+        default=True, description="阻止同一消息触发多次独立 Replyer 回复。",
+        json_schema_extra=_ui("启用同轮回复防重", "同一轮用户消息只允许触发一次独立回复；不影响一次回复内部的正常分段。", 7,
+                              label_en="Enable Reply Turn Guard",
+                              hint_en="Prevent repeated independent Replyer responses for the same user message."),
+    )
+    turn_expire_seconds: int = Field(
+        default=120, ge=20, le=600, description="轮次锁过期时间。",
+        json_schema_extra=_ui("轮次锁过期（秒）", "超时自动释放；发送失败时会提前释放。", 8,
+                              label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."),
+    )
     prompt_max_chars: int = Field(
         default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
         json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
     )
-
-
-class DebounceSettings(PluginConfigBase):
-    """私聊与群聊相互独立的消息收口参数。"""
-
-    __ui_label__: ClassVar[str] = "消息收口防抖"
-    __ui_order__: ClassVar[int] = 6
-
-    enabled: bool = Field(default=True, description="合并短时间连续补话。", json_schema_extra=_ui("启用私聊收口", "只对配置私聊用户生效。", 0, label_en="Enable Private Debounce", hint_en="Merge rapid follow-up messages for configured private users."))
-    text_wait_seconds: float = Field(default=1.2, ge=0, le=10, description="私聊文本静默窗口。", json_schema_extra=_ui("私聊文本等待（秒）", "默认 1.2 秒。", 1, label_en="Private Text Wait (sec)", hint_en="Quiet window for private text messages."))
-    image_wait_seconds: float = Field(default=3.0, ge=0, le=15, description="私聊单图等待补充说明时间。", json_schema_extra=_ui("私聊单图等待（秒）", "默认 3 秒，便于用户补充图片说明。", 2, label_en="Private Image Wait (sec)", hint_en="Wait for a private image caption."))
-    forward_wait_seconds: float = Field(default=2.0, ge=0, le=15, description="私聊合并转发等待时间。", json_schema_extra=_ui("私聊转发等待（秒）", "默认 2 秒。", 3, label_en="Private Forward Wait (sec)", hint_en="Quiet window for private forwarded messages."))
-    max_wait_seconds: float = Field(default=6.0, ge=0.5, le=30, description="私聊整轮最长等待。", json_schema_extra=_ui("私聊最长等待（秒）", "无论是否继续补话，达到上限都会结束收口。", 4, label_en="Private Maximum Wait (sec)", hint_en="Hard limit for one private burst."))
-    group_enabled: bool = Field(default=False,description="是否合并群聊中的连续补话。",json_schema_extra=_ui(
-        "启用群聊收口","默认关闭；开启后覆盖所有 QQ 群，并按群号和发送者 QQ 号隔离。",5,
-        label_en="Enable Group Debounce",hint_en="Disabled by default; isolates bursts by group and sender QQ IDs."))
-    group_text_wait_seconds: float = Field(default=0.8,ge=0,le=10,description="群聊文本静默窗口。",json_schema_extra=_ui(
-        "群聊文本等待（秒）","默认 0.8 秒。",6,label_en="Group Text Wait (sec)",hint_en="Quiet window for group text messages."))
-    group_image_wait_seconds: float = Field(default=2.0,ge=0,le=15,description="群聊单图等待补充说明时间。",json_schema_extra=_ui(
-        "群聊单图等待（秒）","默认 2 秒。",7,label_en="Group Image Wait (sec)",hint_en="Wait for a group image caption."))
-    group_forward_wait_seconds: float = Field(default=1.2,ge=0,le=15,description="群聊合并转发等待时间。",json_schema_extra=_ui(
-        "群聊转发等待（秒）","默认 1.2 秒。",8,label_en="Group Forward Wait (sec)",hint_en="Quiet window for group forwarded messages."))
-    group_max_wait_seconds: float = Field(default=4.0,ge=0.5,le=30,description="群聊整轮最长等待。",json_schema_extra=_ui(
-        "群聊最长等待（秒）","默认 4 秒。",9,label_en="Group Maximum Wait (sec)",hint_en="Hard limit for one group burst."))
-    max_messages: int = Field(default=12, ge=2, le=50, description="单轮最多合并消息数。", json_schema_extra=_ui("单轮最大消息数", "私聊和群聊共同使用；超过后立即结束当前轮次。", 10, label_en="Maximum Messages", hint_en="Shared maximum messages per burst."))
-    max_media_bytes: int = Field(default=8_388_608, ge=262_144, le=33_554_432, description="单轮媒体 Base64 解码后大小上限。", json_schema_extra=_ui("媒体大小上限（字节）", "默认 8 MiB，超出后失败开放。", 11, label_en="Media Size Limit", hint_en="Decoded media size limit for one burst."))
-    merge_separator: str = Field(
-        default="\n",
-        description="多条文本合并时使用的分隔符。",
-        json_schema_extra=_ui(
-            "合并分隔符", "多条连续消息合并时，文本之间插入的分隔符，默认换行。", 14,
-            label_en="Merge Separator", hint_en="Separator inserted between merged text segments.",
-        ),
-    )
-    ignore_empty_message: bool = Field(
-        default=True,
-        description="没有文本或图片等主体内容的消息不参与收口，直接放行。",
-        json_schema_extra=_ui(
-            "忽略空消息", "无文本且无图片/表情/语音等主体内容的消息直接放行，不进入防抖窗口。", 15,
-            label_en="Ignore Empty Messages", hint_en="Messages without text or media body bypass the debounce window.",
-        ),
-    )
-    log_detail: bool = Field(
-        default=True,
-        description="记录开始收集、追加、结算等防抖过程日志。",
-        json_schema_extra=_ui(
-            "记录详细日志", "开启后按消息记录防抖开始/追加/结算日志，便于排查合并行为。", 16,
-            label_en="Detailed Debounce Logs", hint_en="Log debounce start, append and settle events per message.",
-        ),
-    )
-    outbound_turn_guard: bool = Field(default=True, description="阻止同一消息触发多次独立 Replyer 回复。", json_schema_extra=_ui("启用同轮回复防重", "不影响一次回复内部的正常分段。", 12, label_en="Enable Reply Turn Guard", hint_en="Prevent repeated Replyer responses for the same user message."))
-    turn_expire_seconds: int = Field(default=120, ge=20, le=600, description="轮次锁过期时间。", json_schema_extra=_ui("轮次锁过期（秒）", "发送失败时会提前释放。", 13, label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."))
 
 
 class RecallSettings(PluginConfigBase):
@@ -1218,30 +1195,30 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=UsersSettings,
         json_schema_extra=_ui("私聊用户", "配置允许互动和主动私聊的用户。", 1, label_en="Private Users", hint_en="Users allowed to interact with Mai Life."),
     )
+    group: GroupChatSettings = Field(
+        default_factory=GroupChatSettings,
+        json_schema_extra=_ui("群聊设置", "群聊休息闸门与回复轮次注册。", 2, label_en="Group Chat", hint_en="Group rest gate and reply turn registration."),
+    )
     environment: EnvironmentSettings = Field(
         default_factory=EnvironmentSettings,
-        json_schema_extra=_ui("环境与天气", "时区、城市和天气刷新。", 2, label_en="Environment and Weather", hint_en="Timezone, location and weather refresh."),
+        json_schema_extra=_ui("环境与天气", "时区、城市和天气刷新。", 3, label_en="Environment and Weather", hint_en="Timezone, location and weather refresh."),
     )
     state: StateSettings = Field(
         default_factory=StateSettings,
-        json_schema_extra=_ui("生活状态", "精力、饥饿、健康和周期。", 3, label_en="Life State", hint_en="Energy, hunger, health and body cycle."),
+        json_schema_extra=_ui("生活状态", "精力、饥饿、健康和周期。", 4, label_en="Life State", hint_en="Energy, hunger, health and body cycle."),
     )
     memory: MemorySettings = Field(
         default_factory=MemorySettings,
-        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记和重要日期。", 4,
+        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记和重要日期。", 5,
                               label_en="Life Memory", hint_en="Dream fragments, diary and important dates."),
     )
     rest_gate: RestGateSettings = Field(
         default_factory=RestGateSettings,
-        json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 5, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
+        json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 6, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
     )
     context: ContextSettings = Field(
         default_factory=ContextSettings,
-        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 6, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
-    )
-    debounce: DebounceSettings = Field(
-        default_factory=DebounceSettings,
-        json_schema_extra=_ui("消息收口防抖", "私聊与群聊独立收口及同轮回复防重。", 7, label_en="Message Debounce", hint_en="Separate private/group debounce and duplicate-reply protection."),
+        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 7, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
     )
     recall: RecallSettings = Field(
         default_factory=RecallSettings,

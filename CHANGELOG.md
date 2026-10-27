@@ -1,5 +1,24 @@
 # 更新日志
 
+## [1.24.0] - 2026-10-28
+
+### 移除
+
+- **消息收口防抖整体移除**：宿主 1.3.15 已内置消息防抖（natural 档默认开启），插件层二次合并的收益消失、叠加等待反而拖慢回复。`MessageDebouncer`/`_Burst` 删除（-288 行），私聊与群聊消息直接放行；连发合并、合并撤回关联（`mai_life_merged_message_ids` 多来源）由宿主防抖接管，插件撤回关联退化为单条消息 ID（功能降级但可用）。
+- `DebounceSettings` 配置节删除（17 个字段中 15 个纯防抖字段随行为一起移除）。旧配置文件里的 `[debounce]` 段会被自动忽略，不需要手动清理。
+
+### 变更
+
+- **同轮回复防重（轮次锁）迁入 `[context]` 节**：`outbound_turn_guard`（默认开）、`turn_expire_seconds`（默认 120s）改由「被动回复增强」提供；行为不变。另一处隐藏引用 `_candidate` 候选寿命、recall 缓存 TTL 同步改读新路径。
+- **新增 `[group]` 群聊设置节（放在私聊用户之后）**：群闸门 9 个字段从 `[rest_gate]` 迁入并改名——`group_enabled`→`gate_enabled`、`group_mode`→`gate_scope`、`group_night_start/end`→`night_start/night_end`、`group_nap_start/nap_end`→`nap_start/nap_end`、`group_gate_segment_types`→`gate_segment_types`、`group_force_wake_terms`→`force_wake_terms`；语义不变（仍与私聊闸门共用 `rest_gate.gate_mode` 开关）。旧字段留在 `[rest_gate]` 会被忽略。
+- **群聊轮次注册独立开关 `group.turn_enabled`（默认开）**：原群轮次注册复用防抖开关 `debounce.group_enabled`（默认关），防抖删除后拆为独立字段；默认值由关变开，防止同一群消息触发多次回复。
+- **配置 Schema 版本升至 1.12.0**；`webui.json` 删除防抖卡片、群闸门绑定改指 `[group]` 字段；`webui_config_summary` 去掉 `debounce` 键。
+
+### 说明
+
+- SDK 2.17.0 起 `tool_web_search` 优先走宿主统一联网服务 `ctx.web.search()`，失败自动回退插件自身多 Provider 降级链（v1.23.8 的变更一并随本版发布）。
+- 全量测试 561 项通过（删除 17 条防抖行为用例；新增轮次锁/群配置字段默认值断言）。
+
 ## [1.23.5] - 2026-10-25
 
 ### 新增

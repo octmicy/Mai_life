@@ -50,9 +50,10 @@ class RestGate:
             return ""  # 按日程判断：时间窗不参与闸门生效，退化窗无从谈起
         if str(getattr(cfg,"night_start",""))==str(getattr(cfg,"night_end","")):
             return f"night_start=night_end={cfg.night_start}"
-        if getattr(cfg,"group_enabled",False) and str(
-                getattr(cfg,"group_night_start",""))==str(getattr(cfg,"group_night_end","")):
-            return f"group_night_start=group_night_end={cfg.group_night_start}"
+        group_cfg=getattr(self.config,"group",None)
+        if group_cfg is not None and getattr(group_cfg,"gate_enabled",False) and str(
+                getattr(group_cfg,"night_start",""))==str(getattr(group_cfg,"night_end","")):
+            return f"group night_start=night_end={group_cfg.night_start}"
         return ""
 
     def _warn_degenerate_window(self,now_ts:float)->None:
@@ -69,22 +70,22 @@ class RestGate:
 
     def in_group_quiet_window(self,now:Any)->bool:
         """当前是否处于群静音窗（群夜间或群午休窗，配置独立于私聊）。"""
-        cfg=self.config.rest_gate
-        if not getattr(cfg,"group_enabled",False):return False
+        cfg=getattr(self.config,"group",None)
+        if cfg is None or not getattr(cfg,"gate_enabled",False):return False
         current=now.strftime("%H:%M")
-        return (self._in_window(cfg.group_night_start,cfg.group_night_end,current)
-                or self._in_window(cfg.group_nap_start,cfg.group_nap_end,current))
+        return (self._in_window(cfg.night_start,cfg.night_end,current)
+                or self._in_window(cfg.nap_start,cfg.nap_end,current))
 
     def group_gate_enabled_for(self,group_id:str)->bool:
         """该群是否受群闸门管辖。
 
-        group_mode="all"（默认）：开了总闸就对所有群生效，开箱即用；
-        group_mode="selected"：只有社交白名单内且打开「夜间静音」的群生效。
+        gate_scope="all"（默认）：开了总闸就对所有群生效，开箱即用；
+        gate_scope="selected"：只有社交白名单内且打开「夜间静音」的群生效。
         """
         target=str(group_id or "").strip()
         if not target:return False
-        cfg=self.config.rest_gate
-        if str(getattr(cfg,"group_mode","all") or "all")!="selected":
+        cfg=getattr(self.config,"group",None)
+        if cfg is None or str(getattr(cfg,"gate_scope","all") or "all")!="selected":
             return True
         for item in (getattr(self.config.social,"groups",None) or []):
             if str(getattr(item,"group_id","") or "").strip()==target:
@@ -97,22 +98,23 @@ class RestGate:
         不放行概率、不建待醒候选、不写积压——每条群消息独立判定；
         被阻断的消息不进入主程序，因此不产生 Planner/Replyer/VLM 等请求。
         生效条件与私聊同构，共用「闸门生效方式」开关：按设定时间=群夜窗/群午休窗内
-        生效；按日程判断=日程段型命中 group_gate_segment_types 即生效（任意时间）。
+        生效；按日程判断=日程段型命中 gate_segment_types 即生效（任意时间）。
         """
-        cfg=self.config.rest_gate
-        if not getattr(cfg,"group_enabled",False):return True,"group_gate_disabled"
+        cfg=getattr(self.config,"group",None)
+        if cfg is None or not getattr(cfg,"gate_enabled",False):return True,"group_gate_disabled"
         self._warn_degenerate_window(now.timestamp())
         if not self.group_gate_enabled_for(group_id):return True,"group_not_enabled"
         segment_kind=str((segment or {}).get("kind") or "")
-        kind_match=segment_kind in set(getattr(cfg,"group_gate_segment_types",None) or [])
+        kind_match=segment_kind in set(getattr(cfg,"gate_segment_types",None) or [])
         # v1.23.5 闸门生效方式（私聊群聊共用）：schedule=段型命中即静默；time_window=只认群时间窗。
-        if str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule":
+        gate_mode=str(getattr(self.config.rest_gate,"gate_mode","time_window") or "time_window")
+        if gate_mode=="schedule":
             gate_active=kind_match
         else:
             gate_active=self.in_group_quiet_window(now)
         if not gate_active:return True,"outside_group_window"
         compact=re.sub(r"\s+","",str(text or "").lower())
-        for term in (getattr(cfg,"group_force_wake_terms",None) or []):
+        for term in (getattr(cfg,"force_wake_terms",None) or []):
             word=str(term or "").strip().lower()
             if word and word in compact:
                 return True,f"群强制唤醒词：{str(term).strip()}"
@@ -123,7 +125,7 @@ class RestGate:
     async def _candidate(self,user_id:str,session_id:str,message_id:str,reason:str,now:Any)->None:
         if session_id:
             # 候选要覆盖 planner+replyer 两级模型与发送排队，300s 常被拖过导致醒来提交落空。
-            lifetime=max(900,int(self.config.debounce.turn_expire_seconds)*3)
+            lifetime=max(900,int(self.config.context.turn_expire_seconds)*3)
             await self.store.set_wake_candidate(
                 session_id,user_id,message_id,reason,now.timestamp(),now.timestamp()+lifetime,
             )

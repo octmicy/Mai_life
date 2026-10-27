@@ -40,7 +40,9 @@
     "api.call",
     "maisaka.proactive.trigger",
     "config.get",
-    "component.list_loaded_plugins"
+    "component.list_loaded_plugins",
+    "web.search",
+    "web.fetch"
   ],
   "i18n": {
     "default_locale": "zh-CN",

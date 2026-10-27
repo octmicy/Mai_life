@@ -603,7 +603,11 @@ class InformationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plugin_tool_entry_clamps_parameters_and_forwards_environment_time(self):
         class StubInformation:
-            def __init__(self):self.calls=[]
+            def __init__(self):
+                self.calls=[]
+                from types import SimpleNamespace
+                async def _sq(q):return q
+                self.search=SimpleNamespace(sanitize_query=_sq)
             async def search_for_tool(self,query,now,**kwargs):
                 self.calls.append((query,now,kwargs))
                 return {"success":True,"content":"工具调用成功"}

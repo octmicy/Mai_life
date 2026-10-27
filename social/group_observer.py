@@ -45,7 +45,7 @@ class GroupObserver:
         async with self._lock:self._bursts.clear()
 
     def _group_profile(self,group_id:str)->Any|None:
-        matches=[item for item in self.config.social.groups
+        matches=[item for item in self.config.group.profiles
                  if item.enabled and item.observe_enabled and str(item.group_id)==group_id]
         return matches[0] if len(matches)==1 else None
 
@@ -84,7 +84,7 @@ class GroupObserver:
 
     async def observe(self,message:dict[str,Any],now:datetime)->dict[str,Any]:
         """收口一个群话题；较早的并发调用返回 superseded。"""
-        if self._closed or not self.config.social.enabled:return {"status":"disabled"}
+        if self._closed or not self.config.group.relay_enabled:return {"status":"disabled"}
         group_id,group_name=group_identity(message); profile=self._group_profile(group_id)
         if not profile:return {"status":"not_allowlisted"}
         if await self._group_quiet_now(now):return {"status":"rest_gated"}
@@ -104,9 +104,9 @@ class GroupObserver:
             burst.generation+=1; generation=burst.generation
             burst.adapter=adapter_name(message)
             burst.entries.append((str(message.get("message_id") or ""),snippet))
-            limit=int(self.config.social.max_buffer_messages)
+            limit=int(self.config.group.max_buffer_messages)
             if len(burst.entries)>limit:burst.entries=burst.entries[-limit:]
-        await asyncio.sleep(float(self.config.social.observation_wait_seconds))
+        await asyncio.sleep(float(self.config.group.observation_wait_seconds))
         async with self._lock:
             current=self._bursts.get(group_id)
             if current is not burst or burst.generation!=generation:return {"status":"superseded"}
@@ -126,7 +126,7 @@ class GroupObserver:
               "topic":str(digest.get("topic") or "群聊里的公开话题")[:240],
               "summary":str(digest["summary"])[:1200],"interest_score":float(digest.get("score") or 0),
               "source_adapter":source_adapter,"created_at":stamp,
-              "expires_at":stamp+int(self.config.social.summary_retention_hours)*3600,
+              "expires_at":stamp+int(self.config.group.summary_retention_hours)*3600,
               "source_message_ids":source_ids}
         if not await self.store.save_group_observation(item):return {"status":"duplicate"}
         queued=await self._queue_private_share(item,now)
@@ -202,7 +202,7 @@ class GroupObserver:
             return await self._queue_private_share_locked(observation,now)
 
     async def _queue_private_share_locked(self,observation:dict[str,Any],now:datetime)->bool:
-        threshold=float(self.config.social.interesting_threshold)
+        threshold=float(self.config.group.interesting_threshold)
         if float(observation.get("interest_score") or 0)<threshold:return False
         day_start=now.replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
         candidates=[]
@@ -212,7 +212,7 @@ class GroupObserver:
             role=str(user.get("role") or "friend")
             # 群转私对主人是“全局开关 AND 档案开关”双条件；朋友仍只看个人档案开关。
             if role=="owner":
-                allowed=bool(self.config.social.owner_group_to_private_enabled
+                allowed=bool(self.config.group.owner_group_to_private_enabled
                              and profile and profile.group_to_private_enabled)
             else:
                 allowed=bool(profile and profile.group_to_private_enabled)
@@ -220,10 +220,10 @@ class GroupObserver:
             activity=await self.store.get_group_activity(observation["group_id"],uid)
             # 未知活跃时间不等于已离群；必须有一次真实群活跃作为保守证据。
             last_active=float(activity.get("last_active_at") or 0)
-            if not last_active or now.timestamp()-last_active<float(self.config.social.inactivity_hours)*3600:continue
+            if not last_active or now.timestamp()-last_active<float(self.config.group.inactivity_hours)*3600:continue
             stats=await self.store.social_share_stats(uid,day_start)
-            if stats["count"]>=int(self.config.social.group_share_daily_max):continue
-            if stats["last_at"] and now.timestamp()-stats["last_at"]<int(self.config.social.group_share_min_interval_minutes)*60:continue
+            if stats["count"]>=int(self.config.group.group_share_daily_max):continue
+            if stats["last_at"] and now.timestamp()-stats["last_at"]<int(self.config.group.group_share_min_interval_minutes)*60:continue
             candidates.append((float(user.get("temperature") or 0),last_active,user))
         if not candidates:return False
         # 同一群话题只选择一位最合适的用户，避免把相同内容复制到多个私聊。

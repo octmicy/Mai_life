@@ -225,9 +225,9 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM recall_events").fetchone()[0],2)
 
     async def test_group_observation_and_pending_buffer_are_removed(self):
-        config=MaiLifeSettings(); config.social.enabled=True
-        object.__setattr__(config.social,"observation_wait_seconds",0.05)
-        config.social.groups=[SocialGroupProfile(group_id="100",observe_enabled=True)]
+        config=MaiLifeSettings(); config.group.relay_enabled=True
+        object.__setattr__(config.group,"observation_wait_seconds",0.05)
+        config.group.profiles=[SocialGroupProfile(group_id="100",observe_enabled=True)]
         observer=GroupObserver(self.store,config,OfflineLLM(),DummyLogger())
         now=datetime.now(timezone.utc)
         pending=asyncio.create_task(observer.observe(group_message("g1"),now))

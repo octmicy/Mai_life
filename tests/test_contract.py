@@ -57,7 +57,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         # 仓库只提交模板 config.toml.example；实际 config.toml 由 Runner 生成且不入库。
         config=MaiLifeSettings.model_validate(tomllib.loads((root/"config.toml.example").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version,"1.12.0")
+        self.assertEqual(config.plugin.config_version,"1.13.0")
         self.assertEqual(config.environment.timezone,"Asia/Shanghai")
         self.assertEqual(config.users.profiles[0].daily_proactive_max,1)
         self.assertFalse(config.rest_gate.enabled)
@@ -67,18 +67,18 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(config.group.turn_enabled)
         self.assertTrue(config.recall.enabled)
         self.assertFalse(config.recall.cache_summary_enabled)
-        self.assertTrue(config.search_api.tool_enabled)
+        self.assertTrue(config.network.tool_enabled)
         self.assertEqual(config.context.prompt_max_chars,4000)
         self.assertEqual(config.models.scene_detail_task,"")
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
-        self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
-        self.assertEqual(config.search_api.max_results,5); self.assertEqual(config.search_api.max_attempts,3)
-        self.assertFalse(hasattr(config.search_api,"providers"))
+        self.assertFalse(config.network.enabled); self.assertFalse(config.network.news_enabled); self.assertFalse(config.network.search_enabled)
+        self.assertEqual(config.network.max_results,5); self.assertEqual(config.network.max_attempts,3)
+        self.assertFalse(hasattr(config,"search_api"))
         # 旧降级链时代 max_attempts 上限 12：收紧后旧 TOML 的 12 必须被夹回边界而不是整份配置拒绝。
         legacy=MaiLifeSettings.model_validate({"search_api":{"max_attempts":12}})
-        self.assertEqual(legacy.search_api.max_attempts,5)
-        self.assertFalse(config.social.enabled)
+        self.assertEqual(legacy.network.max_attempts,5)
+        self.assertFalse(config.group.relay_enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
         self.assertFalse(config.creation.enabled); self.assertFalse(config.creation.plaintext_storage_acknowledged)
         # WebUI 的 TOML 写回不支持 None，默认配置必须全部可序列化。
@@ -92,6 +92,30 @@ class ContractTests(unittest.TestCase):
             else:
                 self.assertIsNotNone(value)
         assert_no_none(config.model_dump(mode="python"))
+
+    def test_legacy_sections_migrate_into_group_and_network(self):
+        # v1.24.0 设置大整合：旧 [social]/[information]/[search_api]/[news]/[search] 原样搬进 [group]/[network]，零丢失。
+        legacy=MaiLifeSettings.model_validate({
+            "social":{"enabled":True,
+                      "groups":[{"group_id":"100","enabled":True,"observe_enabled":True,
+                                 "relay_target_enabled":False,"rest_gate_enabled":True}],
+                      "interesting_threshold":0.7},
+            "information":{"enabled":True,"association_threshold":0.8},
+            "search_api":{"tool_enabled":False,"max_attempts":12},
+            "news":{"enabled":True,"daily_max":3},
+            "search":{"enabled":True,"include_chat_topics":True},
+        })
+        self.assertTrue(legacy.group.relay_enabled)
+        self.assertEqual([(p.group_id,p.rest_gate_enabled) for p in legacy.group.profiles],[("100",True)])
+        self.assertEqual(legacy.group.interesting_threshold,0.7)
+        self.assertTrue(legacy.network.enabled)
+        self.assertEqual(legacy.network.association_threshold,0.8)
+        self.assertFalse(legacy.network.tool_enabled)
+        self.assertEqual(legacy.network.max_attempts,5)
+        self.assertTrue(legacy.network.news_enabled)
+        self.assertEqual(legacy.network.news_daily_max,3)
+        self.assertTrue(legacy.network.search_enabled)
+        self.assertTrue(legacy.network.search_include_chat_topics)
 
     def test_weather_configuration_uses_city_only(self):
         schema=MaiLifePlugin.build_config_schema()
@@ -171,7 +195,7 @@ class ContractTests(unittest.TestCase):
 
     def test_old_config_version_is_normalized_without_nulls(self):
         config=MaiLifeSettings.model_validate({"plugin":{"config_version":"1.0.2"}})
-        self.assertEqual(config.plugin.config_version,"1.12.0")
+        self.assertEqual(config.plugin.config_version,"1.13.0")
         self.assertTrue(config.context.outbound_turn_guard)
 
     def test_legacy_negative_user_quota_becomes_explicit_role_default(self):
@@ -500,26 +524,31 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_webui_config_summary_has_every_section_and_no_keys(self):
         data=await self.plugin.webui_config_summary()
         self.assertEqual(set(data),{"plugin","users","models","environment","linkage","recall",
-                                    "context","rest_gate","group","memory","information","news","search",
-                                    "search_api","social","creation","schedule","proactive","usage"})
+                                    "context","rest_gate","group","network","memory","creation",
+                                    "schedule","proactive","usage"})
         self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
                                                  "awake_grace_minutes","silence_minutes","night_window",
                                                  "nap_window"})
-        self.assertEqual(set(data["group"]),{"gate_enabled","gate_scope","turn_enabled",
-                                             "gate_segment_types","night_window","nap_window"})
-        self.assertEqual(set(data["search_api"]),{"tool_enabled","history_enabled","history_retention_days",
-                                                  "max_attempts","max_results"})
+        self.assertEqual(set(data["group"]),{"profiles","gate_enabled","gate_scope","turn_enabled",
+                                             "gate_segment_types","night_window","nap_window",
+                                             "relay_enabled","observation_wait_seconds","max_buffer_messages",
+                                             "interesting_threshold","summary_retention_hours","relay_pending_seconds",
+                                             "owner_group_to_private_enabled","inactivity_hours",
+                                             "group_share_daily_max","group_share_min_interval_minutes"})
+        self.assertEqual(set(data["network"]),{"enabled","tool_enabled","max_results","max_attempts",
+                                               "history_enabled","history_retention_days",
+                                               "association_enabled","association_threshold",
+                                               "proactive_share_enabled","context_item_limit",
+                                               "news_enabled","news_daily_max","search_enabled","search_daily_max"})
         # 布尔一律翻成「开启/关闭」，不出现裸布尔；数值型参数与 version 不参与该检查。
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
-                       "group":{"gate_enabled","turn_enabled"},
+                       "group":{"gate_enabled","turn_enabled","relay_enabled","owner_group_to_private_enabled"},
                        "context":{"enabled","continuity_enabled","outbound_turn_guard"},
                        "recall":{"enabled","cache_summary"},
                        "memory":{"enabled","dream_fragments_enabled","diary_enabled",
                                  "important_dates_enabled","date_model_analysis_enabled"},
-                       "information":{"enabled","association_enabled","proactive_share_enabled"},
-                       "news":{"enabled"},"search":{"enabled","include_chat_topics"},
-                       "search_api":{"tool_enabled","history_enabled"},
-                       "social":{"enabled","owner_group_to_private_enabled"},
+                       "network":{"enabled","tool_enabled","history_enabled","association_enabled",
+                                  "proactive_share_enabled","news_enabled","search_enabled"},
                        "creation":{"enabled","plaintext_storage_acknowledged","public_works_enabled",
                                    "external_reading_enabled"},
                        "proactive":{"enabled"},"usage":{"enabled"}}
@@ -540,8 +569,8 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_webui_admin_summary_scopes_and_key_fingerprints_only(self):
         from Mai_life.config import SocialGroupProfile,UserProfile
         config=MaiLifeSettings()
-        config.social.enabled=True
-        config.social.groups=[SocialGroupProfile(group_id="888",enabled=True,observe_enabled=True)]
+        config.group.relay_enabled=True
+        config.group.profiles=[SocialGroupProfile(group_id="888",enabled=True,observe_enabled=True)]
         plugin=await build_plugin(self.store,config,now=self.now,
                                   users=[UserProfile(user_id="10001",role="owner")])
         await self.store.upsert_group_directory("888","测试群","stream-888",self.now.timestamp())

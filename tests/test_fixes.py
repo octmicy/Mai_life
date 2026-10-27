@@ -1572,9 +1572,9 @@ class GroupPrivateSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = LifeStore(self.tmp.name); await self.store.initialize()
         self.config = MaiLifeSettings()
-        self.config.social.enabled = True
-        object.__setattr__(self.config.social, "observation_wait_seconds", 0.02)
-        self.config.social.groups = [SocialGroupProfile(group_id="100", observe_enabled=True)]
+        self.config.group.relay_enabled = True
+        object.__setattr__(self.config.group, "observation_wait_seconds", 0.02)
+        self.config.group.profiles = [SocialGroupProfile(group_id="100", observe_enabled=True)]
         self.now = datetime(2026, 9, 21, 18, 0, tzinfo=TZ)
 
     async def asyncTearDown(self):
@@ -1584,8 +1584,8 @@ class GroupPrivateSwitchTests(unittest.IsolatedAsyncioTestCase):
         await self.store.sync_users([profile])
         await self.store.set_user_stream(str(profile.user_id), "private-1")
         self.config.users.profiles = [profile]
-        self.config.social.owner_group_to_private_enabled = owner_switch
-        self.config.social.interesting_threshold = 0.5
+        self.config.group.owner_group_to_private_enabled = owner_switch
+        self.config.group.interesting_threshold = 0.5
         await self.store.record_group_activity("100", str(profile.user_id), "旧昵称",
                                                self.now.timestamp() - 7 * 3600)
         observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
@@ -1622,9 +1622,9 @@ class GroupMergedSourceTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = LifeStore(self.tmp.name); await self.store.initialize()
         self.config = MaiLifeSettings()
-        self.config.social.enabled = True
-        object.__setattr__(self.config.social, "observation_wait_seconds", 0.02)
-        self.config.social.groups = [SocialGroupProfile(group_id="100", observe_enabled=True)]
+        self.config.group.relay_enabled = True
+        object.__setattr__(self.config.group, "observation_wait_seconds", 0.02)
+        self.config.group.profiles = [SocialGroupProfile(group_id="100", observe_enabled=True)]
         self.now = datetime(2026, 9, 21, 18, 0, tzinfo=TZ)
 
     async def asyncTearDown(self):
@@ -2045,7 +2045,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selected_mode_skips_group_with_switch_off(self):
         config = make_group_config(group_gate=True, group_ids=("100",), group_mode="selected")
-        config.social.groups[0].rest_gate_enabled = False
+        config.group.profiles[0].rest_gate_enabled = False
         gate = self._gate(config)
         allowed, reason = gate.decide_group("凌晨闲聊", NIGHT, "100")
         self.assertTrue(allowed)
@@ -2175,7 +2175,7 @@ class RelaySleepCheckTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = LifeStore(self.tmp.name); await self.store.initialize()
         self.config = make_group_config(group_gate=True)
-        self.config.social.groups[0].relay_target_enabled = True
+        self.config.group.profiles[0].relay_target_enabled = True
 
     async def asyncTearDown(self):
         await self.store.close(); self.tmp.cleanup()
@@ -2703,7 +2703,7 @@ class V1147RepoConfigTemplateTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         config = MaiLifeSettings.model_validate(
             tomllib.loads((root / "config.toml.example").read_text(encoding="utf-8-sig")))
-        self.assertEqual(config.plugin.config_version, "1.12.0")
+        self.assertEqual(config.plugin.config_version, "1.13.0")
         self.assertFalse(config.rest_gate.enabled)
 
 
@@ -3686,9 +3686,9 @@ class V11412WebuiDigestTests(unittest.IsolatedAsyncioTestCase):
     async def _plugin(self, *, information_enabled: bool = True) -> MaiLifePlugin:
         # 联网三开关默认全关；摘要的 status 块要反映配置，这里显式打开。
         config = MaiLifeSettings()
-        config.information.enabled = information_enabled
-        config.news.enabled = information_enabled
-        config.search.enabled = information_enabled
+        config.network.enabled = information_enabled
+        config.network.news_enabled = information_enabled
+        config.network.news_enabled = information_enabled
         return await build_plugin(self.store, config, llm=DummyLLM())
 
     async def _seed_news(self, count: int) -> None:
@@ -4355,8 +4355,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
     """webui_config_summary：19 个配置节键齐全、布尔转「开启/关闭」、窗口串与本 API 不出 Key。"""
 
     SECTIONS = ("plugin", "users", "models", "environment", "linkage", "recall",
-                "context", "rest_gate", "group", "memory", "information", "news", "search",
-                "search_api", "social", "creation", "schedule", "proactive", "usage")
+                "context", "rest_gate", "group", "network", "memory", "creation",
+                "schedule", "proactive", "usage")
 
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -4411,8 +4411,13 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
                                                   "llm_threshold", "awake_grace_minutes",
                                                   "silence_minutes", "night_window", "nap_window"})
-        self.assertEqual(set(data["group"]), {"gate_enabled", "gate_scope", "turn_enabled",
-                                              "gate_segment_types", "night_window", "nap_window"})
+        self.assertEqual(set(data["group"]), {"profiles", "gate_enabled", "gate_scope", "turn_enabled",
+                                              "gate_segment_types", "night_window", "nap_window",
+                                              "relay_enabled", "observation_wait_seconds",
+                                              "max_buffer_messages", "interesting_threshold",
+                                              "summary_retention_hours", "relay_pending_seconds",
+                                              "owner_group_to_private_enabled", "inactivity_hours",
+                                              "group_share_daily_max", "group_share_min_interval_minutes"})
         self.assertEqual(data["rest_gate"]["night_window"], "23:00-07:30")
         self.assertEqual(data["rest_gate"]["nap_window"], "12:00-14:30")
         self.assertEqual(data["group"]["night_window"], "22:30-08:00")
@@ -4434,23 +4439,13 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["memory"]["diary_enabled"], "开启")
         self.assertAlmostEqual(data["memory"]["dream_probability"], 0.35)
         self.assertEqual(data["memory"]["dream_weekly_max"], 0)
-        self.assertEqual(set(data["information"]), {"enabled", "association_enabled",
-                                                    "association_threshold",
-                                                    "proactive_share_enabled",
-                                                    "context_item_limit"})
-        self.assertEqual(set(data["news"]), {"enabled", "daily_max", "full_text_count",
-                                             "retention_days"})
-        self.assertEqual(set(data["search"]), {"enabled", "daily_max", "include_chat_topics",
-                                               "note_retention_days"})
-        self.assertEqual(set(data["search_api"]), {"tool_enabled", "history_enabled",
-                                                   "history_retention_days", "max_attempts",
-                                                   "max_results"})
-        self.assertEqual(set(data["social"]), {"enabled", "owner_group_to_private_enabled",
-                                               "inactivity_hours", "group_share_daily_max",
-                                               "group_share_min_interval_minutes",
-                                               "interesting_threshold", "summary_retention_hours",
-                                               "relay_pending_seconds", "groups"})
-        self.assertEqual(data["social"]["groups"], 0)
+        self.assertEqual(set(data["network"]), {"enabled", "tool_enabled", "max_results",
+                                                "max_attempts", "history_enabled",
+                                                "history_retention_days",
+                                                "association_enabled", "association_threshold",
+                                                "proactive_share_enabled", "context_item_limit",
+                                                "news_enabled", "news_daily_max",
+                                                "search_enabled", "search_daily_max"})
         self.assertEqual(set(data["creation"]), {"enabled", "plaintext_storage_acknowledged",
                                                  "daily_max", "minimum_energy",
                                                  "public_works_enabled",
@@ -4499,9 +4494,9 @@ class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = LifeStore(self.tmp.name); await self.store.initialize()
         self.config = MaiLifeSettings()
-        self.config.social.enabled = True
-        self.config.information.enabled = True  # 概览的 network_enabled 取联网总开关
-        self.config.social.groups = [SocialGroupProfile(
+        self.config.group.relay_enabled = True
+        self.config.network.enabled = True  # 概览的 network_enabled 取联网总开关
+        self.config.group.profiles = [SocialGroupProfile(
             group_id="100", enabled=True, observe_enabled=True, relay_target_enabled=False)]
         self.config.creation.external_reading_enabled = True
         self.config.creation.external_reading_api_name = "外读 API"

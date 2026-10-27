@@ -28,27 +28,27 @@ class NewsService:
 
     async def refresh_due(self,now:Any,schedule:dict[str,Any],personality:str)->int:
         """在允许的空闲日程由人格规划新闻词，经宿主统一联网执行一次搜索并保存去重结果。"""
-        cfg=self.config.news
-        if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return 0
+        cfg=self.config.network
+        if not cfg.enabled or not cfg.news_enabled or int(cfg.news_daily_max)<=0:return 0
         current=schedule.get("current") or {}
-        if str(current.get("kind") or "") not in set(cfg.allowed_schedule_types):return 0
+        if str(current.get("kind") or "") not in set(cfg.news_allowed_schedule_types):return 0
         start,end=self._day_bounds(now)
-        if await self.store.search_attempt_count("news",start,end)>=int(cfg.daily_max):return 0
+        if await self.store.search_attempt_count("news",start,end)>=int(cfg.news_daily_max):return 0
         if not self.search.available():return 0
         query=await self.search.sanitize_query(await self._plan_query(now,personality,schedule))
         if not query:
             return 0
         response=await self.search.search(
-            query,operation="news",max_results=int(self.config.search_api.max_results),
+            query,operation="news",max_results=int(self.config.network.max_results),
         )
         results=self._recent_results(response["results"],now.timestamp())
         if not results:
             if response["results"]:
                 self.logger.info("[MaiLife] 新闻搜索结果全部早于 3 天，未写入新闻库")
             return 0
-        results=results[:min(5,int(self.config.search_api.max_results))]
+        results=results[:min(5,int(self.config.network.max_results))]
         contents=await self._read_articles(results)
-        changed=0; now_ts=now.timestamp(); retention=int(cfg.retention_days)*86400
+        changed=0; now_ts=now.timestamp(); retention=int(cfg.news_retention_days)*86400
         service=str(response.get("service") or "host")
         for index,result in enumerate(results):
             uncited=not result["url"]
@@ -57,7 +57,7 @@ class NewsService:
             # 去重键只由 url 或 title+snippet 决定：同一条新闻不会因服务名变化而重复入库。
             stable=result["url"] or hashlib.sha256(f"{result['title']}:{result['snippet']}".encode()).hexdigest()
             item_id=hashlib.sha256(stable.encode()).hexdigest()
-            content=contents.get(index,"")[:int(cfg.max_article_chars)]
+            content=contents.get(index,"")[:int(cfg.news_max_article_chars)]
             digest=hashlib.sha256(json.dumps([result["title"],summary,content],ensure_ascii=False).encode()).hexdigest()
             source_id=f"host:{service}"+(":uncited" if uncited else "")
             if await self.store.upsert_news_item({
@@ -105,13 +105,13 @@ class NewsService:
 
     async def _read_articles(self,results:list[dict[str,Any]])->dict[int,str]:
         """并发经宿主 web.fetch 读取最多三篇正文；任一页面失败只降级为搜索摘要。"""
-        limit=min(len(results),int(self.config.news.full_text_count),3)
+        limit=min(len(results),int(self.config.network.news_full_text_count),3)
         if limit<=0:return {}
-        semaphore=asyncio.Semaphore(int(self.config.news.max_concurrency))
+        semaphore=asyncio.Semaphore(int(self.config.network.news_max_concurrency))
         async def read(index:int,result:dict[str,Any])->tuple[int,str]:
             if not result["url"]:return index,""
             async with semaphore:
                 return index,await self.search.fetch_article(result["url"])
         values=await asyncio.gather(*(read(index,result) for index,result in enumerate(results[:limit])))
-        max_chars=int(self.config.news.max_article_chars)
+        max_chars=int(self.config.network.news_max_article_chars)
         return {index:content[:max_chars] for index,content in values if content}

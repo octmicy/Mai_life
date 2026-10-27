@@ -28,7 +28,7 @@ class HostSearchService:
     async def _private_query_terms(self)->list[str]:
         """联网前移除 QQ 号及 Host 自动读取的昵称、群名、群成员昵称；展示名称从不参与身份匹配。"""
         terms=[str(item.user_id) for item in self.config.users.profiles]
-        terms.extend(str(item.group_id) for item in self.config.social.groups)
+        terms.extend(str(item.group_id) for item in self.config.group.profiles)
         for item in await self.store.list_users(include_disabled=True):terms.append(str(item.get("display_name") or ""))
         for item in await self.store.list_group_directory(500):terms.append(str(item.get("group_name") or ""))
         terms.extend(await self.store.list_group_member_names())
@@ -57,7 +57,7 @@ class HostSearchService:
         不抛异常——调用方按空结果处理，错误细节看搜索历史。
         """
         web=self._web()
-        attempts=max(1,int(getattr(self.config.search_api,"max_attempts",3) or 3))
+        attempts=max(1,int(getattr(self.config.network,"max_attempts",3) or 3))
         limit=max(1,min(20,int(max_results or 5)))
         started=time.perf_counter(); now=time.time(); last_error="host_unavailable"
         if web is not None:
@@ -107,9 +107,9 @@ class HostSearchService:
             )
         except Exception as exc:
             self.logger.debug(f"[MaiLife] 搜索 usage 记录失败: {exc}")
-        if not getattr(self.config.search_api,"history_enabled",True):return
+        if not getattr(self.config.network,"history_enabled",True):return
         try:
-            retention=max(1,min(365,int(getattr(self.config.search_api,"history_retention_days",30) or 30)))
+            retention=max(1,min(365,int(getattr(self.config.network,"history_retention_days",30) or 30)))
             history=[{"title":row["title"],"url":row["url"][:2000],"snippet":row["snippet"][:900],
                       "provider_generated":False} for row in rows]
             await self.store.record_search_history(

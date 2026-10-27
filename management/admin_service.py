@@ -52,7 +52,7 @@ class AdminService:
     async def _groups(self,limit:int)->list[dict[str,Any]]:
         directory={str(item["group_id"]):item for item in await self.store.list_group_directory(500)}
         result=[]
-        for profile in self.config.social.groups[:limit]:
+        for profile in self.config.group.profiles[:limit]:
             group_id=str(profile.group_id); cached=directory.get(group_id,{})
             result.append({"group_id":group_id,"group_name":str(cached.get("group_name") or ""),
                            "stream_known":bool(cached.get("stream_id")),"enabled":bool(profile.enabled),
@@ -76,8 +76,8 @@ class AdminService:
                 "token_calls_today":sum(int(item.get("calls") or 0) for item in tokens),
                 "token_total_today":sum(int(item.get("total_tokens") or 0) for item in tokens),
                 "search_calls_today":sum(int(item.get("calls") or 0) for item in usage["search_api_usage"]),
-                "social_enabled":bool(self.config.social.enabled),"creation_enabled":bool(self.config.creation.enabled),
-                "network_enabled":bool(self.config.information.enabled)}
+                "social_enabled":bool(self.config.group.relay_enabled),"creation_enabled":bool(self.config.creation.enabled),
+                "network_enabled":bool(self.config.network.enabled)}
 
     async def format_text(self,scope:str,now:Any,limit:int=12)->str:
         """将不同管理范围格式化为可复制文本，并保持敏感字段已经脱敏。"""

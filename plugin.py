@@ -473,12 +473,12 @@ class MaiLifePlugin(MaiBotPlugin):
     async def _information_loop(self)->None:
         while True:
             try:
-                await asyncio.sleep(60 if self.config.information.enabled else 300)
-                if not self.config.information.enabled:continue
+                await asyncio.sleep(60 if self.config.network.enabled else 300)
+                if not self.config.network.enabled:continue
                 assert self._information and self._env and self._store and self._schedule
                 now=self._env.now(); state=await self._store.get_state(); schedule=await self._schedule.context(now)
                 topics=[]
-                if self.config.search.include_chat_topics:
+                if self.config.network.search_include_chat_topics:
                     for user in await self._store.list_users():
                         if str(user.get("role") or "friend")!="owner":continue
                         continuity=await self._store.get_continuity(str(user["user_id"]))
@@ -1057,7 +1057,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 "group_id":group_id,"user_id":uid,"updated_at":current,
                 "generation":self._group_turn_generation,
             }
-        if self._group_observer and self.config.social.enabled:
+        if self._group_observer and self.config.group.relay_enabled:
             # 社交观察消费防抖后的最终消息，同时保留自己的后台话题收集窗口。
             self._spawn_transient(
                 self._group_observer.observe(merged,self._env.now()),f"mai-life-group-{mid}",
@@ -1305,7 +1305,7 @@ class MaiLifePlugin(MaiBotPlugin):
             # 查不到（find_source_message_by_id 不认），报错还会被 to_display_message_id 哈希成乱码。
             runtime=self._session_runtime.get(session) or {}
             suffix+=self._active_tasks.planner_instruction(active,str(runtime.get("message_id") or ""))
-        if active and active.kind=="relay" and self._relay and self.config.social.enabled:
+        if active and active.kind=="relay" and self._relay and self.config.group.relay_enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)
         # 麦麦绘图联动：对话/状态触发的生活分享引导（独立 suffix，不受 _clip(4000) 截断影响）。
         suffix+=self._moment_guide_note(session,payload,active,group_passive,kwargs)
@@ -1344,7 +1344,7 @@ class MaiLifePlugin(MaiBotPlugin):
             if runtime.get("recall_query"):
                 user=await self._user_by_session(session)
                 if user:suffix+=await self._recall.query_prompt_context(session,str(user.get("user_id") or ""))
-        if active and active.kind=="relay" and self._relay and self.config.social.enabled:
+        if active and active.kind=="relay" and self._relay and self.config.group.relay_enabled:
             suffix+=await self._relay.prompt_context(session,active.task_id)
         if not suffix:return {"action":"continue"}
         kwargs["extra_prompt"]=(kwargs.get("extra_prompt") or "")+suffix
@@ -1429,7 +1429,7 @@ class MaiLifePlugin(MaiBotPlugin):
             self._get_logger().info(f"[MaiLife] replyer 输出被抑制 reason=relay_expired session={session}")
             return self._suppress_response(kwargs,"relay_expired")
         cancel_proactive=bool(proactive and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.proactive.enabled))
-        cancel_relay=bool(relay_task and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.social.enabled))
+        cancel_relay=bool(relay_task and (self._stopping or self._reloading or not self.config.plugin.enabled or not self.config.group.relay_enabled))
         if cancel_proactive:
             await self._store.set_proactive_event_status(str(proactive["id"]),"cancelled")
             await self._store.release_opportunity(str(proactive["opportunity_id"]))
@@ -1553,7 +1553,7 @@ class MaiLifePlugin(MaiBotPlugin):
             return {"action":"abort"}
         if relay_task and bool(kwargs.get("set_reply")) and (anchor==task_id or anchor.startswith(HOST_TASK_PREFIX)):
             kwargs["set_reply"]=False; modified=True
-        if relay_task and (self._stopping or not self.config.plugin.enabled or not self.config.social.enabled):
+        if relay_task and (self._stopping or not self.config.plugin.enabled or not self.config.group.relay_enabled):
             if str(relay_task.get("status") or "") in {"pending","sending"} and self._store:
                 await self._store.set_relay_status(str(relay_task["id"]),"cancelled",time.time(),"plugin_disabled")
             return {"action":"abort"}
@@ -1569,7 +1569,7 @@ class MaiLifePlugin(MaiBotPlugin):
         if await recalled_now() or confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
             return {"action":"abort"}
-        if not self._relay or not self.config.plugin.enabled or not self.config.social.enabled:
+        if not self._relay or not self.config.plugin.enabled or not self.config.group.relay_enabled:
             return {"action":"continue","modified_kwargs":kwargs} if modified else {"action":"continue"}
         # 迟到转述放行：active 归因存活且候选未结算时，过期候选仍应发出（与主动链一致）。
         relay_late=bool(active and relay_task and str(relay_task.get("id") or "")==str(active.record_id)
@@ -1884,11 +1884,11 @@ class MaiLifePlugin(MaiBotPlugin):
               f"休息闸门：{('开启（按设定时间）' if self.config.rest_gate.gate_mode=='time_window' else '开启（按日程判断）') if self.config.rest_gate.enabled else '关闭'}\n"
               f"睡前流程：{('跟随日程睡眠段' if self.config.rest_gate.gate_mode=='schedule' else '与夜间闸门同时段')+'（静默 %d 分钟后入睡）' % BEDTIME_SILENCE_MINUTES if self.config.rest_gate.enabled else '关闭'}\n"
               f"绘图联动：{'开启（已检测到麦麦绘图插件）' if (self.config.linkage.drawpic_enabled and self._drawpic_loaded is True) else ('开启（未检测到麦麦绘图插件，开关暂不生效）' if self.config.linkage.drawpic_enabled else '关闭')}\n"
-              f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.social.groups if g.enabled and g.rest_gate_enabled) if self.config.group.gate_enabled else '关闭'}\n"
+              f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.group.profiles if g.enabled and g.rest_gate_enabled) if self.config.group.gate_enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
-              f"联网见闻：{'开启' if self.config.information.enabled else '关闭'}（新闻 {'开' if self.config.news.enabled else '关'} / 搜索 {'开' if self.config.search.enabled else '关'}）\n"
-              f"社交转述：{'开启' if self.config.social.enabled else '关闭'}（白名单群 {len(self.config.social.groups)}）\n"
+              f"联网见闻：{'开启' if self.config.network.enabled else '关闭'}（新闻 {'开' if self.config.network.news_enabled else '关'} / 搜索 {'开' if self.config.network.news_enabled else '关'}）\n"
+              f"社交转述：{'开启' if self.config.group.relay_enabled else '关闭'}（白名单群 {len(self.config.group.profiles)}）\n"
               f"书柜创作：{'开启' if self.config.creation.enabled else '关闭'}（明文确认 {'是' if self.config.creation.plaintext_storage_acknowledged else '否'}）\n"
               f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}")
         return await self._send_command(kwargs,text)
@@ -1961,7 +1961,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 f"生活记忆：日记 {diary_text}{narrative_note}\n"
                 f"联网见闻：{'开启' if info['enabled'] else '关闭'}，来源 {info['sources']}，新闻 {info['recent_news']}，探索 {info['recent_explorations']}，"
                 f"搜索历史 {info['recent_search_history']}，最近失败：{last_failure}\n"
-                f"社交转述：{'开启' if self.config.social.enabled else '关闭'}，短期群摘要 {len(observations)}，"
+                f"社交转述：{'开启' if self.config.group.relay_enabled else '关闭'}，短期群摘要 {len(observations)}，"
                 f"群缓冲 {self._group_observer.active_groups if self._group_observer else 0}\n"
                 f"书柜创作：{'开启' if creation['enabled'] else '关闭'}，今日归档 {creation['archived_today']}，"
                 f"待处理灵感 {creation['pending_inspirations']}，明文确认 {'是' if creation['plaintext_acknowledged'] else '否'}\n"
@@ -2574,12 +2574,23 @@ class MaiLifePlugin(MaiBotPlugin):
                                  "silence_minutes":BEDTIME_SILENCE_MINUTES,
                                  "night_window":f"{gate.night_start}-{gate.night_end}",
                                  "nap_window":f"{gate.nap_start}-{gate.nap_end}"},
-                    "group":{"gate_enabled":_switch(cfg.group.gate_enabled),
+                    "group":{"profiles":len(cfg.group.profiles),
+                             "gate_enabled":_switch(cfg.group.gate_enabled),
                              "gate_scope":str(cfg.group.gate_scope),
                              "turn_enabled":_switch(cfg.group.turn_enabled),
                              "gate_segment_types":"、".join(cfg.group.gate_segment_types),
                              "night_window":f"{cfg.group.night_start}-{cfg.group.night_end}",
-                             "nap_window":f"{cfg.group.nap_start}-{cfg.group.nap_end}"},
+                             "nap_window":f"{cfg.group.nap_start}-{cfg.group.nap_end}",
+                             "relay_enabled":_switch(cfg.group.relay_enabled),
+                             "observation_wait_seconds":int(cfg.group.observation_wait_seconds),
+                             "max_buffer_messages":int(cfg.group.max_buffer_messages),
+                             "interesting_threshold":round(float(cfg.group.interesting_threshold),2),
+                             "summary_retention_hours":int(cfg.group.summary_retention_hours),
+                             "relay_pending_seconds":int(cfg.group.relay_pending_seconds),
+                             "owner_group_to_private_enabled":_switch(cfg.group.owner_group_to_private_enabled),
+                             "inactivity_hours":round(float(cfg.group.inactivity_hours),1),
+                             "group_share_daily_max":int(cfg.group.group_share_daily_max),
+                             "group_share_min_interval_minutes":int(cfg.group.group_share_min_interval_minutes)},
                     "memory":{"enabled":_switch(cfg.memory.enabled),
                               "dream_fragments_enabled":_switch(cfg.memory.dream_fragments_enabled),
                               "dream_fragment_count":int(cfg.memory.dream_fragment_count),
@@ -2592,31 +2603,20 @@ class MaiLifePlugin(MaiBotPlugin):
                               "date_model_analysis_enabled":_switch(cfg.memory.date_model_analysis_enabled),
                               "date_candidate_retention_days":int(cfg.memory.date_candidate_retention_days),
                               "date_reminder_lead_days":"、".join(str(int(item)) for item in cfg.memory.date_reminder_lead_days)},
-                    "information":{"enabled":_switch(cfg.information.enabled),
-                                   "association_enabled":_switch(cfg.information.association_enabled),
-                                   "association_threshold":round(float(cfg.information.association_threshold),2),
-                                   "proactive_share_enabled":_switch(cfg.information.proactive_share_enabled),
-                                   "context_item_limit":int(cfg.information.context_item_limit)},
-                    "news":{"enabled":_switch(cfg.news.enabled),"daily_max":int(cfg.news.daily_max),
-                            "full_text_count":int(cfg.news.full_text_count),
-                            "retention_days":int(cfg.news.retention_days)},
-                    "search":{"enabled":_switch(cfg.search.enabled),"daily_max":int(cfg.search.daily_max),
-                              "include_chat_topics":_switch(cfg.search.include_chat_topics),
-                              "note_retention_days":int(cfg.search.note_retention_days)},
-                    "search_api":{"tool_enabled":_switch(cfg.search_api.tool_enabled),
-                                  "history_enabled":_switch(cfg.search_api.history_enabled),
-                                  "history_retention_days":int(cfg.search_api.history_retention_days),
-                                  "max_attempts":int(cfg.search_api.max_attempts),
-                                  "max_results":int(cfg.search_api.max_results)},
-                    "social":{"enabled":_switch(cfg.social.enabled),
-                              "owner_group_to_private_enabled":_switch(cfg.social.owner_group_to_private_enabled),
-                              "inactivity_hours":round(float(cfg.social.inactivity_hours),1),
-                              "group_share_daily_max":int(cfg.social.group_share_daily_max),
-                              "group_share_min_interval_minutes":int(cfg.social.group_share_min_interval_minutes),
-                              "interesting_threshold":round(float(cfg.social.interesting_threshold),2),
-                              "summary_retention_hours":int(cfg.social.summary_retention_hours),
-                              "relay_pending_seconds":int(cfg.social.relay_pending_seconds),
-                              "groups":len(cfg.social.groups)},
+                    "network":{"enabled":_switch(cfg.network.enabled),
+                               "tool_enabled":_switch(cfg.network.tool_enabled),
+                               "max_results":int(cfg.network.max_results),
+                               "max_attempts":int(cfg.network.max_attempts),
+                               "history_enabled":_switch(cfg.network.history_enabled),
+                               "history_retention_days":int(cfg.network.history_retention_days),
+                               "association_enabled":_switch(cfg.network.association_enabled),
+                               "association_threshold":round(float(cfg.network.association_threshold),2),
+                               "proactive_share_enabled":_switch(cfg.network.proactive_share_enabled),
+                               "context_item_limit":int(cfg.network.context_item_limit),
+                               "news_enabled":_switch(cfg.network.news_enabled),
+                               "news_daily_max":int(cfg.network.news_daily_max),
+                               "search_enabled":_switch(cfg.network.search_enabled),
+                               "search_daily_max":int(cfg.network.search_daily_max)},
                     "creation":{"enabled":_switch(cfg.creation.enabled),
                                 "plaintext_storage_acknowledged":_switch(cfg.creation.plaintext_storage_acknowledged),
                                 "daily_max":int(cfg.creation.daily_max),

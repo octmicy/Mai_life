@@ -228,7 +228,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
             await self.store.create_relay_candidate({"id":relay_id,"kind":"explicit","target_group_id":str(index),
                 "target_stream_id":session,"summary":"转述摘要","reason":"授权转述","mention_user_id":"200",
                 "mention_name":"小明","status":"pending","created_at":now,"expires_at":now+180})
-            config=MaiLifeSettings(); config.social.enabled=True
+            config=MaiLifeSettings(); config.group.relay_enabled=True
             plugin=MaiLifePlugin(); plugin.set_plugin_config(config.model_dump(mode="python")); plugin._store=self.store
             plugin._relay=RelayService(object(),self.store,config,DummyLogger())
             await plugin.on_planner(session_id=session,messages=planner_messages(

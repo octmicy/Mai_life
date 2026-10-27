@@ -174,8 +174,8 @@ def make_group_config(*, group_gate: bool, group_ids: tuple[str, ...] = ("100",)
     config = MaiLifeSettings()
     config.group.gate_enabled = group_gate
     config.group.gate_scope = group_mode
-    config.social.enabled = True
-    config.social.groups = [
+    config.group.relay_enabled = True
+    config.group.profiles = [
         SocialGroupProfile(group_id=gid, enabled=True, observe_enabled=True,
                            relay_target_enabled=False, rest_gate_enabled=True)
         for gid in group_ids

@@ -87,7 +87,7 @@ class RestGate:
         cfg=getattr(self.config,"group",None)
         if cfg is None or str(getattr(cfg,"gate_scope","all") or "all")!="selected":
             return True
-        for item in (getattr(self.config.social,"groups",None) or []):
+        for item in (getattr(self.config.group,"profiles",None) or []):
             if str(getattr(item,"group_id","") or "").strip()==target:
                 return bool(getattr(item,"enabled",False) and getattr(item,"rest_gate_enabled",False))
         return False

@@ -17,7 +17,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
                UserProfile(user_id="10002",role="friend")]
         self.config.users.profiles=users; await self.store.sync_users(users)
         await self.store.update_user_display_name("10001","自动主人昵称")
-        self.config.social.groups=[SocialGroupProfile(group_id="20001",observe_enabled=True,relay_target_enabled=True)]
+        self.config.group.profiles=[SocialGroupProfile(group_id="20001",observe_enabled=True,relay_target_enabled=True)]
         await self.store.upsert_group_directory("20001","自动读取群名","group-stream",self.now.timestamp())
         await self.store.add_date_candidate("10002","考试","下周","",0.5,"候选摘要",self.now.timestamp())
         await self.store.create_bookshelf_document({"id":"private-work","doc_type":"work","work_type":"essay",

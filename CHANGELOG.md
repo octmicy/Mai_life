@@ -20,6 +20,16 @@
 - **插件自有联网链整体删除，联网全面走宿主统一服务**（主人决策）：`tool_web_search`、新闻阅读、主动搜索、联网见闻全部改走宿主 `ctx.web.search` / `ctx.web.fetch`（SDK 2.17+，失败按 `search_api.max_attempts`（默认 3）短退避重试，仍失败记录历史并返回空结果，**不做回退**）。删除 `search_service`/`search_providers`/`search_parsing`/`search_models`（约 870 行 Provider 降级链与 Key 冷却体系）与博查/Tavily/You.com/自定义中转/Playwright 浏览器五种 Provider。`search_api` 配置瘦身（节名不变，删 providers 列表与 timeout_seconds，新增语义为重试次数的 max_attempts）；`webui_admin_summary` 的 sources 范围、搜索来源/Key 健康表随之移除；usage 的「今日搜索请求」改由宿主搜索事件计数。
 - **网页截图工具 `mai_life_browse_web` 删除**（主人追加）：Playwright 依赖从 manifest/requirements 移除，`playwright_search.py`/`feed_parser.py` 删除；网页正文读取改用宿主 `web.fetch`（返回已提取正文）。天气获取仍走插件 HttpClient（宿主无对应能力）。
 
+### 变更（设置大整合，按主人批复的模拟稿实施）
+
+- **设置编辑表单 19 节收敛为 16 节**（节 Tab 排序全部重排为 0–15 无重复）：
+  - **群聊设置**＝原 `[group]`＋原 `[social]` 全节：白名单（逐群 启用/观察/转述/夜间静音）放节内首位，其后休息闸门与轮次、观察与转述；`[social]` 节删除。
+  - **联网**＝原 `[information]`/`[search_api]`/`[news]`/`[search]` 四节合一（21 字段平铺，news_*/search_* 加前缀）：总开关与搜索工具 → 搜索历史 → 见闻关联 → 新闻阅读 → 主动搜索。
+  - **死字段删除**：`plugin.llm_model`（零消费者）、`models.relay_summary_task`（v1.23.6 起孤儿路由，llm 路由表同步清理）。
+  - **节内字段 order 重复修复**：rest_gate（判醒模式与闸门方式同 1、强制词与夜窗开始同 6）、proactive（契机重试与最低精力同 5）；`休息回复闸门` 更名「休息回复闸门（私聊）」与群闸门区分。
+  - 配置 Schema 升 1.13.0；`migrate_legacy_sections` 校验器把旧 TOML 的 [social]/[information]/[search_api]/[news]/[search] 原样搬进 [group]/[network]，**旧配置零丢失、无需手改**。
+- **仪表盘同步**：「联网搜索」Tab 更名「联网」并按五段重排（绑定 network.*）；群聊 Tab「群转私边界」更名「观察与转述」（绑定 group.*）；overview 撤回开关加「（运行）」后缀区分运行态、删除与系统页重复的版本号。
+
 ### 修复
 
 - **旧配置 `search_api.max_attempts = 12` 导致整份配置校验失败、工具与调度暂停**：新上限收紧到 5 后，旧 TOML（默认 12）会被 pydantic 拒绝。现在加 before 校验器把超范围值夹回边界（12→5、0→1），旧配置无需手改即可通过校验。

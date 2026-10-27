@@ -382,7 +382,7 @@
           "children": [
             {
               "type": "stat",
-              "label": "撤回增强",
+              "label": "撤回增强（运行）",
               "value": {
                 "source": "status",
                 "field": "recall.enabled"
@@ -425,14 +425,6 @@
               "value": {
                 "source": "status",
                 "field": "bot_name"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "插件版本",
-              "value": {
-                "source": "status",
-                "field": "version"
               }
             },
             {
@@ -2823,51 +2815,105 @@
             },
             {
               "type": "stack",
-              "label": "联网搜索",
+              "label": "联网",
               "children": [
                 {
                   "type": "grid",
-                  "label": "联网见闻",
+                  "label": "总开关与搜索工具",
                   "columns": 4,
                   "children": [
                     {
                       "type": "stat",
-                      "label": "联网见闻",
+                      "label": "启用联网",
                       "value": {
                         "source": "config",
-                        "field": "information.enabled"
+                        "field": "network.enabled"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "自我关联",
+                      "label": "联网搜索工具",
                       "value": {
                         "source": "config",
-                        "field": "information.association_enabled"
+                        "field": "network.tool_enabled"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "关联阈值",
+                      "label": "单次结果数",
                       "value": {
                         "source": "config",
-                        "field": "information.association_threshold"
+                        "field": "network.max_results"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "见闻主动分享",
+                      "label": "失败重试次数",
                       "value": {
                         "source": "config",
-                        "field": "information.proactive_share_enabled"
+                        "field": "network.max_attempts"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "搜索历史",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "记录搜索历史",
+                      "value": {
+                        "source": "config",
+                        "field": "network.history_enabled"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "上下文条数",
+                      "label": "历史保留(天)",
                       "value": {
                         "source": "config",
-                        "field": "information.context_item_limit"
+                        "field": "network.history_retention_days"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "见闻与关联",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "启用自我关联",
+                      "value": {
+                        "source": "config",
+                        "field": "network.association_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "关联分数阈值",
+                      "value": {
+                        "source": "config",
+                        "field": "network.association_threshold"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "允许见闻主动分享",
+                      "value": {
+                        "source": "config",
+                        "field": "network.proactive_share_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "近期见闻上下文数量",
+                      "value": {
+                        "source": "config",
+                        "field": "network.context_item_limit"
                       }
                     }
                   ]
@@ -2879,34 +2925,18 @@
                   "children": [
                     {
                       "type": "stat",
-                      "label": "新闻阅读",
+                      "label": "启用新闻阅读",
                       "value": {
                         "source": "config",
-                        "field": "news.enabled"
+                        "field": "network.news_enabled"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "每日新闻次数",
+                      "label": "每日新闻阅读次数",
                       "value": {
                         "source": "config",
-                        "field": "news.daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "正文读取数量",
-                      "value": {
-                        "source": "config",
-                        "field": "news.full_text_count"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "新闻保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "news.retention_days"
+                        "field": "network.news_daily_max"
                       }
                     }
                   ]
@@ -2918,81 +2948,18 @@
                   "children": [
                     {
                       "type": "stat",
-                      "label": "主动搜索",
+                      "label": "启用主动搜索",
                       "value": {
                         "source": "config",
-                        "field": "search.enabled"
+                        "field": "network.search_enabled"
                       }
                     },
                     {
                       "type": "stat",
-                      "label": "每日搜索次数",
+                      "label": "每日主动搜索上限",
                       "value": {
                         "source": "config",
-                        "field": "search.daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "参考聊天话题",
-                      "value": {
-                        "source": "config",
-                        "field": "search.include_chat_topics"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "笔记保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "search.note_retention_days"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "联网搜索（宿主统一）",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "联网搜索工具",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.tool_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "单次结果数",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.max_results"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "失败重试次数",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.max_attempts"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "记录搜索历史",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.history_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "历史保留(天)",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.history_retention_days"
+                        "field": "network.search_daily_max"
                       }
                     }
                   ]
@@ -3094,7 +3061,7 @@
                 },
                 {
                   "type": "grid",
-                  "label": "群转私边界",
+                  "label": "观察与转述",
                   "columns": 4,
                   "children": [
                     {
@@ -3102,7 +3069,7 @@
                       "label": "社交转述",
                       "value": {
                         "source": "config",
-                        "field": "social.enabled"
+                        "field": "group.relay_enabled"
                       }
                     },
                     {
@@ -3110,7 +3077,7 @@
                       "label": "群转私",
                       "value": {
                         "source": "config",
-                        "field": "social.owner_group_to_private_enabled"
+                        "field": "group.owner_group_to_private_enabled"
                       }
                     },
                     {
@@ -3118,7 +3085,7 @@
                       "label": "离群时长(小时)",
                       "value": {
                         "source": "config",
-                        "field": "social.inactivity_hours"
+                        "field": "group.inactivity_hours"
                       }
                     },
                     {
@@ -3126,7 +3093,7 @@
                       "label": "每日群转私上限",
                       "value": {
                         "source": "config",
-                        "field": "social.group_share_daily_max"
+                        "field": "group.group_share_daily_max"
                       }
                     },
                     {
@@ -3134,7 +3101,7 @@
                       "label": "群转私最小间隔(分钟)",
                       "value": {
                         "source": "config",
-                        "field": "social.group_share_min_interval_minutes"
+                        "field": "group.group_share_min_interval_minutes"
                       }
                     },
                     {
@@ -3142,7 +3109,7 @@
                       "label": "公开话题阈值",
                       "value": {
                         "source": "config",
-                        "field": "social.interesting_threshold"
+                        "field": "group.interesting_threshold"
                       }
                     },
                     {
@@ -3150,7 +3117,7 @@
                       "label": "群摘要保留(小时)",
                       "value": {
                         "source": "config",
-                        "field": "social.summary_retention_hours"
+                        "field": "group.summary_retention_hours"
                       }
                     },
                     {
@@ -3158,7 +3125,7 @@
                       "label": "转述确认窗口(秒)",
                       "value": {
                         "source": "config",
-                        "field": "social.relay_pending_seconds"
+                        "field": "group.relay_pending_seconds"
                       }
                     },
                     {
@@ -3166,7 +3133,7 @@
                       "label": "群白名单数量",
                       "value": {
                         "source": "config",
-                        "field": "social.groups"
+                        "field": "group.profiles"
                       }
                     }
                   ]

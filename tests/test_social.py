@@ -75,9 +75,9 @@ def group_message(mid:str,text:str,adapter:str,user_id:str="30001",group_id:str=
 class SocialTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
-        self.config=MaiLifeSettings(); self.config.social.enabled=True
-        object.__setattr__(self.config.social,"observation_wait_seconds",0.02)
-        self.config.social.groups=[SocialGroupProfile(group_id="100",observe_enabled=True,relay_target_enabled=True)]
+        self.config=MaiLifeSettings(); self.config.group.relay_enabled=True
+        object.__setattr__(self.config.group,"observation_wait_seconds",0.02)
+        self.config.group.profiles=[SocialGroupProfile(group_id="100",observe_enabled=True,relay_target_enabled=True)]
         self.ctx=DummyContext()
 
     async def asyncTearDown(self):
@@ -115,7 +115,7 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_to_private_compares_exact_qq_number(self):
         owner=UserProfile(user_id="10001",role="owner",enabled=True,proactive_enabled=True,daily_proactive_max=2)
-        self.config.users.profiles=[owner]; self.config.social.interesting_threshold=0.5
+        self.config.users.profiles=[owner]; self.config.group.interesting_threshold=0.5
         await self.store.sync_users([owner]); await self.store.set_user_stream("10001","private-1")
         now=datetime(2026,7,13,18,0,tzinfo=timezone(timedelta(hours=8)))
         await self.store.record_group_activity("100","10001","旧昵称",now.timestamp()-7*3600)

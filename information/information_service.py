@@ -42,8 +42,8 @@ class InformationService:
 
     async def search_for_tool(self,query:str,now:Any,*,result_limit:int=5)->dict[str,Any]:
         """为 MaiBot Tool 执行一次宿主统一联网搜索（隐私清洗前置，失败已重试）。"""
-        cfg=self.config.search_api
-        if not self.config.information.enabled:
+        cfg=self.config.network
+        if not self.config.network.enabled:
             return {"success":False,"content":"联网见闻总开关未开启，不能使用联网搜索工具。"}
         if not cfg.tool_enabled:
             return {"success":False,"content":"联网搜索工具已在插件配置中关闭。"}
@@ -81,7 +81,7 @@ class InformationService:
 
     async def tick(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],
                    chat_topics:list[str]|None=None)->dict[str,int]:
-        if not self.config.information.enabled:return {"news":0,"associated":0,"search":0}
+        if not self.config.network.enabled:return {"news":0,"associated":0,"search":0}
         news_count=await self.news.refresh_due(now,schedule,personality)
         associated=await self._associate_pending_news(now,personality,state,schedule)
         searched=1 if await self.explore_due(now,personality,state,schedule,chat_topics or []) else 0
@@ -123,8 +123,8 @@ class InformationService:
             personality,state,schedule,
         )
         opportunity_id=""
-        if (association["score"]>=float(self.config.information.association_threshold)
-                and self.config.information.proactive_share_enabled):
+        if (association["score"]>=float(self.config.network.association_threshold)
+                and self.config.network.proactive_share_enabled):
             seed=":".join(sorted(f"{item['id']}:{item.get('content_hash','')}" for item in items))
             opportunity_id=hashlib.sha1(f"news-op:{seed}".encode()).hexdigest()[:20]
             expires=min(min(float(item["expires_at"]) for item in items),now.timestamp()+24*3600)
@@ -142,7 +142,7 @@ class InformationService:
 
     async def _associate(self,payload:dict[str,Any],personality:str,state:dict[str,Any],schedule:dict[str,Any])->dict[str,Any]:
         """先用本地活动规则建立保守基线，再由可选模型判断是否与麦麦自身有关。"""
-        if not self.config.information.association_enabled:return {"score":0.0,"reason":"自我关联已关闭","topic":"","motive":""}
+        if not self.config.network.association_enabled:return {"score":0.0,"reason":"自我关联已关闭","topic":"","motive":""}
         text=(str(payload.get("title") or "")+" "+str(payload.get("summary") or "")).casefold()
         score=0.2
         activity=str(state.get("current_activity") or "")+" "+str((schedule.get("current") or {}).get("summary") or "")
@@ -171,7 +171,7 @@ class InformationService:
     async def _plan_query(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->dict[str,str]:
         """在移除本地 QQ 号、昵称、群名后规划一个有限长度的探索查询。"""
         fallback={"topic":"","query":"","reason":"模型不可用，跳过自主搜索"}
-        safe_topics=[await self.search.sanitize_query(topic) for topic in chat_topics[:5]] if self.config.search.include_chat_topics else []
+        safe_topics=[await self.search.sanitize_query(topic) for topic in chat_topics[:5]] if self.config.network.search_include_chat_topics else []
         safe_topics=[topic for topic in safe_topics if topic]
         if not self.llm.task_available("search"):return fallback
         context={"personality":personality[:1200],"state":{"energy":state.get("energy"),"mood":state.get("mood_valence"),
@@ -190,17 +190,17 @@ class InformationService:
 
     async def explore_due(self,now:Any,personality:str,state:dict[str,Any],schedule:dict[str,Any],chat_topics:list[str])->bool:
         """在空闲日程和每日额度允许时完成一次搜索、摘要、关联和笔记归档。"""
-        cfg=self.config.search
-        if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return False
+        cfg=self.config.network
+        if not cfg.enabled or not cfg.search_enabled or int(cfg.search_daily_max)<=0:return False
         current=schedule.get("current") or {}
-        if str(current.get("kind") or "") not in set(cfg.allowed_schedule_types):return False
+        if str(current.get("kind") or "") not in set(cfg.search_allowed_schedule_types):return False
         start=now.replace(hour=0,minute=0,second=0,microsecond=0); end=start+timedelta(days=1)
-        if await self.store.search_attempt_count("search",start.timestamp(),end.timestamp())>=int(cfg.daily_max):return False
+        if await self.store.search_attempt_count("search",start.timestamp(),end.timestamp())>=int(cfg.search_daily_max):return False
         if not self.search.available():return False
         plan=await self._plan_query(now,personality,state,schedule,chat_topics)
         query=await self.search.sanitize_query(plan["query"])
         if not query:return False
-        response=await self.search.search(query,operation="search",max_results=int(self.config.search_api.max_results))
+        response=await self.search.search(query,operation="search",max_results=int(self.config.network.max_results))
         results=response["results"]
         if not results:return False
         summary=await self._summarize_search(plan,results)
@@ -208,7 +208,7 @@ class InformationService:
                                            "sources":[item["url"] for item in results if item["url"]]},
                                           personality,state,schedule)
         now_ts=now.timestamp(); note_id=hashlib.sha256(f"{now.date()}:{query}".encode()).hexdigest(); opportunity_id=""
-        if association["score"]>=float(self.config.information.association_threshold) and self.config.information.proactive_share_enabled:
+        if association["score"]>=float(self.config.network.association_threshold) and self.config.network.proactive_share_enabled:
             opportunity_id=hashlib.sha1(f"search-op:{note_id}".encode()).hexdigest()[:20]
             await self.store.add_opportunity({
                 "id":opportunity_id,"framework_id":f"search:{note_id}","topic":association["topic"] or plan["topic"],
@@ -219,7 +219,7 @@ class InformationService:
             "id":note_id,"topic":plan["topic"],"query":query,"summary":summary,
             "source_urls":[item["url"] for item in results if item["url"]],"created_at":now_ts,
             "relevance_score":association["score"],"relevance_reason":association["reason"],
-            "opportunity_id":opportunity_id,"expires_at":now_ts+int(cfg.note_retention_days)*86400,
+            "opportunity_id":opportunity_id,"expires_at":now_ts+int(cfg.search_note_retention_days)*86400,
         })
         return True
 
@@ -237,10 +237,10 @@ class InformationService:
         return str(result.get("summary") or fallback)[:5000] if isinstance(result,dict) else fallback
 
     async def context(self,now:Any)->dict[str,Any]:
-        limit=int(self.config.information.context_item_limit)
-        if not self.config.information.enabled or limit<=0:return {"news":[],"explorations":[]}
+        limit=int(self.config.network.context_item_limit)
+        if not self.config.network.enabled or limit<=0:return {"news":[],"explorations":[]}
         # 被动上下文阈值跟随“自我关联阈值”配置，但封顶 0.5，避免低门槛把弱关联内容塞进 Prompt。
-        threshold=min(float(self.config.information.association_threshold),0.5)
+        threshold=min(float(self.config.network.association_threshold),0.5)
         news=[item for item in await self.store.recent_news_items(now.timestamp(),limit*2,associated_only=True)
               if float(item.get("relevance_score") or 0)>=threshold][:limit]
         notes=[item for item in await self.store.recent_exploration_notes(now.timestamp(),limit*2)
@@ -249,8 +249,8 @@ class InformationService:
                 "explorations":[{"topic":item["topic"],"summary":item["summary"],"score":item["relevance_score"]} for item in notes]}
 
     async def status(self,now:Any)->dict[str,Any]:
-        return {"enabled":bool(self.config.information.enabled),"news_enabled":bool(self.config.news.enabled),
-                "search_enabled":bool(self.config.search.enabled),
+        return {"enabled":bool(self.config.network.enabled),"news_enabled":bool(self.config.network.news_enabled),
+                "search_enabled":bool(self.config.network.news_enabled),
                 "sources":1 if self.search.available() else 0,
                 "recent_news":len(await self.store.recent_news_items(now.timestamp(),100)),
                 "recent_explorations":len(await self.store.recent_exploration_notes(now.timestamp(),100)),

@@ -80,7 +80,7 @@ def row(title:str="标题",url:str="https://example.com/a",snippet:str="摘要�
 def base_config()->MaiLifeSettings:
     config=MaiLifeSettings()
     config.users.profiles=[UserProfile(user_id="10001",role="owner")]
-    config.social.groups=[SocialGroupProfile(group_id="20001",observe_enabled=True)]
+    config.group.profiles=[SocialGroupProfile(group_id="20001",observe_enabled=True)]
     return config
 
 
@@ -101,7 +101,7 @@ class HostSearchTests(unittest.IsolatedAsyncioTestCase):
             config.users.profiles=[UserProfile(user_id="10001",role="owner")]
             await store.sync_users(config.users.profiles)
             await store.update_user_display_name("10001","小甜")
-            config.social.groups=[SocialGroupProfile(group_id="20001")]
+            config.group.profiles=[SocialGroupProfile(group_id="20001")]
             cleaned=await service.search.sanitize_query("10001 小甜 20001 的明天天气怎么样")
             self.assertNotIn("10001",cleaned); self.assertNotIn("小甜",cleaned); self.assertNotIn("20001",cleaned)
             self.assertIn("明天天气怎么样",cleaned)  # 子串不被打散
@@ -131,7 +131,7 @@ class HostSearchTests(unittest.IsolatedAsyncioTestCase):
         web=FakeHostWeb(script=[RuntimeError("upstream down")]*5)
         service,store,tmp=await make_service(web)
         try:
-            service.config.search_api.max_attempts=3
+            service.config.network.max_attempts=3
             result=await service.search.search("查询",operation="news")
             self.assertEqual(result["results"],[])
             self.assertEqual(result["error_class"],"host_error")
@@ -146,7 +146,7 @@ class HostSearchTests(unittest.IsolatedAsyncioTestCase):
         web=FakeHostWeb(results=[row()])
         service,store,tmp=await make_service(web)
         try:
-            service.config.search_api.history_enabled=False
+            service.config.network.history_enabled=False
             await service.search.search("查询",operation="search")
             self.assertEqual(await store.recent_search_history(time.time(),10),[])
         finally:
@@ -177,17 +177,17 @@ class HostSearchTests(unittest.IsolatedAsyncioTestCase):
 class ToolSearchTests(unittest.IsolatedAsyncioTestCase):
     async def _service(self,web:Any)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
         service,store,tmp=await make_service(web)
-        service.config.information.enabled=True
+        service.config.network.enabled=True
         return service,store,tmp
 
     async def test_gates_block_tool_before_search(self):
         service,store,tmp=await self._service(FakeHostWeb())
         try:
-            service.config.information.enabled=False
+            service.config.network.enabled=False
             blocked=await service.search_for_tool("查询",NOW)
             self.assertFalse(blocked["success"])
-            service.config.information.enabled=True
-            service.config.search_api.tool_enabled=False
+            service.config.network.enabled=True
+            service.config.network.tool_enabled=False
             disabled=await service.search_for_tool("查询",NOW)
             self.assertFalse(disabled["success"])
             empty=await service.search_for_tool("   ",NOW)
@@ -243,9 +243,9 @@ class ToolSearchTests(unittest.IsolatedAsyncioTestCase):
 class NewsTests(unittest.IsolatedAsyncioTestCase):
     async def _ready(self,web:Any)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
         service,store,tmp=await make_service(web,llm=PlanLLM("AI 新闻",topic="AI 新闻",tasks=("news",)))
-        service.config.information.enabled=True
-        service.config.news.enabled=True
-        service.config.news.allowed_schedule_types=["leisure"]
+        service.config.network.enabled=True
+        service.config.network.news_enabled=True
+        service.config.network.news_allowed_schedule_types=["leisure"]
         return service,store,tmp
 
     def _schedule(self)->dict[str,Any]:
@@ -295,7 +295,7 @@ class NewsTests(unittest.IsolatedAsyncioTestCase):
             busy={"current":{"kind":"sleep","summary":"睡觉"}}
             self.assertEqual(await service2.news.refresh_due(NOW,busy,"人设"),0)
             self.assertEqual(web.search_calls,[])  # 日程不允许时不联网
-            service2.config.news.daily_max=0
+            service2.config.network.news_daily_max=0
             self.assertEqual(await service2.news.refresh_due(NOW,self._schedule(),"人设"),0)
         finally:
             await store2.close(); tmp2.cleanup()
@@ -305,9 +305,9 @@ class ExploreTests(unittest.IsolatedAsyncioTestCase):
     async def _ready(self,web:Any,llm:Any|None=None)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
         tmp=tempfile.TemporaryDirectory(); store=LifeStore(tmp.name); await store.initialize()
         config=base_config()
-        config.information.enabled=True
-        config.search.enabled=True
-        config.information.association_enabled=False  # 规则基线关闭，分数确定性为 0
+        config.network.enabled=True
+        config.network.search_enabled=True
+        config.network.association_enabled=False  # 规则基线关闭，分数确定性为 0
         service=InformationService(DummyContext(web),store,config,llm or OfflineLLM(),DummyLogger())
         return service,store,tmp
 
@@ -333,9 +333,9 @@ class ExploreTests(unittest.IsolatedAsyncioTestCase):
         try:
             sleep_schedule={"current":{"kind":"sleep","summary":"睡觉"}}
             self.assertFalse(await service.explore_due(NOW,"人设",{},sleep_schedule,[]))
-            service.config.search.daily_max=0
+            service.config.network.news_daily_max=0
             self.assertFalse(await service.explore_due(NOW,"人设",{},{"current":{"kind":"leisure"}},[]))
-            service.config.search.daily_max=1
+            service.config.network.news_daily_max=1
             service.ctx.web=None
             self.assertFalse(await service.explore_due(NOW,"人设",{},{"current":{"kind":"leisure"}},[]))
         finally:
@@ -346,7 +346,7 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_sources_reflect_host_capability(self):
         service,store,tmp=await make_service(FakeHostWeb())
         try:
-            service.config.information.enabled=True
+            service.config.network.enabled=True
             status=await service.status(NOW)
             self.assertEqual(status["sources"],1)
             service.ctx.web=None

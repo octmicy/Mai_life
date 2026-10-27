@@ -23,7 +23,7 @@ class RelayService:
 
     def resolve_group(self,group_id:str,*,relay_target:bool=True)->tuple[Any|None,str]:
         target=str(group_id or "").strip()
-        matches=[item for item in self.config.social.groups
+        matches=[item for item in self.config.group.profiles
                  if item.enabled and str(item.group_id).strip()==target
                  and (not relay_target or item.relay_target_enabled)]
         if len(matches)==1:return matches[0],""
@@ -76,7 +76,7 @@ class RelayService:
 
     async def trigger_explicit(self,group_id:str,content:str)->dict[str,Any]:
         """验证 QQ 群白名单并创建可追踪候选，再交给目标群 Planner 决定是否开口。"""
-        if not self.config.social.enabled:return {"success":False,"error":"社交转述尚未启用。"}
+        if not self.config.group.relay_enabled:return {"success":False,"error":"社交转述尚未启用。"}
         # 睡眠相位内不触发目标群 Planner（与主动巡检的睡眠门禁对齐）。
         runtime=await self.store.get_sleep_runtime()
         if str(runtime.get("phase") or "") in {"falling_asleep","light_sleep","deep_sleep"}:
@@ -93,7 +93,7 @@ class RelayService:
               "target_stream_id":stream_id,"summary":clean,
               "reason":"主人或管理员显式要求向白名单群转述；Planner 仍可因语境不合适选择沉默。",
               "status":"pending","created_at":now,
-              "expires_at":now+int(self.config.social.relay_pending_seconds)}
+              "expires_at":now+int(self.config.group.relay_pending_seconds)}
         if not await self.store.create_relay_candidate(item):return {"success":False,"error":"刚才的转述请求太密集，请稍后再试。"}
         directory=await self.store.get_group_directory(target_group_id)
         reason=json.dumps({

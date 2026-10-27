@@ -26,13 +26,11 @@
 
 [plugin]
 # 配置结构版本，请勿手动修改。
-config_version = "1.11.0"
+config_version = "1.13.0"
 
 # 插件总开关。关闭后保留数据库，但停止状态维护、日程生成和主动消息。
 enabled = true
 
-# 兼容旧配置的生活生成任务；新功能使用下方 [models] 编排。
-llm_model = "planner"
 
 # 管理员无需同时创建用户档案即可使用菜单和管理诊断；关系、撤回摘要和重要日期仍需启用用户档案。
 # 留空时，第一个有效私聊用户自动成为管理员。
@@ -80,6 +78,59 @@ group_to_private_enabled = false
 # initial_temperature = 30
 # quiet_start = "00:00"
 # quiet_end = "08:00"
+
+
+[group]
+# ===== 群聊设置（独立于私聊）=====
+# 群聊休息闸门默认关闭。开启后，在群时间窗（按设定时间）或日程段型
+# （按日程判断）期间，群里只有含强制唤醒词的消息会被回复，其余静默
+# （不回复、不积压、不进主程序，因此不产生 Planner/Replyer/VLM 请求）。
+gate_enabled = false
+
+# 群闸门作用范围：
+# - all：所有群开箱即用
+# - selected：只对白名单中开了「夜间静音」的群生效
+gate_scope = "all"
+
+# 群闸门生效的日程类型：gate_mode = schedule 时日程进入所列段型即群静音（任意时间）；
+# gate_mode = time_window 时不参与生效。与私聊 gate_segment_types 同构，
+# 默认只保留夜间睡眠和午休。
+gate_segment_types = ["sleep", "nap"]
+
+# 群夜间/午休时间窗：仅 gate_mode = time_window 时生效，支持跨午夜。
+night_start = "22:30"
+night_end = "08:00"
+nap_start = "12:00"
+nap_end = "14:30"
+
+# 群强制唤醒词：群消息含任意一词立即放行；独立于私聊词表。
+force_wake_terms = ["救命", "急事", "报警", "醒醒", "快醒", "叫醒", "出事了", "很难受", "撑不住", "危险", "轻生", "自杀"]
+
+# 群聊回复轮次注册：防止同一条群消息触发多次回复，按群号和发送者隔离。
+turn_enabled = true
+
+# ===== 观察与转述（原「社交转述」节并入）=====
+# 只处理白名单里开了「观察」的群；话题经观察判定后低频转述到白名单用户私聊。
+relay_enabled = false
+observation_wait_seconds = 3.0
+max_buffer_messages = 20
+interesting_threshold = 0.65
+summary_retention_hours = 72
+relay_pending_seconds = 120
+owner_group_to_private_enabled = true
+inactivity_hours = 6.0
+group_share_daily_max = 1
+group_share_min_interval_minutes = 360
+
+# ===== 群聊白名单（逐群开关，放在节尾的子表）=====
+# 启用=参与观察与转述；观察=收集公开话题；转述=可被转述到私聊；夜间静音=群闸门「指定群」模式的管辖开关。
+# 只填真实 QQ 群号，群名由 MaiBot 会话自动读取。需要多个群就整块复制。
+[[group.profiles]]
+group_id = ""
+enabled = false
+observe_enabled = false
+relay_target_enabled = false
+rest_gate_enabled = false
 
 
 [environment]
@@ -166,41 +217,11 @@ awake_grace_minutes = 30
 # 推荐只保留夜间睡眠和午休。
 gate_segment_types = ["sleep", "nap"]
 
-# 慢变背景（记忆/见闻/书柜/梦境）按用户缓存的分钟数；0 = 每轮实时读取。
-background_cache_minutes = 5
-
-# 回复层（Replyer）背景详略：full = 完整（默认，行为不变）；compact = 精简
-#（日记余韵不进回复层、见闻/书柜摘要减半，更省 token）。
-replyer_detail = "full"
-
-# 时间窗与日程类型共同决定闸门是否生效，时间窗优先。
+# 夜间/午休时间窗：仅 gate_mode = time_window 时生效；与结束时间相同则该窗口永不生效。
 night_start = "22:30"
 night_end = "08:00"
 nap_start = "12:00"
 nap_end = "14:30"
-
-# ===== 群聊休息闸门（独立于私聊，默认关闭）=====
-# 开启后，在下方群时间窗内，群里只有含强制唤醒词的消息会被回复，其余静默
-# （不回复、不积压、不进主程序，因此不产生 Planner/Replyer/VLM 请求）。
-group_enabled = false
-
-# 作用范围：all=所有群；selected=只对社交白名单中开了「夜间静音」的群生效。
-group_mode = "all"
-
-# 群夜间/午休窗（独立于私聊设置，支持跨午夜）。
-group_night_start = "22:30"
-group_night_end = "08:00"
-group_nap_start = "12:00"
-group_nap_end = "14:30"
-
-# 群闸门生效的日程类型：gate_mode = schedule 时日程进入所列段型即群静音（任意时间）；
-# gate_mode = time_window 时不参与生效。与私聊 gate_segment_types 同构，
-# 默认只保留夜间睡眠和午休。
-group_gate_segment_types = ["sleep", "nap"]
-
-# 群强制唤醒词：群消息含任意一词立即放行；独立于私聊词表。
-group_force_wake_terms = ["救命", "急事", "报警", "醒醒", "快醒", "叫醒", "出事了", "很难受", "撑不住", "危险", "轻生", "自杀"]
-
 
 [context]
 enabled = true
@@ -209,30 +230,18 @@ continuity_interval_minutes = 10
 owner_only_terms = ["主人", "老公", "老婆", "亲爱的主人"]
 prompt_max_chars = 4000
 
-
-[debounce]
-enabled = true
-text_wait_seconds = 1.2
-image_wait_seconds = 3.0
-forward_wait_seconds = 2.0
-max_wait_seconds = 6.0
-
-# 群聊防抖默认关闭；开启后覆盖所有 QQ 群，并按“群号 + 发送者 QQ”隔离。
-group_enabled = false
-group_text_wait_seconds = 0.8
-group_image_wait_seconds = 2.0
-group_forward_wait_seconds = 1.2
-group_max_wait_seconds = 4.0
-max_messages = 12
-max_media_bytes = 8388608
-# 多条文本合并时使用的分隔符，默认换行。
-merge_separator = "\n"
-# 无文本、无图片等主体内容的消息直接放行，不进入防抖窗口。
-ignore_empty_message = true
-# 记录防抖开始/追加/结算日志，便于排查合并行为。
-log_detail = true
+# 同轮回复防重：阻止同一消息触发多次独立 Replyer 回复（不影响一次回复内部分段）。
 outbound_turn_guard = true
+
+# 轮次锁过期时间（秒）；发送失败时会提前释放。
 turn_expire_seconds = 120
+
+# 慢变背景（记忆/见闻/书柜/梦境）按用户缓存的分钟数；0 = 每轮实时读取。
+background_cache_minutes = 5
+
+# 回复层（Replyer）背景详略：full = 完整（默认，行为不变）；compact = 精简
+#（日记余韵不进回复层、见闻/书柜摘要减半，更省 token）。
+replyer_detail = "full"
 
 
 [recall]
@@ -246,22 +255,6 @@ summary_max_chars = 240
 
 
 [models]
-# 这里填写 MaiBot model_task_config 的任务名，而不是模型供应商 ID。
-fast_task = "utils"
-reasoning_task = "planner"
-creative_task = "replyer"
-schedule_task = ""
-scene_detail_task = ""
-rest_wakeup_task = ""
-continuity_task = ""
-dream_task = ""
-diary_task = ""
-date_analysis_task = ""
-news_task = ""
-search_task = ""
-relevance_task = ""
-group_judgment_task = ""
-relay_summary_task = ""
 creation_outline_task = ""
 creation_body_task = ""
 creation_review_task = ""
@@ -312,143 +305,39 @@ minimum_energy = 25
 score_threshold = 0.45
 
 
-[information]
-# 联网能力默认全部关闭；需要同时开启这里和对应 news/search 子开关。
+[network]
+# ===== 联网（总开关 → 搜索工具 → 搜索历史 → 见闻关联 → 新闻 → 主动搜索）=====
+# 全部走主程序统一联网服务（ctx.web.search / ctx.web.fetch）：
+# 请在主程序「模型设置→功能分配→联网搜索」配置并启用；插件不再维护自有搜索服务列表。
 enabled = false
+tool_enabled = true
+max_results = 5
+max_attempts = 3
+
+# 本地搜索历史：记录联网工具、主动搜索和新闻阅读的查询词与结果摘要。
+# 查询词已做隐私清洗（QQ 号、昵称、群名），原始 Key 永不入库。
+history_enabled = true
+history_retention_days = 30
+
+# 见闻与关联：新闻与探索笔记的自我关联、主动分享。
 association_enabled = true
 association_threshold = 0.65
 proactive_share_enabled = true
 context_item_limit = 3
 
+# 新闻阅读：按兴趣低频读取（走宿主联网）。
+news_enabled = false
+news_daily_max = 1
+news_full_text_count = 3
+news_max_concurrency = 2
+news_max_article_chars = 8000
+news_retention_days = 7
+news_allowed_schedule_types = ["leisure", "rest"]
 
-[search_api]
-# 新闻和主动搜索共用这条有序服务链；默认没有启用服务，也不内置任何 Key。
-timeout_seconds = 12.0
-max_attempts = 12
-max_results = 5
-tool_enabled = true
+# 主动搜索：空闲日程中自主探索（走宿主联网）。
+search_enabled = false
+search_daily_max = 1
+search_include_chat_topics = false
+search_allowed_schedule_types = ["leisure", "rest"]
+search_note_retention_days = 30
 
-# 本地搜索历史：记录联网工具、主动搜索和新闻阅读的查询词与结果摘要。
-# 查询词已做隐私清洗（QQ 号、昵称、群名、邮箱、网址），原始 Key 永不入库。
-history_enabled = true
-history_retention_days = 30
-
-# 默认使用免 Key 的 Playwright/Bing 浏览器搜索；列表顺序就是降级顺序。
-[[search_api.providers]]
-enabled = true
-provider_type = "playwright"
-browser_engine = "bing"
-headless = true
-api_keys = []
-endpoint = ""
-model = ""
-
-# 可选：浏览器搜索不可靠时继续使用 API 备援。
-# [[search_api.providers]]
-# enabled = true
-# provider_type = "bocha"
-# api_keys = ["主Key", "备用Key"]
-# endpoint = ""
-# model = ""
-#
-# 自定义中转示例：
-# [[search_api.providers]]
-# enabled = true
-# provider_type = "openai_responses"
-# api_keys = ["中转Key"]
-# endpoint = "https://example.com/v1"
-# model = "grok-model-name"
-
-
-[news]
-enabled = false
-daily_max = 1
-full_text_count = 3
-max_concurrency = 2
-max_article_chars = 8000
-retention_days = 7
-allowed_schedule_types = ["leisure", "rest"]
-
-
-[search]
-enabled = false
-daily_max = 1
-include_chat_topics = false
-allowed_schedule_types = ["leisure", "rest"]
-note_retention_days = 30
-
-
-[social]
-# 社交能力默认关闭。SnowLuma 与 NapCat 都填写真实 QQ 群号，不填写适配器内部 ID。
-enabled = false
-owner_group_to_private_enabled = true
-observation_wait_seconds = 3.0
-max_buffer_messages = 20
-inactivity_hours = 6.0
-group_share_daily_max = 1
-group_share_min_interval_minutes = 360
-interesting_threshold = 0.65
-summary_retention_hours = 72
-relay_pending_seconds = 120
-
-# 群聊建议在 WebUI 添加。群名称由 MaiBot 会话自动读取，只按 QQ 群号匹配。
-# [[social.groups]]
-# group_id = "123456789"
-# enabled = true
-# observe_enabled = true
-# relay_target_enabled = true
-
-
-[creation]
-# 创作和外部阅读默认关闭。作品、日记和批注会以 SQLite 明文保存。
-enabled = false
-plaintext_storage_acknowledged = false
-patrol_interval_minutes = 60
-daily_max = 1
-minimum_energy = 35
-allowed_schedule_types = ["leisure", "rest"]
-work_types = ["novel_fragment", "poem", "essay", "screenplay", "storyboard", "character", "worldbuilding"]
-public_works_enabled = true
-create_share_opportunity = true
-inspiration_lookback_days = 7
-max_body_chars = 4000
-
-# 外部阅读只调用可选插件 API，不直接联网，也不保存图片或其他二进制。
-external_reading_enabled = false
-external_reading_api_name = ""
-external_reading_max_items = 3
-reading_annotation_enabled = true
-
-# 书柜续写：存在有资格的旧书时，按概率续写下一章而不是开新书。
-# 关闭后与仅创作全新作品的行为完全一致。
-continuation_enabled = true
-
-# 有资格旧书时选择续写的概率，0～1。1.0 永远先续旧书，0.0 永久只开新书。
-continuation_probability = 0.65
-
-# 同一本书两章之间的最小间隔天数，按上一章归档时间判断；0 允许同一天续写。
-continuation_min_gap_days = 1  # 范围 0～30，且必须小于停滞天数
-
-# 单本书最多章节数，达到后视为完结、不再续写。
-continuation_max_chapters = 8  # 范围 2～100
-
-# 多少天没有新章节的书视为完结，不再续写。
-continuation_stale_days = 30  # 范围 1～365，且必须大于最小间隔
-
-# 可续写的体裁，与上方 work_types 取交集；交集为空等于禁用续写。
-# 默认排除诗与随笔：以单篇完整性为美，硬续稀释质量。
-continuation_work_types = ["novel_fragment", "screenplay", "storyboard", "worldbuilding", "character"]
-
-# 续写时向模型回看的最近章节数，范围 1～10。
-continuation_context_chapters = 3
-
-# 每章回看携带的正文字尾字符数，范围 0～2000；0 表示只回看章节提纲。
-continuation_chapter_tail_chars = 400
-
-
-[linkage]
-# 与其它插件的联动开关；目标插件未安装时对应开关不生效。
-# 麦麦绘图联动：开启后，私聊聊天中聊到日常生活（如"吃了xxx，拍照给你看看"）时，
-# 麦麦可以调用「麦麦绘图」插件的 draw 工具，把自己这边的生活画面画成随手拍照片发出去。
-# 前提：已安装 maimai-drawpic-plugin 并在其配置中填好至少一个绘图平台的 API Key。
-drawpic_enabled = false

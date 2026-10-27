@@ -1,4 +1,4 @@
-"""通过统一搜索 API 读取低频新闻并按需抓取正文。"""
+"""通过宿主统一联网服务读取低频新闻，并按需用 web.fetch 抓取正文。"""
 from __future__ import annotations
 
 import asyncio
@@ -7,15 +7,12 @@ import json
 from datetime import timedelta
 from typing import Any
 
-from .feed_parser import readable_text
-from .http_client import HttpClient
-from .search_models import SearchResult
-from .search_service import SearchService
+from .host_search import HostSearchService
 
 
 class NewsService:
-    def __init__(self,store:Any,config:Any,search:SearchService,http:HttpClient,logger:Any,llm:Any,bot_name:str="麦麦")->None:
-        self.store=store; self.config=config; self.search=search; self.http=http; self.logger=logger
+    def __init__(self,store:Any,config:Any,search:HostSearchService,logger:Any,llm:Any,bot_name:str="麦麦")->None:
+        self.store=store; self.config=config; self.search=search; self.logger=logger
         self.llm=llm; self.bot_name=bot_name
 
     def update_config(self,config:Any)->None:self.config=config
@@ -30,45 +27,60 @@ class NewsService:
         return start.timestamp(),(start+timedelta(days=1)).timestamp()
 
     async def refresh_due(self,now:Any,schedule:dict[str,Any],personality:str)->int:
-        """在允许的空闲日程由人格规划新闻词，执行一次逻辑新闻搜索并保存去重结果。"""
-        cfg=self.config.news
-        if not self.config.information.enabled or not cfg.enabled or int(cfg.daily_max)<=0:return 0
+        """在允许的空闲日程由人格规划新闻词，经宿主统一联网执行一次搜索并保存去重结果。"""
+        cfg=self.config.network
+        if not cfg.enabled or not cfg.news_enabled or int(cfg.news_daily_max)<=0:return 0
         current=schedule.get("current") or {}
-        if str(current.get("kind") or "") not in set(cfg.allowed_schedule_types):return 0
+        if str(current.get("kind") or "") not in set(cfg.news_allowed_schedule_types):return 0
         start,end=self._day_bounds(now)
-        if await self.store.search_attempt_count("news",start,end)>=int(cfg.daily_max):return 0
+        if await self.store.search_attempt_count("news",start,end)>=int(cfg.news_daily_max):return 0
+        if not self.search.available():return 0
         query=await self.search.sanitize_query(await self._plan_query(now,personality,schedule))
         if not query:
             return 0
         response=await self.search.search(
-            query,operation="news",freshness="day",event_at=now.timestamp(),
+            query,operation="news",max_results=int(self.config.network.max_results),
         )
-        if not response.results:return 0
-        # 入库前相关性过滤：弱相关条目（标题/摘要与查询词无实质词元重叠，由 Playwright 侧标记 weak）不入库；
-        # API 路线不填充 weak（保持 False），因此只影响浏览器搜索结果。
-        results=[item for item in response.results if not item.weak][:min(5,int(self.config.search_api.max_results))]
+        results=self._recent_results(response["results"],now.timestamp())
         if not results:
-            self.logger.info("[MaiLife] 新闻搜索结果整体弱相关，未写入新闻库")
+            if response["results"]:
+                self.logger.info("[MaiLife] 新闻搜索结果全部早于 3 天，未写入新闻库")
             return 0
+        results=results[:min(5,int(self.config.network.max_results))]
         contents=await self._read_articles(results)
-        changed=0; now_ts=now.timestamp(); retention=int(cfg.retention_days)*86400
+        changed=0; now_ts=now.timestamp(); retention=int(cfg.news_retention_days)*86400
+        service=str(response.get("service") or "host")
         for index,result in enumerate(results):
-            uncited=bool(result.provider_generated and not result.url)
-            summary=result.snippet
-            if uncited:summary="Provider 生成、无外部引用："+summary
-            # 去重键只由 url 或 title+snippet 决定，不再拼入 provider_id：
-            # 配置变化导致 provider_id 改变时，同一条新闻不会被重复入库。
-            stable=result.url or hashlib.sha256(f"{result.title}:{result.snippet}".encode()).hexdigest()
+            uncited=not result["url"]
+            summary=result["snippet"]
+            if uncited:summary="宿主结果、无外部链接："+summary
+            # 去重键只由 url 或 title+snippet 决定：同一条新闻不会因服务名变化而重复入库。
+            stable=result["url"] or hashlib.sha256(f"{result['title']}:{result['snippet']}".encode()).hexdigest()
             item_id=hashlib.sha256(stable.encode()).hexdigest()
-            content=contents.get(index,"")[:int(cfg.max_article_chars)]
-            digest=hashlib.sha256(json.dumps([result.title,summary,content],ensure_ascii=False).encode()).hexdigest()
-            source_id=f"api:{response.provider_type}"+(":uncited" if uncited else "")
+            content=contents.get(index,"")[:int(cfg.news_max_article_chars)]
+            digest=hashlib.sha256(json.dumps([result["title"],summary,content],ensure_ascii=False).encode()).hexdigest()
+            source_id=f"host:{service}"+(":uncited" if uncited else "")
             if await self.store.upsert_news_item({
-                "id":item_id,"source_id":source_id,"title":result.title,"url":result.url,
+                "id":item_id,"source_id":source_id,"title":result["title"],"url":result["url"],
                 "summary":summary,"content":content,"published_at":now_ts,"fetched_at":now_ts,
                 "content_hash":digest,"expires_at":now_ts+retention,
             }):changed+=1
         return changed
+
+    @staticmethod
+    def _recent_results(rows:list[dict[str,Any]],now_ts:float)->list[dict[str,Any]]:
+        """新闻只要近 3 天的：宿主返回的 published_at 可解析且早于阈值时丢弃，解析不了则保留。"""
+        cutoff=now_ts-3*86400
+        kept=[]
+        for row in rows:
+            published=row.get("published_at")
+            if published:
+                try:
+                    if float(published)<cutoff:continue
+                except (TypeError,ValueError):
+                    pass  # ISO 字符串等非数值格式无法本地判新旧，保守保留
+            kept.append(row)
+        return kept
 
     async def _plan_query(self,now,personality:str,schedule:dict)->str:
         """让麦麦根据人格自主决定此刻想了解什么新闻；模型不可用时跳过。"""
@@ -91,22 +103,15 @@ class NewsService:
         query=" ".join(str(result.get("query") or "").split())[:100]
         return query
 
-    async def _read_articles(self,results:list[SearchResult])->dict[int,str]:
-        """并发读取最多三篇公网正文；任一页面失败只降级为搜索摘要。"""
-        limit=min(len(results),int(self.config.news.full_text_count),3)
+    async def _read_articles(self,results:list[dict[str,Any]])->dict[int,str]:
+        """并发经宿主 web.fetch 读取最多三篇正文；任一页面失败只降级为搜索摘要。"""
+        limit=min(len(results),int(self.config.network.news_full_text_count),3)
         if limit<=0:return {}
-        semaphore=asyncio.Semaphore(int(self.config.news.max_concurrency))
-        async def read(index:int,result:SearchResult)->tuple[int,str]:
-            if not result.url:return index,""
+        semaphore=asyncio.Semaphore(int(self.config.network.news_max_concurrency))
+        async def read(index:int,result:dict[str,Any])->tuple[int,str]:
+            if not result["url"]:return index,""
             async with semaphore:
-                try:
-                    response=await self.http.get(
-                        result.url,timeout=float(self.config.search_api.timeout_seconds),max_bytes=2_000_000,
-                        headers={"Accept":"text/html,text/plain;q=0.9"},public_only=True,
-                    )
-                    content_type=response.headers.get("content-type","").casefold()
-                    if content_type and "text/html" not in content_type and "text/plain" not in content_type:return index,""
-                    return index,readable_text(response.text(),int(self.config.news.max_article_chars))
-                except Exception:return index,""
+                return index,await self.search.fetch_article(result["url"])
         values=await asyncio.gather(*(read(index,result) for index,result in enumerate(results[:limit])))
-        return {index:content for index,content in values if content}
+        max_chars=int(self.config.network.news_max_article_chars)
+        return {index:content[:max_chars] for index,content in values if content}

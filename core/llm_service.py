@@ -78,7 +78,6 @@ class LLMService:
             "search": models.search_task or models.reasoning_task,
             "relevance": models.relevance_task or models.reasoning_task,
             "group_judgment": models.group_judgment_task or models.fast_task,
-            "relay_summary": models.relay_summary_task or models.fast_task,
             "creation_outline": models.creation_outline_task or models.reasoning_task,
             "creation_body": models.creation_body_task or models.creative_task,
             "creation_review": models.creation_review_task or models.reasoning_task,
@@ -95,12 +94,12 @@ class LLMService:
             kinds.add("dream")
             if self.config.memory.diary_enabled:kinds.add("diary")
             if self.config.memory.date_model_analysis_enabled:kinds.add("date_analysis")
-        if self.config.information.enabled:
-            if self.config.news.enabled:kinds.add("news")
-            if self.config.search.enabled:kinds.add("search")
-            if self.config.information.association_enabled:kinds.add("relevance")
+        if self.config.network.enabled:
+            if self.config.network.news_enabled:kinds.add("news")
+            if self.config.network.news_enabled:kinds.add("search")
+            if self.config.network.association_enabled:kinds.add("relevance")
         # relay_summary 已并入群观察的单次 group_judgment 调用（v1.23.6），不再单列必查。
-        if self.config.social.enabled:kinds.add("group_judgment")
+        if self.config.group.relay_enabled:kinds.add("group_judgment")
         if self.config.creation.enabled:
             kinds.update({"creation_outline","creation_body","creation_review"})
             if self.config.creation.external_reading_enabled and self.config.creation.reading_annotation_enabled:

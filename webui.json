@@ -2952,47 +2952,15 @@
                 },
                 {
                   "type": "grid",
-                  "label": "搜索服务（兜底链）",
+                  "label": "联网搜索（宿主统一）",
                   "columns": 4,
                   "children": [
                     {
                       "type": "stat",
-                      "label": "搜索工具",
+                      "label": "联网搜索工具",
                       "value": {
                         "source": "config",
                         "field": "search_api.tool_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "搜索历史",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.history_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "历史保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.history_retention_days"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "请求超时(秒)",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.timeout_seconds"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "单次最大尝试",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.max_attempts"
                       }
                     },
                     {
@@ -3005,79 +2973,27 @@
                     },
                     {
                       "type": "stat",
-                      "label": "服务数量",
+                      "label": "失败重试次数",
                       "value": {
                         "source": "config",
-                        "field": "search_api.provider_count"
+                        "field": "search_api.max_attempts"
                       }
-                    }
-                  ]
-                },
-                {
-                  "type": "table",
-                  "label": "搜索来源（运行时）",
-                  "value": {
-                    "source": "admin",
-                    "field": "sources.providers"
-                  },
-                  "columns": [
-                    {
-                      "field": "provider_id",
-                      "label": "服务 ID"
                     },
                     {
-                      "field": "provider_type",
-                      "label": "协议"
+                      "type": "stat",
+                      "label": "记录搜索历史",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.history_enabled"
+                      }
                     },
                     {
-                      "field": "enabled",
-                      "label": "启用"
-                    },
-                    {
-                      "field": "key_count",
-                      "label": "Key 数"
-                    },
-                    {
-                      "field": "endpoint",
-                      "label": "地址"
-                    },
-                    {
-                      "field": "model",
-                      "label": "模型"
-                    }
-                  ]
-                },
-                {
-                  "type": "table",
-                  "label": "Key 健康（运行时，仅指纹）",
-                  "value": {
-                    "source": "admin",
-                    "field": "sources.keys"
-                  },
-                  "columns": [
-                    {
-                      "field": "provider_id",
-                      "label": "服务 ID"
-                    },
-                    {
-                      "field": "fingerprint",
-                      "label": "指纹"
-                    },
-                    {
-                      "field": "status",
-                      "label": "状态"
-                    },
-                    {
-                      "field": "cooldown_until",
-                      "label": "冷却至"
-                    },
-                    {
-                      "field": "failure_count",
-                      "label": "失败次数"
-                    },
-                    {
-                      "field": "last_error_class",
-                      "label": "最近错误"
+                      "type": "stat",
+                      "label": "历史保留(天)",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.history_retention_days"
+                      }
                     }
                   ]
                 }

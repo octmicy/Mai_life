@@ -25,15 +25,16 @@ WEBUI_API_NAMES=("webui_status_overview","webui_status_history",
 
 
 class ContractTests(unittest.TestCase):
-    def test_playwright_release_contract_is_synchronized(self):
+    def test_host_search_release_contract_is_synchronized(self):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        readme=(root/"README.md").read_text(encoding="utf-8")
         self.assertEqual(manifest["version"],"1.24.0")
-        self.assertIn("playwright>=1.49,<2",requirements)
-        self.assertIn("python -m playwright install chromium",readme)
-        self.assertIn("Playwright/Bing",readme)
+        # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
+        self.assertIn("web.search",manifest["capabilities"])
+        self.assertIn("web.fetch",manifest["capabilities"])
+        self.assertNotIn("playwright",requirements.casefold())
+        self.assertEqual(manifest.get("dependencies"),[])
 
     def test_version_constant_is_unified_around_1_14_5(self):
         from Mai_life.config import PLUGIN_VERSION
@@ -72,7 +73,8 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(config.memory.enabled)
         self.assertFalse(config.memory.date_model_analysis_enabled)
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
-        self.assertEqual(len(config.search_api.providers),1); self.assertEqual(config.search_api.providers[0].provider_type,"playwright")
+        self.assertEqual(config.search_api.max_results,5); self.assertEqual(config.search_api.max_attempts,3)
+        self.assertFalse(hasattr(config.search_api,"providers"))
         self.assertFalse(config.social.enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
         self.assertFalse(config.creation.enabled); self.assertFalse(config.creation.plaintext_storage_acknowledged)
@@ -115,7 +117,7 @@ class ContractTests(unittest.TestCase):
         search_tool=next(item for item in components if item.get("name")=="mai_life_web_search")
         self.assertEqual(search_tool.get("type"),"TOOL")
         tool_parameters=(search_tool.get("metadata") or {}).get("parameters") or []
-        self.assertEqual({item.get("name") for item in tool_parameters},{"query","result_limit","freshness"})
+        self.assertEqual({item.get("name") for item in tool_parameters},{"query","result_limit"})
         self.assertGreaterEqual(len(components),20)
         private_api=next(item for item in components if item.get("name")=="admin_snapshot")
         self.assertFalse((private_api.get("metadata") or {}).get("public"))
@@ -503,7 +505,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["group"]),{"gate_enabled","gate_scope","turn_enabled",
                                              "gate_segment_types","night_window","nap_window"})
         self.assertEqual(set(data["search_api"]),{"tool_enabled","history_enabled","history_retention_days",
-                                                  "timeout_seconds","max_attempts","max_results","provider_count"})
+                                                  "max_attempts","max_results"})
         # 布尔一律翻成「开启/关闭」，不出现裸布尔；数值型参数与 version 不参与该检查。
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
                        "group":{"gate_enabled","turn_enabled"},
@@ -548,7 +550,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         await self.store.save_search_key_runtime("p1-playwright","abcdef0123456789",status="healthy",
             cooldown_until=0,failure_count=0,error_class="",used_at=self.now.timestamp())
         data=await plugin.webui_admin_summary()
-        self.assertEqual(set(data),{"overview","groups","proactive","sources"})
+        self.assertEqual(set(data),{"overview","groups","proactive"})
         self.assertEqual(set(data["overview"]),{"version","users","owners","pending_dates","pending_proactive",
                                                 "bookshelf_documents","private_documents","token_calls_today",
                                                 "token_total_today","search_calls_today","social_enabled",
@@ -558,16 +560,8 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["proactive"]),{"candidates","skips"})
         self.assertEqual(set(data["proactive"]["candidates"][0]),{"user_id","topic","status","created_at","expires_at"})
         self.assertEqual(set(data["proactive"]["skips"][0]),{"reason","total","users"})
-        self.assertEqual(set(data["sources"]),{"information_enabled","news_enabled","search_enabled",
-                                               "external_reading","providers","keys"})
-        self.assertEqual(set(data["sources"]["external_reading"]),{"enabled","api_name"})
-        self.assertEqual(set(data["sources"]["providers"][0]),{"provider_id","provider_type","enabled",
-                                                               "key_count","endpoint","model"})
-        self.assertEqual(set(data["sources"]["keys"][0]),{"provider_id","fingerprint","status",
-                                                          "cooldown_until","failure_count","last_error_class"})
         # 布尔转「开/关」；Key 只出指纹，原始凭据绝不出现。
         self.assertEqual(data["overview"]["social_enabled"],"开")
-        self.assertEqual(data["sources"]["providers"][0]["enabled"],"开")
         blob=json.dumps(data,ensure_ascii=False)
         self.assertNotIn("secret-key-value",blob)
         self.assertNotIn("api_keys",blob)

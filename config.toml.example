@@ -310,133 +310,14 @@ context_item_limit = 3
 
 
 [search_api]
-# 新闻和主动搜索共用这条有序服务链；默认没有启用服务，也不内置任何 Key。
-timeout_seconds = 12.0
-max_attempts = 12
-max_results = 5
+# 联网搜索已全部走主程序统一联网服务（ctx.web.search）：
+# 请在主程序「模型设置→功能分配→联网搜索」配置并启用；插件不再维护自有搜索服务列表。
 tool_enabled = true
+max_results = 5
+max_attempts = 3
 
 # 本地搜索历史：记录联网工具、主动搜索和新闻阅读的查询词与结果摘要。
-# 查询词已做隐私清洗（QQ 号、昵称、群名、邮箱、网址），原始 Key 永不入库。
+# 查询词已做隐私清洗（QQ 号、昵称、群名），原始 Key 永不入库。
 history_enabled = true
 history_retention_days = 30
 
-# 默认使用免 Key 的 Playwright/Bing 浏览器搜索；列表顺序就是降级顺序。
-[[search_api.providers]]
-enabled = true
-provider_type = "playwright"
-browser_engine = "bing"
-headless = true
-api_keys = []
-endpoint = ""
-model = ""
-
-# 可选：浏览器搜索不可靠时继续使用 API 备援。
-# [[search_api.providers]]
-# enabled = true
-# provider_type = "bocha"
-# api_keys = ["主Key", "备用Key"]
-# endpoint = ""
-# model = ""
-#
-# 自定义中转示例：
-# [[search_api.providers]]
-# enabled = true
-# provider_type = "openai_responses"
-# api_keys = ["中转Key"]
-# endpoint = "https://example.com/v1"
-# model = "grok-model-name"
-
-
-[news]
-enabled = false
-daily_max = 1
-full_text_count = 3
-max_concurrency = 2
-max_article_chars = 8000
-retention_days = 7
-allowed_schedule_types = ["leisure", "rest"]
-
-
-[search]
-enabled = false
-daily_max = 1
-include_chat_topics = false
-allowed_schedule_types = ["leisure", "rest"]
-note_retention_days = 30
-
-
-[social]
-# 社交能力默认关闭。SnowLuma 与 NapCat 都填写真实 QQ 群号，不填写适配器内部 ID。
-enabled = false
-owner_group_to_private_enabled = true
-observation_wait_seconds = 3.0
-max_buffer_messages = 20
-inactivity_hours = 6.0
-group_share_daily_max = 1
-group_share_min_interval_minutes = 360
-interesting_threshold = 0.65
-summary_retention_hours = 72
-relay_pending_seconds = 120
-
-# 群聊建议在 WebUI 添加。群名称由 MaiBot 会话自动读取，只按 QQ 群号匹配。
-# [[social.groups]]
-# group_id = "123456789"
-# enabled = true
-# observe_enabled = true
-# relay_target_enabled = true
-
-
-[creation]
-# 创作和外部阅读默认关闭。作品、日记和批注会以 SQLite 明文保存。
-enabled = false
-plaintext_storage_acknowledged = false
-patrol_interval_minutes = 60
-daily_max = 1
-minimum_energy = 35
-allowed_schedule_types = ["leisure", "rest"]
-work_types = ["novel_fragment", "poem", "essay", "screenplay", "storyboard", "character", "worldbuilding"]
-public_works_enabled = true
-create_share_opportunity = true
-inspiration_lookback_days = 7
-max_body_chars = 4000
-
-# 外部阅读只调用可选插件 API，不直接联网，也不保存图片或其他二进制。
-external_reading_enabled = false
-external_reading_api_name = ""
-external_reading_max_items = 3
-reading_annotation_enabled = true
-
-# 书柜续写：存在有资格的旧书时，按概率续写下一章而不是开新书。
-# 关闭后与仅创作全新作品的行为完全一致。
-continuation_enabled = true
-
-# 有资格旧书时选择续写的概率，0～1。1.0 永远先续旧书，0.0 永久只开新书。
-continuation_probability = 0.65
-
-# 同一本书两章之间的最小间隔天数，按上一章归档时间判断；0 允许同一天续写。
-continuation_min_gap_days = 1  # 范围 0～30，且必须小于停滞天数
-
-# 单本书最多章节数，达到后视为完结、不再续写。
-continuation_max_chapters = 8  # 范围 2～100
-
-# 多少天没有新章节的书视为完结，不再续写。
-continuation_stale_days = 30  # 范围 1～365，且必须大于最小间隔
-
-# 可续写的体裁，与上方 work_types 取交集；交集为空等于禁用续写。
-# 默认排除诗与随笔：以单篇完整性为美，硬续稀释质量。
-continuation_work_types = ["novel_fragment", "screenplay", "storyboard", "worldbuilding", "character"]
-
-# 续写时向模型回看的最近章节数，范围 1～10。
-continuation_context_chapters = 3
-
-# 每章回看携带的正文字尾字符数，范围 0～2000；0 表示只回看章节提纲。
-continuation_chapter_tail_chars = 400
-
-
-[linkage]
-# 与其它插件的联动开关；目标插件未安装时对应开关不生效。
-# 麦麦绘图联动：开启后，私聊聊天中聊到日常生活（如"吃了xxx，拍照给你看看"）时，
-# 麦麦可以调用「麦麦绘图」插件的 draw 工具，把自己这边的生活画面画成随手拍照片发出去。
-# 前提：已安装 maimai-drawpic-plugin 并在其配置中填好至少一个绘图平台的 API Key。
-drawpic_enabled = false

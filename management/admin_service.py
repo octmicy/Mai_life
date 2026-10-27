@@ -2,46 +2,19 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit,urlunsplit
 
-import hashlib
 from datetime import datetime
 
 from ..config import PLUGIN_VERSION
 
 
-_SCOPES={"overview","users","groups","dates","sources","bookshelf","tokens","proactive","search"}
-
-
-def _safe_endpoint(value:Any)->str:
-    text=str(value or "").strip()
-    if not text:return ""
-    try:
-        parsed=urlsplit(text); host=parsed.hostname or ""
-        if parsed.port:host=f"{host}:{parsed.port}"
-        return urlunsplit((parsed.scheme,host,parsed.path,"",""))[:500]
-    except ValueError:return "配置无效"
+_SCOPES={"overview","users","groups","dates","bookshelf","tokens","proactive","search"}
 
 
 def _bounded_limit(value:Any,default:int=20)->int:
     try:parsed=int(value)
     except (TypeError,ValueError):parsed=default
     return max(1,min(100,parsed))
-
-
-def _provider_id(index:int,provider:Any)->str:
-    signature=f"{provider.provider_type}:{provider.endpoint}:{provider.model}"
-    return f"p{index+1}-{provider.provider_type}-{hashlib.sha256(signature.encode()).hexdigest()[:8]}"
-
-
-def _fingerprint(key:str)->str:return hashlib.sha256(str(key).encode("utf-8","ignore")).hexdigest()[:16]
-
-
-def _redact_keys(value:Any,keys:list[str])->str:
-    result=str(value or "")
-    for key in keys:
-        if key:result=result.replace(key,"[REDACTED]")
-    return result
 
 
 class AdminService:
@@ -55,7 +28,6 @@ class AdminService:
         if normalized=="users":return {"scope":normalized,"items":await self._users(limit)}
         if normalized=="groups":return {"scope":normalized,"items":await self._groups(limit)}
         if normalized=="dates":return {"scope":normalized,"items":await self.store.management_date_candidates(limit)}
-        if normalized=="sources":return {"scope":normalized,**await self._sources()}
         if normalized=="bookshelf":
             return {"scope":normalized,"items":await self.store.management_bookshelf(limit),
                     "creation_runs":await self.store.management_creation_runs(limit)}
@@ -87,27 +59,6 @@ class AdminService:
                            "observe_enabled":bool(profile.observe_enabled),
                            "relay_target_enabled":bool(profile.relay_target_enabled)})
         return result
-
-    async def _sources(self)->dict[str,Any]:
-        """组合配置与持久化健康状态，只输出 Key 指纹而不返回原始凭据。"""
-        runtime={(str(item["provider_id"]),str(item["key_fingerprint"])):item
-                 for item in await self.store.search_provider_health()}
-        providers=[]
-        for index,provider in enumerate(self.config.search_api.providers):
-            provider_id=_provider_id(index,provider); keys=[]; raw_keys=[str(key) for key in provider.api_keys]
-            for key in provider.api_keys:
-                fingerprint=_fingerprint(key); state=runtime.get((provider_id,fingerprint),{})
-                keys.append({"fingerprint":fingerprint,"status":str(state.get("status") or "healthy"),
-                             "cooldown_until":float(state.get("cooldown_until") or 0),
-                             "last_error_class":str(state.get("last_error_class") or "")})
-            providers.append({"provider_id":provider_id,"provider_type":str(provider.provider_type),
-                              "enabled":bool(provider.enabled),"key_count":len(keys),"keys":keys,
-                              "endpoint":_redact_keys(_safe_endpoint(provider.endpoint),raw_keys),
-                              "model":_redact_keys(provider.model,raw_keys)})
-        return {"information_enabled":bool(self.config.information.enabled),"news_enabled":bool(self.config.news.enabled),
-                "search_enabled":bool(self.config.search.enabled),"providers":providers,
-                "external_reading":{"enabled":bool(self.config.creation.external_reading_enabled),
-                                    "api_name":str(self.config.creation.external_reading_api_name or "")}}
 
     async def _tokens(self,now:Any)->dict[str,Any]:
         start=now.replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
@@ -147,15 +98,6 @@ class AdminService:
                          for item in data["items"])
         elif scope=="dates":
             lines=["待确认日期"]+[f"#{item['id']} 用户 {item['user_id']}｜{item['event_name']}｜{item['date_text']}" for item in data["items"]]
-        elif scope=="sources":
-            lines=[f"联网服务：总开关 {'开' if data['information_enabled'] else '关'} / 新闻 {'开' if data['news_enabled'] else '关'} / 搜索 {'开' if data['search_enabled'] else '关'}"]
-            for item in data["providers"]:
-                if item["provider_type"]=="playwright":
-                    # Playwright 走本地浏览器而非 API Key，Key 列展示 0 会误导成配置缺失。
-                    lines.append(f"{item['provider_id']}｜{item['provider_type']}｜{'开' if item['enabled'] else '关'}｜浏览器（无需 Key）")
-                    continue
-                states=",".join(f"{key['fingerprint']}:{key['status']}"+(f"/{key['last_error_class']}" if key['last_error_class'] else "") for key in item["keys"]) or "无 Key"
-                lines.append(f"{item['provider_id']}｜{item['provider_type']}｜{'开' if item['enabled'] else '关'}｜Key {item['key_count']}｜{states}")
         elif scope=="bookshelf":
             lines=["书柜元数据（不含正文）"]+[f"{item['id']}｜{item['title']}｜{item['privacy']}｜{item['status']}" for item in data["items"]]
         elif scope=="tokens":

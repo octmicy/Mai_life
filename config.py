@@ -628,87 +628,26 @@ class InformationSettings(PluginConfigBase):
         "近期见闻上下文数量","设为 0 可只积累记录、不注入被动回复。",4,label_en="Discovery Context Items",hint_en="Set to zero to store discoveries without passive context injection."))
 
 
-class SearchProviderProfile(PluginConfigBase):
-    """一个有序搜索服务及其主备 Key。"""
-
-    enabled: bool = Field(default=False,description="是否启用该搜索服务。",json_schema_extra=_ui(
-        "启用服务","列表顺序就是跨服务降级顺序。",0,label_en="Enable Provider",hint_en="List order defines provider failover priority."))
-    provider_type: Literal["playwright","bocha","tavily","you","openai_responses","openai_chat"] = Field(
-        default="playwright",description="搜索服务协议。",json_schema_extra=_ui(
-            "服务类型","默认 Playwright 免 Key 浏览器搜索；API 服务可作为备援。",1,
-            label_en="Provider Type",hint_en="Playwright is the default keyless provider; API providers can serve as fallbacks.",
-            enum_labels={"playwright":"Playwright 浏览器搜索","bocha":"博查","tavily":"Tavily","you":"You.com",
-                         "openai_responses":"自定义 Responses 联网","openai_chat":"自定义 Chat 联网"}))
-    browser_engine: Literal["bing","duckduckgo"] = Field(default="bing",description="Playwright 搜索引擎。",json_schema_extra=_ui(
-        "浏览器搜索引擎","默认 Bing；DuckDuckGo 可作为搜索页结构变化时的浏览器备援。",2,
-        label_en="Browser Engine",hint_en="Bing is default; DuckDuckGo is an alternate browser engine.",
-        enum_labels={"bing":"Bing","duckduckgo":"DuckDuckGo"}))
-    headless: bool = Field(default=True,description="Playwright 是否使用无头浏览器。",json_schema_extra=_ui(
-        "无头浏览器","默认开启；排查验证码或页面结构时可临时关闭。",3,
-        label_en="Headless Browser",hint_en="Enabled by default; disable temporarily to diagnose CAPTCHA or page changes."))
-    api_keys: list[str] = Field(default_factory=list,description="按优先级排列的 API Key。",json_schema_extra=_ui(
-        "API Key 列表","仅 API 服务使用；Playwright 必须留空。",4,
-        label_en="API Keys",hint_en="Used by API providers only; must remain empty for Playwright."))
-    endpoint: str = Field(default="",description="自定义 OpenAI 兼容服务地址。",json_schema_extra=_ui(
-        "自定义服务地址","内置服务留空；可填写基础地址或完整 responses/chat/completions 地址。",5,
-        label_en="Custom Endpoint",hint_en="Leave empty for built-ins; accepts a base URL or full endpoint."))
-    model: str = Field(default="",description="自定义联网模型名称。",json_schema_extra=_ui(
-        "自定义模型名","仅自定义 Responses/Chat 使用，例如中转提供的 Grok 模型名。",6,
-        label_en="Custom Model",hint_en="Required for custom Responses or Chat providers."))
-
-    @field_validator("api_keys",mode="before")
-    @classmethod
-    def normalize_keys(cls,value:Any)->list[str]:
-        values=value if isinstance(value,list) else []
-        cleaned=[]
-        for item in values:
-            key=str(item or "").strip()
-            if key and key not in cleaned:cleaned.append(key)
-        return cleaned[:20]
-
-    @field_validator("endpoint","model",mode="before")
-    @classmethod
-    def normalize_provider_text(cls,value:Any)->str:return str(value or "").strip()
-
-    @model_validator(mode="after")
-    def validate_provider(self)->"SearchProviderProfile":
-        if self.provider_type=="playwright" and self.api_keys:
-            raise ValueError("Playwright 搜索不使用 API Key，请清空 API Key 列表")
-        if self.enabled and self.provider_type in {"openai_responses","openai_chat"}:
-            if not self.endpoint:raise ValueError("启用自定义联网服务时必须填写服务地址")
-            if not self.model:raise ValueError("启用自定义联网服务时必须填写模型名")
-        return self
-
-
-
 class SearchAPISettings(PluginConfigBase):
-    """新闻和主动搜索共用的 API 服务链。"""
+    """宿主统一联网搜索（ctx.web.search）的插件侧开关与限制。"""
 
-    __ui_label__: ClassVar[str] = "联网搜索服务"
+    __ui_label__: ClassVar[str] = "联网搜索（宿主统一）"
     __ui_order__: ClassVar[int] = 14
 
-    providers: list[SearchProviderProfile] = Field(
-        default_factory=lambda:[SearchProviderProfile(enabled=True,provider_type="playwright")],
-        description="有序搜索服务列表。",json_schema_extra=_ui(
-            "搜索服务列表","默认免 Key Playwright/Bing；可继续添加 API 服务作为备援。",0,
-            label_en="Search Provider Chain",hint_en="Defaults to keyless Playwright/Bing; API providers can be appended as fallbacks."))
-    timeout_seconds: float = Field(default=12.0,ge=2,le=60,description="单次外部请求超时。",json_schema_extra=_ui(
-        "请求超时（秒）","超时视为服务故障并切换下一服务，不逐个消耗该服务的 Key。",1,
-        label_en="Request Timeout",hint_en="Timeouts fail over to the next provider without burning all keys."))
-    max_attempts: int = Field(default=12,ge=1,le=12,description="单次逻辑搜索最多外部请求次数。",json_schema_extra=_ui(
-        "单次最大尝试次数","限制错误配置或大量失效 Key 造成的请求风暴。",2,
-        label_en="Maximum Attempts",hint_en="Caps external attempts for one logical search."))
-    max_results: int = Field(default=5,ge=1,le=10,description="单次搜索最多保留结果数。",json_schema_extra=_ui(
-        "单次结果数","默认 5 条，新闻和主动搜索共同使用。",3,
-        label_en="Maximum Results",hint_en="Shared result limit for news and exploration."))
     tool_enabled: bool = Field(default=True,description="允许麦麦按需调用联网搜索工具。",json_schema_extra=_ui(
-        "允许麦麦使用联网搜索工具","仍需开启“联网见闻”总开关并配置至少一个可用服务；工具只返回搜索摘要，不会直接发送消息。",4,
-        label_en="Enable Web Search Tool",hint_en="Also requires connected discovery and an available provider; the tool returns search summaries only."))
+        "允许麦麦使用联网搜索工具","搜索走主程序统一联网服务（需在主程序配置并启用）；工具只返回搜索摘要，不会直接发送消息。",0,
+        label_en="Enable Web Search Tool",hint_en="Requires the host unified web service; the tool returns summaries only."))
+    max_results: int = Field(default=5,ge=1,le=20,description="单次搜索最多保留结果数。",json_schema_extra=_ui(
+        "单次结果数","默认 5 条，联网工具、新闻和主动搜索共同使用；宿主服务可能有自己的上限。",1,
+        label_en="Maximum Results",hint_en="Shared result limit for tool, news and exploration."))
+    max_attempts: int = Field(default=3,ge=1,le=5,description="宿主搜索失败后的最大尝试次数。",json_schema_extra=_ui(
+        "失败重试次数","宿主搜索失败时按次数重试（短退避）；仍失败则记录历史并返回空结果。",2,
+        label_en="Retry Attempts",hint_en="Retries host search failures with short backoff."))
     history_enabled: bool = Field(default=True,description="本地记录每次逻辑搜索的查询词与结果摘要。",json_schema_extra=_ui(
-        "记录搜索历史","记录联网工具、主动搜索和新闻阅读的查询词与结果摘要；查询词已做隐私清洗，原始 Key 不入库。",5,
+        "记录搜索历史","记录联网工具、主动搜索和新闻阅读的查询词与结果摘要；查询词已做隐私清洗。",3,
         label_en="Record Search History",hint_en="Store sanitized query and result summaries for local audit."))
     history_retention_days: int = Field(default=30,ge=1,le=365,description="本地搜索历史保留天数。",json_schema_extra=_ui(
-        "搜索历史保留天数","到期自动清理；新闻与探索笔记仍按各自保留期管理。",6,
+        "搜索历史保留天数","到期自动清理；新闻与探索笔记仍按各自保留期管理。",4,
         label_en="Search History Retention (days)",hint_en="Expired history rows are cleaned automatically."))
 
 
@@ -717,7 +656,7 @@ class NewsSettings(PluginConfigBase):
     __ui_order__: ClassVar[int] = 14
 
     enabled: bool = Field(default=False,description="启用低频 API 新闻阅读。",json_schema_extra=_ui(
-        "启用新闻阅读","默认关闭；还需要在“联网搜索服务”中启用至少一个服务。",0,label_en="Enable News Reading",hint_en="Disabled by default and requires an enabled search provider."))
+        "启用新闻阅读","默认关闭；需要在主程序配置统一联网搜索服务。",0,label_en="Enable News Reading",hint_en="Disabled by default; requires the host unified web service."))
     daily_max: int = Field(default=1,ge=0,le=12,description="每天最多发起的新闻阅读次数。",json_schema_extra=_ui(
         "每日新闻阅读次数","默认 1 次；一次主备 Key 和跨服务降级链合计为一次。",1,label_en="Daily News Reads",hint_en="One provider failover chain counts as one daily attempt."))
     full_text_count: int = Field(default=3,ge=0,le=3,description="最多继续读取正文的结果数。",json_schema_extra=_ui(
@@ -737,8 +676,8 @@ class SearchSettings(PluginConfigBase):
     __ui_order__: ClassVar[int] = 15
 
     enabled: bool = Field(default=False,description="启用低频主动搜索。",json_schema_extra=_ui(
-        "启用主动搜索","默认关闭；还需要在“联网搜索服务”中启用至少一个服务。",0,
-        label_en="Enable Proactive Search",hint_en="Disabled by default and requires an enabled search provider."))
+        "启用主动搜索","默认关闭；需要在主程序配置统一联网搜索服务。",0,
+        label_en="Enable Proactive Search",hint_en="Disabled by default; requires the host unified web service."))
     daily_max: int = Field(default=1,ge=0,le=10,description="每天最多发起的主动搜索次数。",json_schema_extra=_ui(
         "每日主动搜索上限","默认 1 次；失败或空结果也会计入，避免持续请求。",1,label_en="Daily Search Limit",hint_en="Failures and empty results count to prevent repeated external requests."))
     include_chat_topics: bool = Field(default=False,description="允许使用匿名未完话题规划搜索。",json_schema_extra=_ui(
@@ -1239,7 +1178,7 @@ class MaiLifeSettings(PluginConfigBase):
     )
     search_api: SearchAPISettings = Field(
         default_factory=SearchAPISettings,
-        json_schema_extra=_ui("联网搜索服务", "博查、Tavily、You.com 与自定义联网中转的有序降级链。", 14,
+        json_schema_extra=_ui("联网搜索（宿主统一）", "联网工具、新闻与主动探索统一走主程序联网服务。", 14,
                               label_en="Search API Providers",hint_en="Ordered failover for built-in and custom web-search providers."),
     )
     news: NewsSettings = Field(

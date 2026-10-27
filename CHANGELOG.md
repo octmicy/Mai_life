@@ -15,10 +15,16 @@
 - **配置 Schema 版本升至 1.12.0**；`webui_config_summary` 去掉 `debounce` 键、新增 `group` 配置节（群闸门/群轮次注册/群时间窗/群段型）并补齐 `context` 的轮次锁与背景缓存字段。
 - **WebUI 配置页归类重排**：system 页 7 个 tab 重组为 5 个主题子 tab——「通用配置 / 生活与作息 / 联网搜索 / 群聊 / 运行状态」。**群聊独立分支**：QQ 群白名单表（自运行状态挪入）、群闸门与轮次、群转私边界（social 全字段）集中一处。**联网搜索分支**：见闻/新闻/主动搜索/搜索服务四段配置集中，搜索来源与 Key 健康表随之归位；「搜索服务（兜底链）」标注其现状角色——`tool_web_search` 已宿主 `ctx.web.search` 优先，该 Provider 链仍是新闻/见闻/主动搜索的动力源与联网工具兜底，配置保留不可删。全站 `card>text` 空壳压成带 label 的 `stat`（约 55 处，overview 74→57、system 181→141 个组件，声明体积 116KB→107KB）；「后台脉搏」更名「后台运行」并移除防抖专属的「活跃收口」。归类草案 `docs/_draft_webui_regroup.md`（本地）。
 
+### 移除
+
+- **插件自有联网链整体删除，联网全面走宿主统一服务**（主人决策）：`tool_web_search`、新闻阅读、主动搜索、联网见闻全部改走宿主 `ctx.web.search` / `ctx.web.fetch`（SDK 2.17+，失败按 `search_api.max_attempts`（默认 3）短退避重试，仍失败记录历史并返回空结果，**不做回退**）。删除 `search_service`/`search_providers`/`search_parsing`/`search_models`（约 870 行 Provider 降级链与 Key 冷却体系）与博查/Tavily/You.com/自定义中转/Playwright 浏览器五种 Provider。`search_api` 配置瘦身（节名不变，删 providers 列表与 timeout_seconds，新增语义为重试次数的 max_attempts）；`webui_admin_summary` 的 sources 范围、搜索来源/Key 健康表随之移除；usage 的「今日搜索请求」改由宿主搜索事件计数。
+- **网页截图工具 `mai_life_browse_web` 删除**（主人追加）：Playwright 依赖从 manifest/requirements 移除，`playwright_search.py`/`feed_parser.py` 删除；网页正文读取改用宿主 `web.fetch`（返回已提取正文）。天气获取仍走插件 HttpClient（宿主无对应能力）。
+
 ### 说明
 
-- SDK 2.17.0 起 `tool_web_search` 优先走宿主统一联网服务 `ctx.web.search()`，失败自动回退插件自身多 Provider 降级链（v1.23.8 的变更一并随本版发布）。
-- 全量测试 561 项通过（删除 17 条防抖行为用例；新增轮次锁/群配置字段默认值断言；WebUI 结构/渲染/键集测试随重排同步）。
+- 联网质量取决于宿主「模型设置→功能分配→联网搜索」的配置；工具的 freshness 时间档随宿主能力一并移除，新闻新鲜度按 published_at 轻量过滤（可解析且早于 3 天丢弃）。
+- 联网工具/新闻/探索的查询词隐私清洗（整词移除 QQ 号/昵称/群名）保持不变；搜索历史继续本地留痕（可关）。
+- 全量测试 488 项通过（删除 73 条 Provider 链/截图用例，新增 17 条宿主链用例：重试、历史、隐私清洗、新闻去重与新鲜度、探索归档）。
 
 ## [1.23.5] - 2026-10-25
 

@@ -28,13 +28,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from Mai_life.config import MaiLifeSettings, PLUGIN_VERSION, SearchProviderProfile, SocialGroupProfile, UserProfile
+from Mai_life.config import MaiLifeSettings, PLUGIN_VERSION, SocialGroupProfile, UserProfile
 from Mai_life.core.environment import EnvironmentService
 from Mai_life.core.storage import LifeStore
 from Mai_life.creation.creation_service import CreationService
 from Mai_life.information.http_client import HttpClient, HttpRequestError
-from Mai_life.information.search_providers import ApiProvider, get_provider_strategy
-from Mai_life.information.search_service import SearchService
 from Mai_life.life.bedtime import BEDTIME_SILENCE_MINUTES, BedtimeManager
 from Mai_life.life.life_state import LifeStateEngine
 from Mai_life.life.memory_service import MemoryService
@@ -308,7 +306,7 @@ class PluginFixTests(unittest.IsolatedAsyncioTestCase):
         scopes = {str(item.get("name")): str(item.get("chat_scope") or "all")
                   for item in components}
         self.assertEqual(scopes.get("mai_life_web_search"), "all")
-        self.assertEqual(scopes.get("mai_life_browse_web"), "all")
+        self.assertNotIn("mai_life_browse_web",scopes)  # v1.24.0 网页截图工具随 Playwright 链删除
         # 日程工具仅群聊：群轮次不注入私聊背景，日程靠工具补齐；私聊本就有日程注入。
         self.assertEqual(scopes.get("mai_life_get_schedule"), "group")
 
@@ -1903,14 +1901,6 @@ class AdminTextFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂无搜索历史。",search_text)
         self.assertNotIn("最近本地搜索历史",search_text)
 
-    async def test_sources_scope_labels_playwright_without_key(self):
-        config=MaiLifeSettings()
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="playwright")]
-        service=AdminService(self.store,config)
-        text=await service.format_text("sources",self.now)
-        self.assertIn("浏览器（无需 Key）",text); self.assertNotIn("Key 0",text)
-
-
 class RecallNoticeFixTests(unittest.TestCase):
     """P3-13：payload 为 JSON 字符串的撤回通知不再被静默忽略。"""
 
@@ -2694,53 +2684,6 @@ class V1147PublicEndpointGuardTests(unittest.IsolatedAsyncioTestCase):
         for url in ("https://api.bochaai.com/v1/web-search", "https://8.8.8.8/v1"):
             with self.subTest(url=url):
                 self.assertEqual(HttpClient.private_host_reason(url), "")
-
-    async def test_private_custom_endpoint_is_config_error_without_key_penalty(self):
-        config = MaiLifeSettings()
-        config.search_api.history_enabled = True
-        config.search_api.providers = [SearchProviderProfile(
-            enabled=True, provider_type="openai_chat", api_keys=["good"],
-            endpoint="http://127.0.0.1:9/v1", model="grok-online")]
-        service = SearchService(config, HttpClient(DummyLogger()), self.store, DummyLogger())
-        response = await service.search("测试查询", operation="tool_search")
-        self.assertFalse(response.results)
-        self.assertEqual(service.last_error_class, "unsafe_endpoint")
-        runtime = await self.store.get_search_key_runtime(
-            service.providers()[0][0], service.key_fingerprint("good"))
-        self.assertEqual(runtime["status"], "healthy")  # 配置错误不禁用 Key
-        history = await self.store.recent_search_history(time.time(), 10)
-        self.assertTrue(history and not history[0]["success"])
-
-    async def test_resolved_private_endpoint_does_not_penalize_key(self):
-        """域名解析到内网（请求时命中）：unsafe_url 不惩罚 Key，仅记录后换下一个服务。"""
-        import Mai_life.information.http_client as http_client
-        config = MaiLifeSettings()
-        config.search_api.providers = [SearchProviderProfile(
-            enabled=True, provider_type="openai_chat", api_keys=["good"],
-            endpoint="https://rebind.evil.example/v1", model="grok-online")]
-        service = SearchService(config, HttpClient(DummyLogger()), self.store, DummyLogger())
-        real = http_client._validate_public_url_sync
-        def reject(url):
-            raise HttpRequestError("拒绝访问内网、回环或保留地址", error_class="unsafe_url")
-        http_client._validate_public_url_sync = reject
-        try:
-            response = await service.search("测试查询")
-        finally:
-            http_client._validate_public_url_sync = real
-        self.assertFalse(response.results)
-        self.assertEqual(service.last_error_class, "unsafe_url")
-        runtime = await self.store.get_search_key_runtime(
-            service.providers()[0][0], service.key_fingerprint("good"))
-        self.assertEqual(runtime["status"], "healthy")
-
-    async def test_public_custom_endpoint_passes_validation(self):
-        provider = SearchProviderProfile(
-            enabled=True, provider_type="openai_chat", api_keys=["good"],
-            endpoint="https://api.example.com/v1", model="grok-online")
-        strategy = get_provider_strategy("openai_chat")(None)
-        self.assertEqual(strategy.validate(provider), "")
-        self.assertIsInstance(strategy, ApiProvider)
-
 
 class V1147RepoConfigTemplateTests(unittest.TestCase):
     """v1.14.7：仓库只提交 config.toml.example，运行时配置由 Runner 生成且不入库。"""
@@ -4431,8 +4374,6 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.config.rest_gate.wake_probability = 0.42
         self.config.rest_gate.night_start = "23:00"
         self.config.rest_gate.night_end = "07:30"
-        self.config.search_api.providers = [SearchProviderProfile(
-            enabled=True, provider_type="bocha", api_keys=["sk-top-secret"])]
         self.now = datetime(2026, 10, 8, 9, 0, tzinfo=TZ)
 
     async def asyncTearDown(self):
@@ -4502,10 +4443,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["search"]), {"enabled", "daily_max", "include_chat_topics",
                                                "note_retention_days"})
         self.assertEqual(set(data["search_api"]), {"tool_enabled", "history_enabled",
-                                                   "history_retention_days", "timeout_seconds",
-                                                   "max_attempts", "max_results",
-                                                   "provider_count"})
-        self.assertEqual(data["search_api"]["provider_count"], 1)
+                                                   "history_retention_days", "max_attempts",
+                                                   "max_results"})
         self.assertEqual(set(data["social"]), {"enabled", "owner_group_to_private_enabled",
                                                "inactivity_hours", "group_share_daily_max",
                                                "group_share_min_interval_minutes",
@@ -4554,7 +4493,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
-    """webui_admin_summary：概览/群聊/主动/来源四 scope，布尔转「开/关」，Key 只出指纹。"""
+    """webui_admin_summary：概览/群聊/主动三 scope，布尔转「开/关」。（来源 scope 随 Provider 链删除）"""
 
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -4564,10 +4503,6 @@ class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.config.information.enabled = True  # 概览的 network_enabled 取联网总开关
         self.config.social.groups = [SocialGroupProfile(
             group_id="100", enabled=True, observe_enabled=True, relay_target_enabled=False)]
-        self.config.search_api.providers = [SearchProviderProfile(
-            enabled=True, provider_type="bocha", api_keys=["sk-admin-secret"],
-            endpoint="https://api.bocha.com?key=sk-admin-secret",
-            model="bocha-sk-admin-secret")]
         self.config.creation.external_reading_enabled = True
         self.config.creation.external_reading_api_name = "外读 API"
         self.now = datetime(2026, 10, 8, 9, 0, tzinfo=TZ)
@@ -4611,20 +4546,11 @@ class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
             created_at=self.now.timestamp(), operation="tool_search", provider_id="p1-bocha",
             provider_type="bocha", key_fingerprint="fp", success=True, status_code=200,
             latency_ms=50.0, result_count=2, error_class="")
-        # Key 运行态与 AdminService._provider_id / _fingerprint 同一算法，健康状态才能对上。
-        provider = self.config.search_api.providers[0]
-        signature = f"{provider.provider_type}:{provider.endpoint}:{provider.model}"
-        provider_id = f"p1-bocha-{hashlib.sha256(signature.encode()).hexdigest()[:8]}"
-        fingerprint = hashlib.sha256("sk-admin-secret".encode()).hexdigest()[:16]
-        await self.store.save_search_key_runtime(
-            provider_id, fingerprint, status="cooldown", cooldown_until=self.now.timestamp() + 600,
-            failure_count=2, error_class="rate_limit", used_at=self.now.timestamp())
-
     async def test_admin_summary_scopes_and_key_fingerprints(self):
         plugin = await self._plugin()
         await self._seed()
         data = await plugin.webui_admin_summary()
-        self.assertEqual(set(data), {"overview", "groups", "proactive", "sources"})
+        self.assertEqual(set(data), {"overview", "groups", "proactive"})
         overview = data["overview"]
         self.assertEqual(set(overview), {"version", "users", "owners", "pending_dates",
                                          "pending_proactive", "bookshelf_documents",
@@ -4666,37 +4592,12 @@ class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(skips), 1)
         self.assertEqual(set(skips[0]), {"reason", "total", "users"})
         self.assertEqual(skips[0], {"reason": "low_energy", "total": 4, "users": 2})
-        sources = data["sources"]
-        self.assertEqual(set(sources), {"information_enabled", "news_enabled", "search_enabled",
-                                        "external_reading", "providers", "keys"})
-        self.assertEqual(sources["information_enabled"], "开")
-        self.assertEqual(sources["news_enabled"], "关")
-        self.assertEqual(sources["external_reading"], {"enabled": "开", "api_name": "外读 API"})
-        provider = sources["providers"][0]
-        self.assertEqual(set(provider), {"provider_id", "provider_type", "enabled", "key_count",
-                                         "endpoint", "model"})
-        self.assertEqual(provider["provider_type"], "bocha")
-        self.assertEqual(provider["enabled"], "开")
-        self.assertEqual(provider["key_count"], 1)
-        key = sources["keys"][0]
-        self.assertEqual(set(key), {"provider_id", "fingerprint", "status", "cooldown_until",
-                                    "failure_count", "last_error_class"})
-        self.assertEqual(key["status"], "cooldown")
-        self.assertEqual(key["failure_count"], 2)
-        self.assertEqual(key["last_error_class"], "rate_limit")
-        self.assertGreater(key["cooldown_until"], 0)
-        serialized = json.dumps(data, ensure_ascii=False)
-        self.assertNotIn("sk-admin-secret", serialized)  # Key 只出指纹，endpoint/model 脱敏
-        self.assertIn(key["fingerprint"], serialized)
-
     async def test_admin_summary_without_data_returns_empty_scopes(self):
         # 用默认配置（无 QQ 群白名单）验证空 scope，不用 asyncSetUp 里带群配置的那个。
         plugin = await build_plugin(self.store, MaiLifeSettings(), llm=DummyLLM(), now=self.now)
         data = await plugin.webui_admin_summary()
         self.assertEqual(data["groups"], [])
         self.assertEqual(data["proactive"], {"candidates": [], "skips": []})
-        self.assertEqual(data["sources"]["keys"], [])
-        self.assertIsInstance(data["sources"]["providers"], list)
         self.assertEqual(data["overview"]["users"], 0)
 
 

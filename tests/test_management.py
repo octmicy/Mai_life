@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime,timedelta,timezone
 
-from Mai_life.config import MaiLifeSettings,SearchProviderProfile,SocialGroupProfile,UserProfile
+from Mai_life.config import MaiLifeSettings,SocialGroupProfile,UserProfile
 from Mai_life.core.storage import LifeStore
 from Mai_life.management.admin_service import AdminService
 
@@ -62,17 +62,10 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("stream_id",serialized); self.assertNotIn("sensitive-stream",serialized)
         self.assertNotIn("聊天原文",serialized)
 
-    async def test_source_snapshot_only_exposes_key_fingerprint(self):
-        self.config.information.enabled=True; self.config.news.enabled=True; self.config.search.enabled=True
-        self.config.search_api.providers=[SearchProviderProfile(
-            enabled=True,provider_type="openai_chat",api_keys=["top-secret","backup-secret"],
-            endpoint="https://user:pass@example.com/top-secret/v1?token=secret",model="backup-secret-model",
-        )]
-        self.service.update_config(self.config)
-        data=await self.service.snapshot("sources",self.now); serialized=str(data)
-        self.assertIn("openai_chat",serialized); self.assertIn("key_count': 2",serialized)
-        self.assertNotIn("user:pass",serialized); self.assertNotIn("token=",serialized)
-        self.assertNotIn("top-secret",serialized); self.assertNotIn("backup-secret",serialized)
+    async def test_sources_scope_is_removed_with_provider_chain(self):
+        # v1.24.0 联网全面走宿主统一服务：自有 Provider 链删除，sources 管理范围随之移除。
+        from Mai_life.management import admin_service as admin_module
+        self.assertNotIn("sources",admin_module._SCOPES)
 
     async def test_token_scope_separates_api_requests_from_tokens(self):
         await self.store.record_search_api_event(created_at=self.now.timestamp(),operation="news",provider_id="p1",

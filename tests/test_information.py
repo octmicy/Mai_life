@@ -1,25 +1,23 @@
+"""宿主统一联网（ctx.web.search / ctx.web.fetch）下的信息层测试。
+
+覆盖：隐私清洗、宿主搜索重试与历史记录、联网工具、新闻阅读、主动探索与状态汇总。
+自有 Provider 降级链已删除（v1.24.0），不再有协议归一化、Key 冷却与浏览器搜索用例。
+"""
 from __future__ import annotations
 
-import asyncio
-import json
 import tempfile
-import threading
+import time
 import unittest
 from datetime import datetime,timedelta,timezone
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from typing import Any
 
-from Mai_life.config import PLUGIN_VERSION,MaiLifeSettings,SearchProviderProfile,SocialGroupProfile,UserProfile
-from Mai_life.core.storage import LifeStore,SCHEMA_VERSION
-from Mai_life.information import http_client
-from Mai_life.information.feed_parser import readable_text
-from Mai_life.information.http_client import HttpClient,HttpRequestError,HttpResponse
+from Mai_life.config import MaiLifeSettings,SocialGroupProfile,UserProfile
+from Mai_life.core.storage import LifeStore
+from Mai_life.information.host_search import HostSearchService,_error_class
 from Mai_life.information.information_service import InformationService
-from Mai_life.information.search_models import SearchBackendError,SearchResponse,SearchResult
-from Mai_life.information.search_parsing import clean_generated_text,parse_openai_citations,parse_openai_usage
-from Mai_life.information.search_providers import ApiProvider,PlaywrightProvider,PROVIDER_STRATEGIES,SearchAttemptError,get_provider_strategy
-from Mai_life.information.search_service import SearchService
-from Mai_life.plugin import MaiLifePlugin
-import Mai_life.information.search_service as search_module
+
+TZ=timezone(timedelta(hours=8))
+NOW=datetime(2026,7,13,10,0,tzinfo=TZ)
 
 
 class DummyLogger:
@@ -28,849 +26,331 @@ class DummyLogger:
 
 
 class OfflineLLM:
-    def task_available(self,kind):return False
+    """全任务不可用的模型替身：查询规划/摘要/关联全部走本地降级。"""
+    def task_available(self,task:str)->bool:return False
+    async def generate_json(self,*args:Any,**kwargs:Any)->dict[str,Any]:return {}
 
 
-class BatchLLM:
-    def __init__(self):self.calls=[]
-    def task_available(self,kind):return kind in {"news","relevance"}
-    async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
-        del prompt,system,max_tokens; kind=kwargs.get("request_type"); self.calls.append(kind)
-        if kind=="news_query_planning":return {"query":"科技 最新新闻"}
-        if kind=="news_batch_digest":return {"summary":"五条新闻的批量整理"}
-        if kind=="external_self_association":return {"score":0.9,"reason":"相关","share_topic":"近期科技","motive":"想分享"}
-        return fallback
+class PlanLLM(OfflineLLM):
+    """只开放指定任务、返回固定查询规划的模型替身（探索用 search，新闻用 news）。"""
+    def __init__(self,query:str,topic:str="发现",tasks:tuple[str,...]=("search",)):
+        self.query=query; self.topic=topic; self.tasks=set(tasks)
+    def task_available(self,task:str)->bool:return task in self.tasks
+    async def generate_json(self,*args:Any,**kwargs:Any)->dict[str,Any]:
+        return {"topic":self.topic,"query":self.query,"reason":"测试规划"}
 
 
-class BothQueryLLM:
-    """同时支持新闻与主动搜索的查询规划，用于验证空结果仍计入每日额度。"""
-    def task_available(self,kind):return kind in {"news","search"}
-    async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
-        del prompt,system,max_tokens
-        if kwargs.get("request_type")=="news_query_planning":return {"query":"科技 最新新闻"}
-        if kwargs.get("request_type")=="search_query_planning":return {"topic":"探索","query":"科技","reason":"测试"}
-        return fallback
+class FakeHostWeb:
+    """ctx.web 替身：search 按脚本逐次消费（Exception=抛错，dict=返回），fetch 返回固定正文。"""
+
+    def __init__(self,script:list[Any]|None=None,results:list[dict[str,Any]]|None=None,
+                 service:str="unit-search",fetch_content:str="正文内容"):
+        self.script=list(script or []); self.results=list(results or [])
+        self.service=service; self.fetch_content=fetch_content
+        self.search_calls:list[dict[str,Any]]=[]; self.fetch_calls:list[str]=[]
+
+    async def search(self,query:str,*,max_results:int=5)->dict[str,Any]:
+        self.search_calls.append({"query":query,"max_results":max_results})
+        if self.script:
+            item=self.script.pop(0)
+            if isinstance(item,Exception):raise item
+            return item
+        return {"query":query,"results":self.results,"content_kind":"web",
+                "service":self.service,"retrieved_at":time.time()}
+
+    async def fetch(self,url:str)->dict[str,Any]:
+        self.fetch_calls.append(url)
+        return {"url":url,"title":"页面","content":self.fetch_content,
+                "content_kind":"article","service":"unit","retrieved_at":time.time()}
 
 
-class QueryLLM:
-    def task_available(self,kind):return kind=="search"
-    async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
-        del prompt,system,max_tokens
-        if kwargs.get("request_type")=="search_query_planning":
-            return {"topic":"隐私清洗测试","query":"10001 小麦 秘密群 test@example.com https://private.example/a 科技","reason":"测试"}
-        return fallback
+class DummyContext:
+    def __init__(self,web:Any=None):
+        self.web=web; self.logger=DummyLogger()
 
 
-class LeakyNewsLLM:
-    """模拟模型把 QQ、昵称、群名、邮箱和网址写进新闻查询词，验证外发前只移除本地私有多词禁词。"""
-    def task_available(self,kind):return kind in {"news","relevance"}
-    async def generate_json(self,prompt,system,fallback,max_tokens=0,**kwargs):
-        del prompt,system,max_tokens
-        if kwargs.get("request_type")=="news_query_planning":
-            return {"query":"10001 小麦 秘密群 test@example.com https://private.example/a 科技 最新新闻"}
-        if kwargs.get("request_type")=="news_batch_digest":return {"summary":"五条新闻的批量整理"}
-        if kwargs.get("request_type")=="external_self_association":return {"score":0.5,"reason":"相关","share_topic":"近期科技","motive":"想分享"}
-        return fallback
+def host_rows(*rows:dict[str,Any])->list[dict[str,Any]]:return list(rows)
 
 
-class FakeBrowserSearch:
-    """可注入 SearchService 的浏览器搜索客户端：按脚本返回结果或抛出后端异常。"""
-    def __init__(self,error:SearchBackendError|None=None)->None:
-        self.error=error; self.calls:list[dict[str,object]]=[]
-    async def search(self,query:str,**options:object):
-        self.calls.append({"query":query,**options})
-        if self.error is not None:raise self.error
-        return SearchResponse(results=[SearchResult(title="浏览器结果",url="https://example.com/browser",snippet="浏览器摘要")],
-                              provider_type="playwright",model=str(options["engine"]),cited=True)
-    async def close(self)->None:pass
+def row(title:str="标题",url:str="https://example.com/a",snippet:str="摘要内容",
+        published_at:Any=None)->dict[str,Any]:
+    return {"title":title,"url":url,"snippet":snippet,"summary":snippet,"published_at":published_at}
 
 
-class DummyContext:pass
+def base_config()->MaiLifeSettings:
+    config=MaiLifeSettings()
+    config.users.profiles=[UserProfile(user_id="10001",role="owner")]
+    config.social.groups=[SocialGroupProfile(group_id="20001",observe_enabled=True)]
+    return config
 
 
-class LocalHandler(BaseHTTPRequestHandler):
-    calls=[]
-    def log_message(self,format,*args):pass
-
-    def _key(self):
-        auth=self.headers.get("Authorization","")
-        return auth.removeprefix("Bearer ") or self.headers.get("X-API-Key","")
-
-    def _record(self,body:dict|None=None):
-        self.calls.append({"path":self.path.split("?",1)[0],"key":self._key(),"body":body or {},"query":self.path})
-
-    def _error(self,key):
-        if key=="bad-auth":self.send_response(401); self.end_headers(); self.wfile.write(b'{"error":"invalid api key"}'); return True
-        if key=="rate":self.send_response(429); self.send_header("Retry-After","60"); self.end_headers(); self.wfile.write(b'{"error":"rate limit"}'); return True
-        if key=="quota":self.send_response(429); self.end_headers(); self.wfile.write(b'{"error":"insufficient_quota"}'); return True
-        if key=="server":self.send_response(503); self.end_headers(); self.wfile.write(b'unavailable'); return True
-        return False
-
-    def _json(self,payload):
-        body=json.dumps(payload,ensure_ascii=False).encode()
-        self.send_response(200); self.send_header("Content-Type","application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
-
-    def do_GET(self):
-        key=self._key(); self._record()
-        if self._error(key):return
-        if self.path.startswith("/you"):
-            self._json({"hits":[] if key=="empty" else [{"title":"You 结果","url":"https://example.com/you","description":"You 摘要"}]}); return
-        self.send_response(404); self.end_headers()
-
-    def do_POST(self):
-        length=int(self.headers.get("Content-Length","0") or 0); raw=self.rfile.read(length)
-        try:body=json.loads(raw or b"{}")
-        except json.JSONDecodeError:body={}
-        key=self._key(); self._record(body)
-        if self._error(key):return
-        path=self.path.split("?",1)[0]
-        if path=="/bocha":
-            values=[] if key=="empty" else ([{
-                "name":f"标题 {key}","url":f"https://example.com/?token={key}",
-                "summary":f"摘要 {key}",
-            }] if key=="echo-secret" else [
-                {"name":f"博查结果 {index}","url":f"https://example.com/news/{index}","summary":f"第 {index} 条摘要"}
-                for index in range(1,6)
-            ])
-            self._json({"code":200,"data":{"webPages":{"value":values}}}); return
-        if path=="/tavily":
-            self._json({"results":[] if key=="empty" else [{"title":"Tavily 结果","url":"https://example.com/tavily","content":"Tavily 摘要"}]}); return
-        if path=="/v1/responses":
-            content=[] if key=="empty" else [{"type":"output_text","text":"Responses 联网回答",
-                "annotations":[{"type":"url_citation","url":"https://example.com/responses","title":"Responses 来源"}]}]
-            self._json({"model":"grok-web","output":[{"type":"message","content":content}],
-                        "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}); return
-        if path=="/v1/chat/completions":
-            content="" if key=="empty" else "Chat 联网模型生成的回答，没有提供外部链接。"
-            self._json({"model":"grok-online","choices":[{"message":{"content":content}}],
-                        "usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}); return
-        self.send_response(404); self.end_headers()
+async def make_service(web:Any,config:MaiLifeSettings|None=None,
+                       llm:Any|None=None)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
+    tmp=tempfile.TemporaryDirectory(); store=LifeStore(tmp.name); await store.initialize()
+    config=config or base_config()
+    service=InformationService(DummyContext(web),store,config,llm or OfflineLLM(),DummyLogger())
+    return service,store,tmp
 
 
-class InformationTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.tmp=tempfile.TemporaryDirectory(); self.store=LifeStore(self.tmp.name); await self.store.initialize()
-        LocalHandler.calls=[]; self.server=ThreadingHTTPServer(("127.0.0.1",0),LocalHandler)
-        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
-        self.base=f"http://127.0.0.1:{self.server.server_port}"
-        self.old_endpoints=dict(search_module._ENDPOINTS)
-        search_module._ENDPOINTS.update({"bocha":self.base+"/bocha","tavily":self.base+"/tavily","you":self.base+"/you"})
-        self.now=datetime(2026,7,13,10,0,tzinfo=timezone(timedelta(hours=8)))
-        # 本类用例验证协议归一化与降级，不验证公网防火墙：临时放行回环地址，
-        # 让请求能以固定 IP 连上本地测试服务器（生产路径由 public_only 真校验兜底）。
-        self._real_public_check=http_client._validate_public_url_sync
-        self._real_private_reason=HttpClient.private_host_reason
-        http_client._validate_public_url_sync=lambda url:(url,"127.0.0.1")
-        HttpClient.private_host_reason=staticmethod(lambda url:"")
-
-    async def asyncTearDown(self):
-        http_client._validate_public_url_sync=self._real_public_check
-        HttpClient.private_host_reason=self._real_private_reason
-        search_module._ENDPOINTS.clear(); search_module._ENDPOINTS.update(self.old_endpoints)
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
-        await self.store.close(); self.tmp.cleanup()
-
-    def _provider(self,kind,key="good"):
-        custom=kind.startswith("openai_")
-        return SearchProviderProfile(enabled=True,provider_type=kind,api_keys=[key],
-            endpoint=self.base+"/v1" if custom else "",model="grok-web" if kind=="openai_responses" else "grok-online" if custom else "")
-
-    async def test_all_five_provider_protocols_are_normalized(self):
-        for kind in ("bocha","tavily","you","openai_responses","openai_chat"):
-            with self.subTest(provider=kind):
-                config=MaiLifeSettings(); config.search_api.providers=[self._provider(kind)]
-                service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-                response=await service.search("人工智能",operation="search")
-                self.assertEqual(response.provider_type,kind); self.assertTrue(response.results)
-                if kind=="openai_chat":
-                    self.assertFalse(response.cited); self.assertTrue(response.results[0].provider_generated)
-                else:self.assertTrue(response.cited)
-        responses_call=next(item for item in LocalHandler.calls if item["path"]=="/v1/responses")
-        self.assertEqual(responses_call["body"]["tools"],[{"type":"web_search"}])
-        usage=await self.store.usage_summary(0)
-        self.assertEqual(sum(int(item["total_tokens"] or 0) for item in usage if item["source"]=="search_api_model"),25)
-
-    async def test_freshness_tiers_reach_bocha_tavily_you_and_openai_routes(self):
-        """day/week/month/year 四档贯通：bocha/tavily/you 走原生参数，openai 两条路线降级为时间约束；any 不传。"""
-        # bocha 与 tavily：原生 freshness / days 映射（week 档）
-        for kind in ("bocha","tavily"):
-            config=MaiLifeSettings(); config.search_api.providers=[self._provider(kind)]
-            service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-            LocalHandler.calls=[]
-            self.assertTrue((await service.search("科技",freshness="week")).results)
-            body=next(item for item in LocalHandler.calls if item["path"]=="/"+kind)["body"]
-            if kind=="bocha":self.assertEqual(body.get("freshness"),"oneWeek")
-            else:self.assertEqual((body.get("days"),body.get("topic")),(7,"news"))
-        # you.com：原生 freshness 查询参数
-        LocalHandler.calls=[]
-        you_config=MaiLifeSettings(); you_config.search_api.providers=[self._provider("you")]
-        you_service=SearchService(you_config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        self.assertTrue((await you_service.search("科技",freshness="month")).results)
-        self.assertIn("freshness=month",next(item for item in LocalHandler.calls if item["path"]=="/you")["query"])
-        # openai_responses 降级为 instructions；openai_chat 追加进 system 提示
-        for kind,path in (("openai_responses","/v1/responses"),("openai_chat","/v1/chat/completions")):
-            LocalHandler.calls=[]
-            cfg=MaiLifeSettings(); cfg.search_api.providers=[self._provider(kind)]
-            svc=SearchService(cfg,HttpClient(DummyLogger()),self.store,DummyLogger())
-            self.assertTrue((await svc.search("科技",freshness="day")).results)
-            body=next(item for item in LocalHandler.calls if item["path"]==path)["body"]
-            if kind=="openai_responses":self.assertEqual(body.get("instructions"),"只返回最近 24 小时内的信息。")
-            else:self.assertIn("只返回最近 24 小时内的信息。",body["messages"][0]["content"])
-        # any：不设置任何 freshness 过滤
-        LocalHandler.calls=[]
-        any_config=MaiLifeSettings(); any_config.search_api.providers=[self._provider("bocha")]
-        any_service=SearchService(any_config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        self.assertTrue((await any_service.search("科技",freshness="any")).results)
-        self.assertIsNone(next(item for item in LocalHandler.calls if item["path"]=="/bocha")["body"].get("freshness"))
-
-    async def test_auth_failure_switches_key_and_never_persists_raw_keys(self):
-        logger=DummyLogger(); config=MaiLifeSettings()
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["bad-auth","good"])]
-        service=SearchService(config,HttpClient(logger),self.store,logger)
-        response=await service.search("科技"); self.assertTrue(response.results)
-        health=await service.health_snapshot(); states={item["fingerprint"]:item["status"] for item in health[0]["keys"]}
-        self.assertEqual(states[service.key_fingerprint("bad-auth")],"disabled")
-        self.assertEqual([item["key"] for item in LocalHandler.calls],["bad-auth","good"])
-        database_text=str([tuple(row) for row in self.store.conn.execute("SELECT * FROM search_key_runtime")])
-        event_text=str([tuple(row) for row in self.store.conn.execute("SELECT * FROM search_api_events")])
-        self.assertNotIn("bad-auth",database_text+event_text+str(logger.messages)); self.assertNotIn("good",database_text+event_text)
-        LocalHandler.calls=[]
-        restarted=SearchService(config,HttpClient(logger),self.store,logger)
-        self.assertTrue((await restarted.search("科技")).results)
-        self.assertEqual([item["key"] for item in LocalHandler.calls],["good"])
-        restarted.update_config(config); LocalHandler.calls=[]
-        self.assertTrue((await restarted.search("科技")).results)
-        self.assertEqual([item["key"] for item in LocalHandler.calls],["bad-auth","good"])
-
-    async def test_search_history_records_success_and_failure_with_query(self):
-        """本地搜索历史：成功与失败都记录查询词、来源和结果摘要；结果与查询词进入 SQLite。"""
-        logger=DummyLogger(); config=MaiLifeSettings()
-        config.information.enabled=True; config.search_api.history_enabled=True
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"])]
-        service=SearchService(config,HttpClient(logger),self.store,logger)
-        ok=await service.search("人工智能最新进展",operation="tool_search")
-        self.assertTrue(ok.results)
-        history=await self.store.recent_search_history(self.now.timestamp(),10,operation="tool_search")
-        self.assertEqual(len(history),1)
-        self.assertEqual(history[0]["query"],"人工智能最新进展"); self.assertEqual(history[0]["operation"],"tool_search")
-        self.assertEqual(history[0]["provider_type"],"tavily"); self.assertTrue(history[0]["success"])
-        self.assertEqual(history[0]["result_count"],1); self.assertIn("https://example.com/tavily",str(history[0]["results"]))
-        # 失败路径（所有服务不可用）也记录一条失败历史；倒序排列时最新记录在前。
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["bad-auth"])]
-        failed=await service.search("量子计算",operation="tool_search")
-        self.assertFalse(failed.results)
-        history=await self.store.recent_search_history(self.now.timestamp(),10,operation="tool_search")
-        self.assertEqual(len(history),2)
-        self.assertFalse(history[0]["success"]); self.assertEqual(history[0]["error_class"],"auth")
-        self.assertTrue(history[1]["success"])
-        # 新闻与主动搜索共用同一记录表。
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="you",api_keys=["good"])]
-        await service.search("今日新闻",operation="news")
-        history=await self.store.recent_search_history(self.now.timestamp(),10)
-        self.assertEqual(len(history),3); self.assertEqual(history[0]["operation"],"news")
-        LocalHandler.calls=[]
-
-    async def test_search_history_cleanup_and_disabled(self):
-        """搜索历史开关关闭时不写入；过期记录按保留期清理。"""
-        logger=DummyLogger(); config=MaiLifeSettings()
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"])]
-        config.search_api.history_enabled=False
-        service=SearchService(config,HttpClient(logger),self.store,logger)
-        await service.search("不记录",operation="tool_search")
-        self.assertEqual(await self.store.recent_search_history(self.now.timestamp(),10),[])
-        config.search_api.history_enabled=True
-        await service.search("记录一条",operation="tool_search")
-        now=self.now.timestamp(); older=now-40*86400
-        await self.store.record_search_history(created_at=older,operation="tool_search",query="过期记录",
-            provider_type="tavily",success=False,result_count=0,error_class="timeout",duration_ms=100,
-            results=[],expires_at=older+30*86400)
-        await self.store.cleanup_information(now)
-        history=await self.store.recent_search_history(now,10)
-        self.assertEqual(len(history),1); self.assertNotEqual(history[0]["query"],"过期记录")
-        LocalHandler.calls=[]
-
-    async def test_rate_limit_and_quota_apply_different_cooldowns(self):
-        for key,minimum in (("rate",55),("quota",23*3600)):
-            LocalHandler.calls=[]; config=MaiLifeSettings()
-            config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=[key,"good"])]
-            service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger()); before=self.now.timestamp()
-            self.assertTrue((await service.search("科技")).results)
-            state=await self.store.get_search_key_runtime(service.providers()[0][0],service.key_fingerprint(key))
-            self.assertEqual(state["status"],"cooldown")
-            # 使用现实 time.time 写入，测试只验证相对当前墙钟的最小冷却。
-            import time
-            self.assertGreaterEqual(float(state["cooldown_until"])-time.time(),minimum)
-
-    async def test_service_failure_skips_backup_key_and_fails_over_provider(self):
-        config=MaiLifeSettings(); config.search_api.providers=[
-            SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["server","must-not-run"]),
-            SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"]),
-        ]
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        response=await service.search("科技")
-        self.assertEqual(response.provider_type,"tavily")
-        self.assertEqual([item["key"] for item in LocalHandler.calls],["server","good"])
-        LocalHandler.calls=[]
-        self.assertEqual((await service.search("科技")).provider_type,"tavily")
-        self.assertEqual([item["key"] for item in LocalHandler.calls],["good"])
-
-    async def test_browser_blocked_and_browser_error_keep_browser_entry_healthy(self):
-        """验证码拦截与浏览器故障不冷却浏览器条目，仅记录事件后切换下一个 Provider。"""
-        import time
-        for error_class in ("blocked","browser_error"):
-            with self.subTest(error=error_class):
-                LocalHandler.calls=[]
-                config=MaiLifeSettings(); config.search_api.providers=[
-                    SearchProviderProfile(enabled=True,provider_type="playwright"),
-                    SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"]),
-                ]
-                browser=FakeBrowserSearch(SearchBackendError("搜索页被拦截",error_class=error_class))
-                service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger(),
-                                      playwright_client=browser)
-                response=await service.search("人工智能")
-                self.assertEqual(response.provider_type,"tavily")
-                self.assertEqual(service.last_error_class,error_class)
-                runtime=await self.store.get_search_key_runtime(service.providers()[0][0],"browser")
-                self.assertEqual(runtime["status"],"healthy")
-                self.assertEqual(runtime["cooldown_until"],0)
-                self.assertEqual(runtime["failure_count"],0)
-                self.assertEqual(runtime["last_error_class"],"")
-
-    async def test_service_error_cooldown_starts_at_120s_and_doubles_to_240s(self):
-        """服务故障冷却从 120 秒起按失败次数翻倍，封顶 30 分钟。"""
-        import time
-        config=MaiLifeSettings()
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["server"])]
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        self.assertFalse((await service.search("科技")).results)
-        provider_id,fingerprint=service.providers()[0][0],service.key_fingerprint("server")
-        state=await self.store.get_search_key_runtime(provider_id,fingerprint)
-        self.assertEqual(state["status"],"service_error"); self.assertEqual(state["failure_count"],1)
-        self.assertAlmostEqual(float(state["cooldown_until"])-time.time(),120,delta=5)
-        # 冷却结束后同一 Key 再次故障，冷却翻倍到 240 秒。
-        await self.store.save_search_key_runtime(provider_id,fingerprint,status="service_error",
-            cooldown_until=0,failure_count=1,error_class="server",used_at=time.time())
-        self.assertFalse((await service.search("科技")).results)
-        state=await self.store.get_search_key_runtime(provider_id,fingerprint)
-        self.assertEqual(state["status"],"service_error"); self.assertEqual(state["failure_count"],2)
-        self.assertAlmostEqual(float(state["cooldown_until"])-time.time(),240,delta=5)
-        LocalHandler.calls=[]
-
-    async def test_empty_result_uses_next_provider_without_key_penalty(self):
-        config=MaiLifeSettings(); config.search_api.providers=[
-            SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["empty"]),
-            SearchProviderProfile(enabled=True,provider_type="tavily",api_keys=["good"]),
-        ]
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        response=await service.search("科技"); self.assertEqual(response.provider_type,"tavily")
-        state=await self.store.get_search_key_runtime(service.providers()[0][0],service.key_fingerprint("empty"))
-        self.assertEqual(state["status"],"healthy"); self.assertEqual(state["failure_count"],0)
-
-    async def test_provider_cannot_echo_raw_key_into_normalized_result(self):
-        key="echo-secret"
-        config=MaiLifeSettings(); config.search_api.providers=[self._provider("bocha",key)]
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        response=await service.search("科技")
-        self.assertNotIn(key,str(response)); self.assertEqual(response.results[0].url,""); self.assertFalse(response.cited)
-        database=str([tuple(row) for row in self.store.conn.execute("SELECT * FROM search_key_runtime")])
-        database+=str([tuple(row) for row in self.store.conn.execute("SELECT * FROM search_api_events")])
-        self.assertNotIn(key,database)
-
-    async def test_news_runs_once_keeps_five_reads_three_articles_and_batches_models(self):
-        config=MaiLifeSettings(); config.information.enabled=True; config.news.enabled=True
-        config.information.association_threshold=0.2; config.search_api.providers=[self._provider("bocha")]
-        llm=BatchLLM(); service=InformationService(DummyContext(),self.store,config,llm,DummyLogger())
-        article_calls=[]
-        async def article_get(url,**kwargs):
-            article_calls.append(url)
-            return HttpResponse(200,url,{"content-type":"text/html; charset=utf-8"},
-                "<article><p>这是足够长的正文测试内容，用于验证正文读取数量上限。</p></article>".encode())
-        service.http.get=article_get
-        schedule={"current":{"kind":"leisure","summary":"休息"},"next":None}
-        first=await service.tick(self.now,"喜欢科技",await self.store.get_state(),schedule,[])
-        second=await service.tick(self.now+timedelta(minutes=10),"喜欢科技",await self.store.get_state(),schedule,[])
-        items=await self.store.recent_news_items(self.now.timestamp(),10)
-        self.assertEqual(first,{"news":5,"associated":5,"search":0}); self.assertEqual(second["news"],0)
-        self.assertEqual(len(items),5); self.assertEqual(len(article_calls),3)
-        self.assertEqual(llm.calls.count("news_batch_digest"),1)
-        self.assertEqual(llm.calls.count("external_self_association"),1)
-        news_calls=[item for item in LocalHandler.calls if item["path"]=="/bocha"]
-        self.assertEqual(len(news_calls),1)
-        self.assertEqual(news_calls[0]["body"]["query"],"科技 最新新闻")
-        self.assertEqual(news_calls[0]["body"].get("freshness"),"oneDay")
-
-    async def test_custom_uncited_news_is_saved_with_explicit_marker(self):
-        config=MaiLifeSettings(); config.information.enabled=True; config.news.enabled=True
-        config.search_api.providers=[self._provider("openai_chat")]
-        service=InformationService(DummyContext(),self.store,config,BatchLLM(),DummyLogger())
-        schedule={"current":{"kind":"rest"},"next":None}
-        await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
-        items=await self.store.recent_news_items(self.now.timestamp(),5)
-        self.assertEqual(len(items),1); self.assertIn("Provider 生成、无外部引用",items[0]["summary"])
-        self.assertEqual(items[0]["url"],""); self.assertTrue(items[0]["source_id"].endswith(":uncited"))
-
-    async def test_news_skips_weak_results_and_dedups_by_url_across_providers(self):
-        """入库前过滤弱相关条目；去重键只由 url 决定，provider_id 变化不再让同一条新闻重复入库。"""
-        config=MaiLifeSettings(); config.information.enabled=True; config.news.enabled=True
-        config.information.association_threshold=0.2; config.news.full_text_count=0  # 不发起正文抓取
-        service=InformationService(DummyContext(),self.store,config,BatchLLM(),DummyLogger())
-        state={"n":0}
-        async def fake_search(query,*,operation,freshness="",event_at=0):
-            del query,operation,freshness,event_at; state["n"]+=1
-            if state["n"]==1:
-                # 一条相关 + 一条弱相关，provider_id=p1
-                return SearchResponse(results=[
-                    SearchResult("相关科技新闻","https://example.com/a","摘要A"),
-                    SearchResult("无关论坛帖","https://example.com/weak","Minecraft 摘要",weak=True),
-                ],provider_id="p1",provider_type="bocha")
-            # 同一条 url、不同 provider_id，模拟配置变更后再次命中的同一条新闻
-            return SearchResponse(results=[
-                SearchResult("相关科技新闻","https://example.com/a","摘要A"),
-            ],provider_id="p2",provider_type="tavily")
-        service.search.search=fake_search
-        schedule={"current":{"kind":"leisure","summary":"休息"},"next":None}
-        first=await service.news.refresh_due(self.now,schedule,"人格")
-        second=await service.news.refresh_due(self.now+timedelta(minutes=10),schedule,"人格")
-        items=await self.store.recent_news_items(self.now.timestamp(),10)
-        self.assertEqual(first,1)   # 只有相关那条入库，弱相关被过滤
-        self.assertEqual(second,0)  # 同 url 已存在，去重后无新增
-        self.assertEqual(len(items),1)
-        self.assertEqual(items[0]["url"],"https://example.com/a")
-        self.assertNotIn("https://example.com/weak",[item["url"] for item in items])
-
-    async def test_active_search_removes_private_terms_but_keeps_urls_and_emails(self):
-        """重新设计后：本地私有多词禁词（QQ/昵称/群名）按整词移除；邮箱与网址不再被正则清洗删除。"""
-        config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True
-        config.search.include_chat_topics=True; config.search_api.providers=[self._provider("bocha")]
-        config.users.profiles=[UserProfile(user_id="10001")]
-        config.social.groups=[SocialGroupProfile(group_id="20001")]
-        await self.store.sync_users(config.users.profiles); await self.store.update_user_display_name("10001","小麦")
-        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
-        service=InformationService(DummyContext(),self.store,config,QueryLLM(),DummyLogger())
-        schedule={"current":{"kind":"leisure"},"next":None}
-        self.assertTrue(await service.explore_due(self.now,"人格",await self.store.get_state(),schedule,["秘密群里的话题"]))
-        query=next(item["body"]["query"] for item in LocalHandler.calls if item["path"]=="/bocha")
-        # 本地私有多词禁词被整词移除
-        for private in ("10001","小麦","秘密群"):
-            self.assertNotIn(private,query)
-        # 邮箱与网址不再清洗删除（新意图：本插件无隐私需要那套正则清洗）
-        self.assertIn("test@example.com",query)
-        self.assertIn("https://private.example/a",query)
-        self.assertIn("科技",query)
-
-    async def test_group_member_nickname_never_leaks_into_external_search(self):
-        """群成员昵称（group_user_activity）同样属于外发查询词的禁词。"""
-        config=MaiLifeSettings(); config.information.enabled=True
-        config.search_api.tool_enabled=True; config.search_api.providers=[self._provider("bocha")]
-        config.users.profiles=[UserProfile(user_id="10001")]
-        config.social.groups=[SocialGroupProfile(group_id="20001")]
-        await self.store.sync_users(config.users.profiles)
-        await self.store.update_user_display_name("10001","小麦")
-        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
-        await self.store.record_group_activity("20001","30001","群成员昵称甲",self.now.timestamp())
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        result=await service.search_for_tool("群成员昵称甲 科技新闻",self.now)
-        self.assertTrue(result["success"])
-        for private in ("群成员昵称甲","10001","小麦","秘密群"):
-            self.assertNotIn(private,result["query"])
-        call=next(item for item in LocalHandler.calls if item["path"]=="/bocha")
-        self.assertNotIn("群成员昵称甲",call["body"]["query"])
-        history=await self.store.recent_search_history(self.now.timestamp(),10)
-        self.assertTrue(history)
-        for private in ("群成员昵称甲","10001","小麦","秘密群"):
-            self.assertNotIn(private,str(history))
-
-    async def test_news_query_is_sanitized_before_external_search(self):
-        """新闻规划词即使被模型写成含隐私词，外发 provider 前也会按整词移除本地私有多词禁词；邮箱/网址保留。"""
-        config=MaiLifeSettings(); config.information.enabled=True; config.news.enabled=True
-        config.information.association_threshold=0.2; config.search_api.providers=[self._provider("bocha")]
-        config.users.profiles=[UserProfile(user_id="10001")]
-        config.social.groups=[SocialGroupProfile(group_id="20001")]
-        await self.store.sync_users(config.users.profiles)
-        await self.store.update_user_display_name("10001","小麦")
-        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
-        service=InformationService(DummyContext(),self.store,config,LeakyNewsLLM(),DummyLogger())
-        schedule={"current":{"kind":"leisure","summary":"休息"},"next":None}
-        await service.tick(self.now,"喜欢科技",await self.store.get_state(),schedule,[])
-        news_calls=[item for item in LocalHandler.calls if item["path"]=="/bocha"]
-        self.assertEqual(len(news_calls),1)
-        query=news_calls[0]["body"]["query"]
-        # 本地私有多词禁词被整词移除
-        for private in ("10001","小麦","秘密群"):
-            self.assertNotIn(private,query)
-        # 邮箱与网址不再清洗删除（新意图）
-        self.assertIn("test@example.com",query)
-        self.assertIn("https://private.example/a",query)
-        self.assertIn("科技",query)
-        # 本地历史里同样不出现本地私有多词禁词
-        history=await self.store.recent_search_history(self.now.timestamp(),10,operation="news")
-        for private in ("10001","小麦","秘密群"):
-            self.assertNotIn(private,str(history))
-
-    async def test_sanitize_query_removes_private_terms_only_and_keeps_technical_terms(self):
-        """重新设计后：只按整词移除本地私有多词禁词；技术名词、邮箱、网址不再被当域名/邮箱正则删除。"""
-        config=MaiLifeSettings()
-        config.users.profiles=[UserProfile(user_id="10001")]
-        config.social.groups=[SocialGroupProfile(group_id="20001")]
-        await self.store.sync_users(config.users.profiles)
-        await self.store.update_user_display_name("10001","小麦")
-        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
-        await self.store.record_group_activity("20001","30001","犇",self.now.timestamp())
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        # 单字昵称独立成词时删除
-        self.assertEqual(await service.sanitize_query("犇 科技新闻"),"科技新闻")
-        # 技术名词不再被当裸域名整词删掉（旧实现会清成 '15 升级指南'）
-        self.assertEqual(await service.sanitize_query("Next.js 15 升级指南"),"Next.js 15 升级指南")
-        # 邮箱与网址保留，仅移除 QQ/昵称/群名
-        self.assertEqual(await service.sanitize_query(
-            "10001 小麦 秘密群 test@example.com https://private.example/a 科技"),
-            "test@example.com https://private.example/a 科技")
-        # 无禁词时原样返回
-        self.assertEqual(await service.sanitize_query("科技 最新新闻"),"科技 最新新闻")
-        self.assertEqual(await service.sanitize_query(""),"")
-
-    async def test_sanitize_query_whole_token_match_never_damages_substring(self):
-        """整词边界：禁词作为子串出现时不误伤正常查询；嵌在更长词元里的 QQ 号也不删。"""
-        config=MaiLifeSettings()
-        config.users.profiles=[UserProfile(user_id="10001")]
-        await self.store.sync_users(config.users.profiles)
-        await self.store.update_user_display_name("10001","天气")  # 昵称恰是常用词
-        service=SearchService(config,HttpClient(DummyLogger()),self.store,DummyLogger())
-        # '天气'作为子串：不误伤（旧实现会删成 '明天 怎么样'）
-        self.assertEqual(await service.sanitize_query("明天天气怎么样"),"明天天气怎么样")
-        self.assertEqual(await service.sanitize_query("天气预报 新闻"),"天气预报 新闻")
-        self.assertEqual(await service.sanitize_query("查天气"),"查天气")
-        # 独立成词：删除
-        self.assertEqual(await service.sanitize_query("天气 新闻"),"新闻")
-        # QQ 号独立成词删除，嵌在更长词元里不动
-        self.assertEqual(await service.sanitize_query("订单 10001 详情"),"订单 详情")
-        self.assertEqual(await service.sanitize_query("编号10001x 查询"),"编号10001x 查询")
-
-    async def test_web_search_tool_removes_private_terms_and_allows_repeated_calls(self):
-        config=MaiLifeSettings(); config.information.enabled=True
-        config.search_api.tool_enabled=True
-        config.search_api.providers=[self._provider("bocha")]
-        config.users.profiles=[UserProfile(user_id="10001")]
-        config.social.groups=[SocialGroupProfile(group_id="20001")]
-        await self.store.sync_users(config.users.profiles); await self.store.update_user_display_name("10001","小麦")
-        await self.store.upsert_group_directory("20001","秘密群","group-stream",self.now.timestamp())
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-
-        first=await service.search_for_tool(
-            "10001 小麦 秘密群 test@example.com https://private.example/a 人工智能新闻",
-            self.now,result_limit=2,freshness="day",
-        )
-        self.assertTrue(first["success"]); self.assertEqual(len(first["results"]),2)
-        self.assertIn("外部联网搜索结果",first["content"]); self.assertIn("https://example.com/news/1",first["content"])
-        # 本地私有多词禁词被整词移除；邮箱与网址保留（新意图）
-        for private in ("10001","小麦","秘密群"):
-            self.assertNotIn(private,first["query"])
-        self.assertIn("test@example.com",first["query"])
-        self.assertIn("https://private.example/a",first["query"])
-        call=next(item for item in LocalHandler.calls if item["path"]=="/bocha")
-        self.assertEqual(call["body"].get("freshness"),"oneDay")
-
-        second=await service.search_for_tool("第二次搜索",self.now+timedelta(seconds=1),result_limit=3)
-        self.assertTrue(second["success"]); self.assertEqual(len(second["results"]),3)
-        start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
-        self.assertEqual(await self.store.search_attempt_count(
-            "tool_search",start.timestamp(),(start+timedelta(days=1)).timestamp(),
-        ),2)
-
-    async def test_web_search_tool_soft_lands_weak_only_results(self):
-        """v1.23.6 软着陆：整体弱相关时低可信度放行（success=True + weak 标记），不再弃答。"""
-        config=MaiLifeSettings(); config.information.enabled=True
-        config.search_api.tool_enabled=True; config.search_api.providers=[self._provider("bocha")]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        async def fake_search(query,*,operation,freshness="",event_at=0):
-            del query,operation,freshness,event_at
-            return SearchResponse(results=[
-                SearchResult("无关结果一","https://example.com/x1","Minecraft 论坛摘要",weak=True),
-                SearchResult("无关结果二","https://example.com/x2","游戏 MOD 讨论",weak=True),
-            ],provider_id="p1",provider_type="playwright",cited=True)
-        service.search.search=fake_search
-        result=await service.search_for_tool("zzqqxx-nonexistent-query-91827364",self.now)
-        self.assertTrue(result["success"]); self.assertTrue(result.get("weak"))
-        self.assertIn("可信度存疑",result["content"]); self.assertIn("换更具体的词",result["content"])
-        self.assertNotIn("未找到",result["content"]); self.assertNotIn("不要据此回答",result["content"])
-
-    async def test_web_search_tool_respects_connected_discovery_switch(self):
-        config=MaiLifeSettings(); config.search_api.providers=[self._provider("bocha")]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        result=await service.search_for_tool("人工智能",self.now)
-        self.assertFalse(result["success"]); self.assertIn("总开关未开启",result["content"])
-        self.assertEqual(LocalHandler.calls,[])
-
-    async def test_plugin_tool_entry_clamps_parameters_and_forwards_environment_time(self):
-        class StubInformation:
-            def __init__(self):
-                self.calls=[]
-                from types import SimpleNamespace
-                async def _sq(q):return q
-                self.search=SimpleNamespace(sanitize_query=_sq)
-            async def search_for_tool(self,query,now,**kwargs):
-                self.calls.append((query,now,kwargs))
-                return {"success":True,"content":"工具调用成功"}
-
-        class StubEnvironment:
-            def now(_self):return self.now
-
-        config=MaiLifeSettings(); plugin=MaiLifePlugin()
-        plugin.set_plugin_config(config.model_dump(mode="python"))
-        information=StubInformation(); plugin._information=information; plugin._env=StubEnvironment()
-        result=await plugin.tool_web_search(query="人工智能",result_limit=99,freshness="DAY")
-        self.assertTrue(result["success"]); self.assertEqual(len(information.calls),1)
-        query,called_at,options=information.calls[0]
-        self.assertEqual(query,"人工智能"); self.assertEqual(called_at,self.now)
-        self.assertEqual(options,{"result_limit":5,"freshness":"day"})
-
-    async def test_all_services_failed_keeps_existing_notes_and_creates_no_fake_record(self):
-        config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True
-        config.search_api.providers=[SearchProviderProfile(enabled=True,provider_type="bocha",api_keys=["server"])]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        await self.store.save_exploration_note({"id":"existing","topic":"旧记录","query":"旧查询","summary":"缓存",
-            "source_urls":[],"created_at":self.now.timestamp()-60,"expires_at":self.now.timestamp()+3600})
-        result=await service.explore_due(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},[])
-        notes=await self.store.recent_exploration_notes(self.now.timestamp(),5)
-        self.assertFalse(result); self.assertEqual([item["id"] for item in notes],["existing"])
-
-    async def test_empty_results_consume_one_logical_daily_attempt_without_request_loop(self):
-        config=MaiLifeSettings(); config.information.enabled=True
-        config.news.enabled=True; config.search.enabled=True
-        config.search_api.providers=[self._provider("bocha","empty")]
-        service=InformationService(DummyContext(),self.store,config,BothQueryLLM(),DummyLogger())
-        schedule={"current":{"kind":"leisure"},"next":None}
-        first=await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
-        second=await service.tick(self.now+timedelta(minutes=10),"人格",await self.store.get_state(),schedule,[])
-        self.assertEqual(first,{"news":0,"associated":0,"search":0})
-        self.assertEqual(second,{"news":0,"associated":0,"search":0})
-        calls=[item for item in LocalHandler.calls if item["path"]=="/bocha"]
-        self.assertEqual(len(calls),2)
-        start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
-        self.assertEqual(await self.store.search_attempt_count("news",start.timestamp(),(start+timedelta(days=1)).timestamp()),1)
-        self.assertEqual(await self.store.search_attempt_count("search",start.timestamp(),(start+timedelta(days=1)).timestamp()),1)
-
-    async def test_offline_llm_skips_news_and_active_search_without_request(self):
-        """模型不可用时，新闻与主动搜索跳过且不产生任何外部搜索请求。"""
-        config=MaiLifeSettings(); config.information.enabled=True
-        config.news.enabled=True; config.search.enabled=True
-        config.search_api.providers=[self._provider("bocha","good")]
-        service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        schedule={"current":{"kind":"leisure"},"next":None}
-        result=await service.tick(self.now,"人格",await self.store.get_state(),schedule,[])
-        self.assertEqual(result,{"news":0,"associated":0,"search":0})
-        self.assertEqual(LocalHandler.calls,[])
-        start=self.now.replace(hour=0,minute=0,second=0,microsecond=0)
-        end=start+timedelta(days=1)
-        self.assertEqual(await self.store.search_attempt_count("news",start.timestamp(),end.timestamp()),0)
-        self.assertEqual(await self.store.search_attempt_count("search",start.timestamp(),end.timestamp()),0)
-
-    async def test_active_search_skips_query_model_without_available_provider(self):
-        config=MaiLifeSettings(); config.information.enabled=True; config.search.enabled=True
-        config.search_api.providers=[]
-        service=InformationService(DummyContext(),self.store,config,QueryLLM(),DummyLogger())
-        async def fail_if_planned(*args,**kwargs):
-            del args,kwargs
-            raise AssertionError("无可用搜索服务时不应规划查询词")
-        service._plan_query=fail_if_planned
-        result=await service.explore_due(
-            self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},[],
-        )
-        self.assertFalse(result); self.assertEqual(LocalHandler.calls,[])
-
-    async def test_default_disabled_and_ssrf_guard(self):
-        config=MaiLifeSettings(); service=InformationService(DummyContext(),self.store,config,OfflineLLM(),DummyLogger())
-        result=await service.tick(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},[])
-        self.assertEqual(result,{"news":0,"associated":0,"search":0}); self.assertEqual(LocalHandler.calls,[])
-        # 这条断言的就是防火墙本身：临时换回真实校验（asyncSetUp 为本地服务器放行了回环）。
-        http_client._validate_public_url_sync=self._real_public_check
+class HostSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sanitize_removes_private_terms_only_as_whole_tokens(self):
+        web=FakeHostWeb()
+        service,store,tmp=await make_service(web)
         try:
-            with self.assertRaises(HttpRequestError):HttpClient.validate_public_url(self.base+"/article")
+            config=service.config
+            config.users.profiles=[UserProfile(user_id="10001",role="owner")]
+            await store.sync_users(config.users.profiles)
+            await store.update_user_display_name("10001","小甜")
+            config.social.groups=[SocialGroupProfile(group_id="20001")]
+            cleaned=await service.search.sanitize_query("10001 小甜 20001 的明天天气怎么样")
+            self.assertNotIn("10001",cleaned); self.assertNotIn("小甜",cleaned); self.assertNotIn("20001",cleaned)
+            self.assertIn("明天天气怎么样",cleaned)  # 子串不被打散
+            technical=await service.search.sanitize_query("Next.js 15 升级指南")
+            self.assertEqual(technical,"Next.js 15 升级指南")
         finally:
-            http_client._validate_public_url_sync=lambda url:(url,"127.0.0.1")
-        self.assertEqual(readable_text("<script>bad()</script><p>useful article paragraph</p>",100),"useful article paragraph")
+            await store.close(); tmp.cleanup()
 
-    def test_schema_v9(self):self.assertEqual(SCHEMA_VERSION,14)
+    async def test_search_retries_then_succeeds_with_single_history_row(self):
+        web=FakeHostWeb(script=[RuntimeError("boom"),RuntimeError("boom again")],
+                        results=[row()])
+        service,store,tmp=await make_service(web)
+        try:
+            result=await service.search.search("测试查询",operation="tool_search",max_results=3)
+            self.assertEqual(len(result["results"]),1)
+            self.assertEqual(web.search_calls[0]["max_results"],3)
+            self.assertEqual(len(web.search_calls),3)  # 两次失败 + 一次成功
+            history=await store.recent_search_history(time.time(),10)
+            self.assertEqual(len(history),1)  # 一次逻辑搜索一条历史
+            self.assertTrue(history[0]["success"])
+            summary=await store.search_api_summary(time.time()-60)
+            self.assertEqual(sum(int(item["calls"]) for item in summary),1)
+        finally:
+            await store.close(); tmp.cleanup()
 
-    def test_provider_strategy_registry_orders_playwright_before_api(self):
-        self.assertEqual(PROVIDER_STRATEGIES,(PlaywrightProvider,ApiProvider))
-        self.assertEqual([strategy.matches("playwright") for strategy in PROVIDER_STRATEGIES],[True,False])
-        self.assertIs(get_provider_strategy("playwright"),PlaywrightProvider)
-        self.assertIs(get_provider_strategy("bocha"),ApiProvider)
-        self.assertIs(get_provider_strategy("openai_responses"),ApiProvider)
-        self.assertIs(get_provider_strategy("未知类型"),ApiProvider)
-        self.assertIs(get_provider_strategy(""),ApiProvider)
+    async def test_search_permanent_failure_records_history_and_error_class(self):
+        web=FakeHostWeb(script=[RuntimeError("upstream down")]*5)
+        service,store,tmp=await make_service(web)
+        try:
+            service.config.search_api.max_attempts=3
+            result=await service.search.search("查询",operation="news")
+            self.assertEqual(result["results"],[])
+            self.assertEqual(result["error_class"],"host_error")
+            self.assertEqual(len(web.search_calls),3)
+            history=await store.recent_search_history(time.time(),10)
+            self.assertTrue(history and not history[0]["success"])
+            self.assertEqual(history[0]["error_class"],"host_error")
+        finally:
+            await store.close(); tmp.cleanup()
 
-    def test_search_attempt_error_carries_classified_fields(self):
-        error=SearchAttemptError("配额用尽",error_class="quota",status_code=429,headers={"retry-after":"60"})
-        self.assertEqual(error.error_class,"quota"); self.assertEqual(error.status_code,429)
-        self.assertEqual(error.headers["retry-after"],"60"); self.assertTrue(error.penalize)
+    async def test_search_history_can_be_disabled(self):
+        web=FakeHostWeb(results=[row()])
+        service,store,tmp=await make_service(web)
+        try:
+            service.config.search_api.history_enabled=False
+            await service.search.search("查询",operation="search")
+            self.assertEqual(await store.recent_search_history(time.time(),10),[])
+        finally:
+            await store.close(); tmp.cleanup()
 
+    async def test_fetch_article_returns_empty_on_failure_and_missing_web(self):
+        class FailingWeb:
+            async def fetch(self,url:str)->dict[str,Any]:raise RuntimeError("blocked")
+        service,store,tmp=await make_service(FailingWeb())
+        try:
+            self.assertEqual(await service.search.fetch_article("https://example.com"),"")
+        finally:
+            await store.close(); tmp.cleanup()
+        no_web,store2,tmp2=await make_service(None)
+        try:
+            self.assertEqual(await no_web.search.fetch_article("https://example.com"),"")
+        finally:
+            await store2.close(); tmp2.cleanup()
 
-class StubBrowseInformation:
-    def __init__(self,result:object)->None:self.result=result; self.calls:list[str]=[]
-    async def browse_screenshot(self,url:str)->object:
-        self.calls.append(url)
-        if isinstance(self.result,Exception):raise self.result
-        return self.result
-
-
-class StubCommandReplies:
-    def __init__(self,sent:bool=True)->None:self.sent=sent; self.calls:list[dict[str,object]]=[]
-    async def send_image_bytes_with_fallback(self,image_bytes:bytes,stream_id:str,user_id:str|None=None,group_id:str|None=None,platform:str|None=None)->bool:
-        self.calls.append({"image_bytes":image_bytes,"stream_id":stream_id,"user_id":user_id,"group_id":group_id,"platform":platform})
-        return self.sent
-
-
-class BrowseContext:
-    def __init__(self)->None:self.logger=DummyLogger()
-
-
-class BrowseWebToolTests(unittest.IsolatedAsyncioTestCase):
-    def _plugin(self,info_result:object,sent:bool=True)->tuple[MaiLifePlugin,StubBrowseInformation,StubCommandReplies]:
-        plugin=MaiLifePlugin(); plugin.set_plugin_config(MaiLifeSettings().model_dump(mode="python"))
-        plugin._set_context(BrowseContext())
-        information=StubBrowseInformation(info_result); replies=StubCommandReplies(sent)
-        plugin._information=information; plugin._command_replies=replies
-        return plugin,information,replies
-
-    async def test_browse_web_tool_sends_image_and_reports_success(self):
-        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
-        plugin,information,replies=self._plugin(png,sent=True)
-        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1",platform="qq")
-        self.assertTrue(result["success"]); self.assertIn("截图",result["content"])
-        self.assertEqual(information.calls,["https://example.com"])
-        self.assertEqual(replies.calls,[{"image_bytes":png,"stream_id":"s1","user_id":"1","group_id":"","platform":"qq"}])
-
-    async def test_browse_web_tool_routes_group_screenshot_with_group_id(self):
-        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
-        plugin,information,replies=self._plugin(png,sent=True)
-        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="g1",group_id="100",platform="qq")
-        self.assertTrue(result["success"]); self.assertIn("截图",result["content"])
-        self.assertEqual(information.calls,["https://example.com"])
-        self.assertEqual(replies.calls,[{"image_bytes":png,"stream_id":"g1","user_id":"1","group_id":"100","platform":"qq"}])
-
-    async def test_browse_web_tool_rejects_non_http_url(self):
-        plugin,information,replies=self._plugin(b"x",sent=True)
-        result=await plugin.tool_browse_web(url="javascript:alert(1)")
-        self.assertFalse(result["success"]); self.assertIn("http",result["content"])
-        self.assertEqual(information.calls,[]); self.assertEqual(replies.calls,[])
-
-    async def test_browse_web_tool_degrades_when_send_fails(self):
-        png=b"\x89PNG\r\n\x1a\nfake-screenshot"
-        plugin,information,replies=self._plugin(png,sent=False)
-        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1")
-        self.assertFalse(result["success"]); self.assertIn("发送失败",result["content"])
-        self.assertEqual(information.calls,["https://example.com"]); self.assertEqual(len(replies.calls),1)
-
-    async def test_browse_web_tool_reports_screenshot_failure(self):
-        plugin,information,replies=self._plugin(RuntimeError("网页打开失败"),sent=True)
-        result=await plugin.tool_browse_web(url="https://example.com",user_id="1",stream_id="s1")
-        self.assertFalse(result["success"]); self.assertIn("截图失败",result["content"])
-        self.assertEqual(information.calls,["https://example.com"]); self.assertEqual(replies.calls,[])
+    def test_error_class_mapping(self):
+        class NotEnabled(Exception):pass
+        self.assertEqual(_error_class(NotEnabled("web.search 未启用")),"host_disabled")
+        self.assertEqual(_error_class(TimeoutError("request timeout")),"timeout")
+        self.assertEqual(_error_class(ValueError("max_results 超出上限")),"invalid_param")
+        self.assertEqual(_error_class(RuntimeError("connection reset")),"host_error")
 
 
-class SearchParsingPureFunctionTests(unittest.TestCase):
-    """验证 parse_openai 拆分后的三个纯函数与对外解析结果保持一致。"""
+class ToolSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def _service(self,web:Any)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
+        service,store,tmp=await make_service(web)
+        service.config.information.enabled=True
+        return service,store,tmp
 
-    def test_parse_openai_citations_extracts_nested_and_top_level(self):
-        responses={"output":[{"type":"message","content":[
-            {"type":"output_text","text":"回答","annotations":[{"type":"url_citation","url":"https://example.com/a"}]},
-        ]}]}
-        self.assertEqual([item["url"] for item in parse_openai_citations(responses,"openai_responses")],
-                         ["https://example.com/a"])
-        chat={"choices":[{"message":{"citations":[{"title":"来源","url":"https://example.com/b"}]}}]}
-        self.assertEqual([item["url"] for item in parse_openai_citations(chat,"openai_chat")],
-                         ["https://example.com/b"])
-        top={"output":[],"web_search_results":[{"url":"https://example.com/c"}]}
-        self.assertEqual([item["url"] for item in parse_openai_citations(top,"openai_responses")],
-                         ["https://example.com/c"])
-        self.assertEqual(parse_openai_citations({},"openai_responses"),[])
-        self.assertEqual(parse_openai_citations(None,"openai_chat"),[])
+    async def test_gates_block_tool_before_search(self):
+        service,store,tmp=await self._service(FakeHostWeb())
+        try:
+            service.config.information.enabled=False
+            blocked=await service.search_for_tool("查询",NOW)
+            self.assertFalse(blocked["success"])
+            service.config.information.enabled=True
+            service.config.search_api.tool_enabled=False
+            disabled=await service.search_for_tool("查询",NOW)
+            self.assertFalse(disabled["success"])
+            empty=await service.search_for_tool("   ",NOW)
+            self.assertFalse(empty["success"])
+            self.assertEqual(service.search._web().search_calls,[])
+        finally:
+            await store.close(); tmp.cleanup()
 
-    def test_parse_openai_usage_covers_both_protocols(self):
-        self.assertEqual(parse_openai_usage({"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}),
-                         (10,5,15))
-        self.assertEqual(parse_openai_usage({"usage":{"prompt_tokens":7,"completion_tokens":3}}),
-                         (7,3,10))
-        self.assertEqual(parse_openai_usage({}),(0,0,0))
-        self.assertEqual(parse_openai_usage(None),(0,0,0))
+    async def test_tool_formats_results_and_clamps_limit(self):
+        web=FakeHostWeb(results=[row(title=f"结果{index}",url=f"https://e.com/{index}") for index in range(8)])
+        service,store,tmp=await self._service(web)
+        try:
+            payload=await service.search_for_tool("查询",NOW,result_limit=9)
+            self.assertTrue(payload["success"])
+            self.assertEqual(payload["provider_type"],"host_web_search")
+            self.assertEqual(len(payload["results"]),5)  # 上限 5
+            self.assertIn("（服务：unit-search）",payload["content"])
+            self.assertNotIn("结果5",payload["content"])
+        finally:
+            await store.close(); tmp.cleanup()
 
-    def test_clean_generated_text_joins_and_strips_blank_parts(self):
-        self.assertEqual(clean_generated_text(["  第一段  ","","  第二段  "]),"第一段\n第二段")
-        self.assertEqual(clean_generated_text([]),"")
+    async def test_tool_failure_message_after_retries(self):
+        web=FakeHostWeb(script=[RuntimeError("x")]*9)
+        service,store,tmp=await self._service(web)
+        try:
+            payload=await service.search_for_tool("查询",NOW)
+            self.assertFalse(payload["success"])
+            self.assertIn("联网搜索失败",payload["content"])
+            self.assertEqual(len(web.search_calls),3)  # 默认重试 3 次
+        finally:
+            await store.close(); tmp.cleanup()
 
+    async def test_tool_sanitizes_query_before_host(self):
+        web=FakeHostWeb(results=[row()])
+        service,store,tmp=await self._service(web)
+        try:
+            await service.store.sync_users(service.config.users.profiles)
+            await service.search_for_tool("10001 查一下天气",NOW)
+            self.assertEqual(web.search_calls[0]["query"],"查一下天气")
+        finally:
+            await store.close(); tmp.cleanup()
 
-class RedirectHandler(BaseHTTPRequestHandler):
-    """本地 HTTP 服务器：记录请求方法与 User-Agent，提供重定向链测试端点。"""
-    seen=[]
-    def log_message(self,format,*args):pass
-    def _record(self):
-        self.seen.append({"path":self.path,"method":self.command,"ua":self.headers.get("User-Agent","")})
-    def _redirect(self,target):
-        self.send_response(302); self.send_header("Location",target); self.end_headers()
-    def do_GET(self):
-        self._record()
-        if self.path=="/start":self._redirect("/target"); return
-        if self.path=="/loop":self._redirect("/loop"); return
-        if self.path in {"/target","/final"}:
-            body=b"target" if self.path=="/target" else b"final"
-            self.send_response(200); self.send_header("Content-Type","text/plain")
-            self.end_headers(); self.wfile.write(body); return
-        self.send_response(404); self.end_headers()
-    def do_POST(self):
-        self._record()
-        if self.path=="/redirect-post":self._redirect("/final"); return
-        body=b"final"; self.send_response(200); self.end_headers(); self.wfile.write(body)
-
-
-class HttpClientPipelineTests(unittest.TestCase):
-    """验证统一 HttpClient 链：逐跳重定向、方法改写、UA 与错误分类。"""
-    def setUp(self):
-        RedirectHandler.seen=[]; self.server=ThreadingHTTPServer(("127.0.0.1",0),RedirectHandler)
-        self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
-        self.base=f"http://127.0.0.1:{self.server.server_port}"
-    def tearDown(self):
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
-
-    def _run(self,coro):
-        return asyncio.run(coro)
-
-    def test_redirect_loop_follows_location_and_sends_plugin_ua(self):
-        http=HttpClient(DummyLogger())
-        response=self._run(http.get(self.base+"/start"))
-        self.assertEqual(response.status,200); self.assertEqual(response.text(),"target")
-        self.assertEqual([item["path"] for item in RedirectHandler.seen],["/start","/target"])
-        self.assertEqual({item["method"] for item in RedirectHandler.seen},{"GET"})
-        self.assertTrue(all(f"Mai_life/{PLUGIN_VERSION}" in item["ua"] for item in RedirectHandler.seen))
-
-    def test_303_rewrites_post_to_get_and_drops_json_headers(self):
-        http=HttpClient(DummyLogger())
-        # 全量测试满负载时本地服务器线程可能被短暂饿死；重试三次保证确定性。
-        response=None; last:Exception|None=None
-        for _ in range(3):
-            RedirectHandler.seen=[]
-            try:
-                response=self._run(http.post_json(self.base+"/redirect-post",{"question":"测试"}))
-                break
-            except (TimeoutError,HttpRequestError) as exc:
-                last=exc
-        if response is None:
-            raise last
-        self.assertEqual(response.status,200); self.assertEqual(response.text(),"final")
-        self.assertEqual([item["method"] for item in RedirectHandler.seen],["POST","GET"])
-        self.assertNotIn("1.9.2",RedirectHandler.seen[1]["ua"])
-
-    def test_redirect_loop_limit_and_http_error_classification(self):
-        http=HttpClient(DummyLogger())
-        with self.assertRaises(HttpRequestError) as ctx:
-            self._run(http.get(self.base+"/loop"))
-        self.assertEqual(ctx.exception.error_class,"network")
-        self.assertIn("重定向次数过多",str(ctx.exception))
-        with self.assertRaises(HttpRequestError) as ctx:
-            self._run(http.get(self.base+"/missing"))
-        self.assertEqual(ctx.exception.error_class,"http")
-        self.assertEqual(ctx.exception.status_code,404)
+    async def test_tool_reports_missing_host_capability(self):
+        service,store,tmp=await self._service(None)
+        try:
+            payload=await service.search_for_tool("查询",NOW)
+            self.assertFalse(payload["success"])
+            self.assertIn("宿主统一联网能力不可用",payload["content"])
+        finally:
+            await store.close(); tmp.cleanup()
 
 
-if __name__=="__main__":unittest.main()
+class NewsTests(unittest.IsolatedAsyncioTestCase):
+    async def _ready(self,web:Any)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
+        service,store,tmp=await make_service(web,llm=PlanLLM("AI 新闻",topic="AI 新闻",tasks=("news",)))
+        service.config.information.enabled=True
+        service.config.news.enabled=True
+        service.config.news.allowed_schedule_types=["leisure"]
+        return service,store,tmp
+
+    def _schedule(self)->dict[str,Any]:
+        return {"current":{"kind":"leisure","summary":"闲暇"}}
+
+    async def test_news_saves_dedups_and_reads_articles(self):
+        web=FakeHostWeb(results=[row(title="新闻A",url="https://e.com/a"),
+                                 row(title="新闻A",url="https://e.com/a"),  # 同 URL 同内容去重
+                                 row(title="无链接",url="")])
+        service,store,tmp=await self._ready(web)
+        try:
+            changed=await service.news.refresh_due(NOW,self._schedule(),"人设")
+            self.assertEqual(changed,2)
+            items=await store.recent_news_items(NOW.timestamp(),10)
+            self.assertEqual(len(items),2)
+            uncited=[item for item in items if "无外部链接" in item["summary"]]
+            self.assertEqual(len(uncited),1)
+            self.assertTrue(web.fetch_calls)  # 正文经宿主 web.fetch 读取
+            self.assertTrue(all(url.startswith("https://e.com") for url in web.fetch_calls))
+        finally:
+            await store.close(); tmp.cleanup()
+
+    async def test_news_drops_stale_published_results(self):
+        old_ts=NOW.timestamp()-5*86400
+        web=FakeHostWeb(results=[row(title="旧闻",url="https://e.com/old",published_at=old_ts),
+                                 row(title="新文",url="https://e.com/new"),
+                                 row(title="字符串时间",url="https://e.com/iso",published_at="2026-07-13T09:00:00+08:00")])
+        service,store,tmp=await self._ready(web)
+        try:
+            changed=await service.news.refresh_due(NOW,self._schedule(),"人设")
+            titles={item["title"] for item in await store.recent_news_items(NOW.timestamp(),10)}
+            self.assertEqual(changed,2)
+            self.assertNotIn("旧闻",titles)
+            self.assertIn("字符串时间",titles)  # 非数值 published_at 保守保留
+        finally:
+            await store.close(); tmp.cleanup()
+
+    async def test_news_skips_without_host_or_schedule_or_quota(self):
+        service,store,tmp=await self._ready(None)
+        try:
+            self.assertEqual(await service.news.refresh_due(NOW,self._schedule(),"人设"),0)
+        finally:
+            await store.close(); tmp.cleanup()
+        web=FakeHostWeb(results=[row()])
+        service2,store2,tmp2=await self._ready(web)
+        try:
+            busy={"current":{"kind":"sleep","summary":"睡觉"}}
+            self.assertEqual(await service2.news.refresh_due(NOW,busy,"人设"),0)
+            self.assertEqual(web.search_calls,[])  # 日程不允许时不联网
+            service2.config.news.daily_max=0
+            self.assertEqual(await service2.news.refresh_due(NOW,self._schedule(),"人设"),0)
+        finally:
+            await store2.close(); tmp2.cleanup()
+
+
+class ExploreTests(unittest.IsolatedAsyncioTestCase):
+    async def _ready(self,web:Any,llm:Any|None=None)->tuple[InformationService,LifeStore,tempfile.TemporaryDirectory]:
+        tmp=tempfile.TemporaryDirectory(); store=LifeStore(tmp.name); await store.initialize()
+        config=base_config()
+        config.information.enabled=True
+        config.search.enabled=True
+        config.information.association_enabled=False  # 规则基线关闭，分数确定性为 0
+        service=InformationService(DummyContext(web),store,config,llm or OfflineLLM(),DummyLogger())
+        return service,store,tmp
+
+    async def test_explore_saves_note_with_sanitized_query_and_sources(self):
+        web=FakeHostWeb(results=[row(title="发现",url="https://e.com/x")])
+        service,store,tmp=await self._ready(web,llm=PlanLLM("10001 发现 新话题"))
+        try:
+            await store.sync_users(service.config.users.profiles)
+            schedule={"current":{"kind":"leisure","summary":"闲暇"}}
+            done=await service.explore_due(NOW,"人设",{"current_activity":"散步"},schedule,[])
+            self.assertTrue(done)
+            self.assertEqual(web.search_calls[0]["query"],"发现 新话题")  # 规划词已做隐私清洗
+            notes=await store.recent_exploration_notes(NOW.timestamp(),10)
+            self.assertEqual(len(notes),1)
+            self.assertEqual(notes[0]["topic"],"发现")
+            self.assertEqual(notes[0]["source_urls"],["https://e.com/x"])
+            self.assertEqual(float(notes[0]["relevance_score"]),0.0)  # 关联关闭 → 不产生主动契机
+        finally:
+            await store.close(); tmp.cleanup()
+
+    async def test_explore_skips_when_schedule_or_quota_or_host_missing(self):
+        service,store,tmp=await self._ready(FakeHostWeb(results=[row()]))
+        try:
+            sleep_schedule={"current":{"kind":"sleep","summary":"睡觉"}}
+            self.assertFalse(await service.explore_due(NOW,"人设",{},sleep_schedule,[]))
+            service.config.search.daily_max=0
+            self.assertFalse(await service.explore_due(NOW,"人设",{},{"current":{"kind":"leisure"}},[]))
+            service.config.search.daily_max=1
+            service.ctx.web=None
+            self.assertFalse(await service.explore_due(NOW,"人设",{},{"current":{"kind":"leisure"}},[]))
+        finally:
+            await store.close(); tmp.cleanup()
+
+
+class StatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_sources_reflect_host_capability(self):
+        service,store,tmp=await make_service(FakeHostWeb())
+        try:
+            service.config.information.enabled=True
+            status=await service.status(NOW)
+            self.assertEqual(status["sources"],1)
+            service.ctx.web=None
+            status=await service.status(NOW)
+            self.assertEqual(status["sources"],0)
+        finally:
+            await store.close(); tmp.cleanup()

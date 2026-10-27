@@ -13,7 +13,7 @@
 - **新增 `[group]` 群聊设置节（放在私聊用户之后）**：群闸门 9 个字段从 `[rest_gate]` 迁入并改名——`group_enabled`→`gate_enabled`、`group_mode`→`gate_scope`、`group_night_start/end`→`night_start/night_end`、`group_nap_start/nap_end`→`nap_start/nap_end`、`group_gate_segment_types`→`gate_segment_types`、`group_force_wake_terms`→`force_wake_terms`；语义不变（仍与私聊闸门共用 `rest_gate.gate_mode` 开关）。旧字段留在 `[rest_gate]` 会被忽略。
 - **群聊轮次注册独立开关 `group.turn_enabled`（默认开）**：原群轮次注册复用防抖开关 `debounce.group_enabled`（默认关），防抖删除后拆为独立字段；默认值由关变开，防止同一群消息触发多次回复。
 - **配置 Schema 版本升至 1.12.0**；`webui_config_summary` 去掉 `debounce` 键、新增 `group` 配置节（群闸门/群轮次注册/群时间窗/群段型）并补齐 `context` 的轮次锁与背景缓存字段。
-- **WebUI 配置页重排**：system 页 7 个 tab 收敛为「配置总览 / 运行状态」两个子 tab——配置按主题分组（总开关/模型/联动/轮次锁/闸门/群聊设置/撤回/记忆/日程/主动/联网/社交/创作/统计），admin 运行表归入运行状态；全站 `card>text` 空壳压成带 label 的 `stat`（约 55 处，overview 页 74→57、system 页 181→137 个组件，声明体积 116KB→107KB）；「后台脉搏」更名「后台运行」并移除防抖专属的「活跃收口」；overview 页新增 `background_cache_minutes`、`replyer_detail`、`gate_mode`、群聊设置、轮次锁等此前无入口字段的展示。
+- **WebUI 配置页归类重排**：system 页 7 个 tab 重组为 5 个主题子 tab——「通用配置 / 生活与作息 / 联网搜索 / 群聊 / 运行状态」。**群聊独立分支**：QQ 群白名单表（自运行状态挪入）、群闸门与轮次、群转私边界（social 全字段）集中一处。**联网搜索分支**：见闻/新闻/主动搜索/搜索服务四段配置集中，搜索来源与 Key 健康表随之归位；「搜索服务（兜底链）」标注其现状角色——`tool_web_search` 已宿主 `ctx.web.search` 优先，该 Provider 链仍是新闻/见闻/主动搜索的动力源与联网工具兜底，配置保留不可删。全站 `card>text` 空壳压成带 label 的 `stat`（约 55 处，overview 74→57、system 181→141 个组件，声明体积 116KB→107KB）；「后台脉搏」更名「后台运行」并移除防抖专属的「活跃收口」。归类草案 `docs/_draft_webui_regroup.md`（本地）。
 
 ### 说明
 

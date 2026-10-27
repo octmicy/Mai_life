@@ -2231,7 +2231,7 @@
           "children": [
             {
               "type": "stack",
-              "label": "配置总览",
+              "label": "通用配置",
               "children": [
                 {
                   "type": "grid",
@@ -2415,6 +2415,74 @@
                 },
                 {
                   "type": "grid",
+                  "label": "撤回增强",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "撤回增强",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "撤回摘要缓存",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.cache_summary"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "摘要保留(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.summary_ttl_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "摘要长度上限",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.summary_max_chars"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "Token 监控",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "Token 统计",
+                      "value": {
+                        "source": "config",
+                        "field": "usage.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "明细保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "usage.retention_days"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "生活与作息",
+              "children": [
+                {
+                  "type": "grid",
                   "label": "私聊休息闸门",
                   "columns": 4,
                   "children": [
@@ -2486,101 +2554,7 @@
                 },
                 {
                   "type": "grid",
-                  "label": "群聊设置",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "群闸门开关",
-                      "value": {
-                        "source": "config",
-                        "field": "group.gate_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群闸门范围",
-                      "value": {
-                        "source": "config",
-                        "field": "group.gate_scope"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群轮次注册",
-                      "value": {
-                        "source": "config",
-                        "field": "group.turn_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群闸门段型",
-                      "value": {
-                        "source": "config",
-                        "field": "group.gate_segment_types"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群夜间窗",
-                      "value": {
-                        "source": "config",
-                        "field": "group.night_window"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群午休窗",
-                      "value": {
-                        "source": "config",
-                        "field": "group.nap_window"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "撤回增强",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "撤回增强",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "撤回摘要缓存",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.cache_summary"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要保留(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_ttl_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要长度上限",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_max_chars"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "梦境与日记",
+                  "label": "生活记忆",
                   "columns": 4,
                   "children": [
                     {
@@ -2776,7 +2750,84 @@
                 },
                 {
                   "type": "grid",
-                  "label": "见闻公共开关",
+                  "label": "创作参数",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "书柜创作",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "明文存储确认",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.plaintext_storage_acknowledged"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "每日作品上限",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.daily_max"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "创作最低精力",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.minimum_energy"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "允许公开作品",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.public_works_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "灵感回看天数",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.inspiration_lookback_days"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "外部阅读联动",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.external_reading_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "创作巡检间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.patrol_interval_minutes"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "联网搜索",
+              "children": [
+                {
+                  "type": "grid",
+                  "label": "联网见闻",
                   "columns": 4,
                   "children": [
                     {
@@ -2823,7 +2874,7 @@
                 },
                 {
                   "type": "grid",
-                  "label": "新闻与主动搜索",
+                  "label": "新闻阅读",
                   "columns": 4,
                   "children": [
                     {
@@ -2857,7 +2908,14 @@
                         "source": "config",
                         "field": "news.retention_days"
                       }
-                    },
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "主动搜索",
+                  "columns": 4,
+                  "children": [
                     {
                       "type": "stat",
                       "label": "主动搜索",
@@ -2894,7 +2952,7 @@
                 },
                 {
                   "type": "grid",
-                  "label": "联网搜索服务",
+                  "label": "搜索服务（兜底链）",
                   "columns": 4,
                   "children": [
                     {
@@ -2956,8 +3014,171 @@
                   ]
                 },
                 {
+                  "type": "table",
+                  "label": "搜索来源（运行时）",
+                  "value": {
+                    "source": "admin",
+                    "field": "sources.providers"
+                  },
+                  "columns": [
+                    {
+                      "field": "provider_id",
+                      "label": "服务 ID"
+                    },
+                    {
+                      "field": "provider_type",
+                      "label": "协议"
+                    },
+                    {
+                      "field": "enabled",
+                      "label": "启用"
+                    },
+                    {
+                      "field": "key_count",
+                      "label": "Key 数"
+                    },
+                    {
+                      "field": "endpoint",
+                      "label": "地址"
+                    },
+                    {
+                      "field": "model",
+                      "label": "模型"
+                    }
+                  ]
+                },
+                {
+                  "type": "table",
+                  "label": "Key 健康（运行时，仅指纹）",
+                  "value": {
+                    "source": "admin",
+                    "field": "sources.keys"
+                  },
+                  "columns": [
+                    {
+                      "field": "provider_id",
+                      "label": "服务 ID"
+                    },
+                    {
+                      "field": "fingerprint",
+                      "label": "指纹"
+                    },
+                    {
+                      "field": "status",
+                      "label": "状态"
+                    },
+                    {
+                      "field": "cooldown_until",
+                      "label": "冷却至"
+                    },
+                    {
+                      "field": "failure_count",
+                      "label": "失败次数"
+                    },
+                    {
+                      "field": "last_error_class",
+                      "label": "最近错误"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "群聊",
+              "children": [
+                {
+                  "type": "table",
+                  "label": "QQ 群白名单",
+                  "value": {
+                    "source": "admin",
+                    "field": "groups"
+                  },
+                  "columns": [
+                    {
+                      "field": "group_id",
+                      "label": "群号"
+                    },
+                    {
+                      "field": "group_name",
+                      "label": "群名"
+                    },
+                    {
+                      "field": "enabled",
+                      "label": "启用"
+                    },
+                    {
+                      "field": "observe_enabled",
+                      "label": "观察"
+                    },
+                    {
+                      "field": "relay_target_enabled",
+                      "label": "转述目标"
+                    },
+                    {
+                      "field": "stream_known",
+                      "label": "会话已知"
+                    }
+                  ]
+                },
+                {
                   "type": "grid",
-                  "label": "社交转述边界",
+                  "label": "群闸门与轮次",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "群闸门开关",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群闸门范围",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_scope"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群轮次注册",
+                      "value": {
+                        "source": "config",
+                        "field": "group.turn_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群闸门段型",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_segment_types"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群夜间窗",
+                      "value": {
+                        "source": "config",
+                        "field": "group.night_window"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群午休窗",
+                      "value": {
+                        "source": "config",
+                        "field": "group.nap_window"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "群转私边界",
                   "columns": 4,
                   "children": [
                     {
@@ -3033,100 +3254,6 @@
                       }
                     }
                   ]
-                },
-                {
-                  "type": "grid",
-                  "label": "创作参数",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "书柜创作",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "明文存储确认",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.plaintext_storage_acknowledged"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "每日作品上限",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "创作最低精力",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.minimum_energy"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "允许公开作品",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.public_works_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "灵感回看天数",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.inspiration_lookback_days"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "外部阅读联动",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.external_reading_enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "创作巡检间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.patrol_interval_minutes"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "Token 监控",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "Token 统计",
-                      "value": {
-                        "source": "config",
-                        "field": "usage.enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "明细保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "usage.retention_days"
-                      }
-                    }
-                  ]
                 }
               ]
             },
@@ -3136,7 +3263,7 @@
               "children": [
                 {
                   "type": "grid",
-                  "label": "运行概览",
+                  "label": "运行统计",
                   "columns": 4,
                   "children": [
                     {
@@ -3239,40 +3366,6 @@
                 },
                 {
                   "type": "table",
-                  "label": "QQ 群配置",
-                  "value": {
-                    "source": "admin",
-                    "field": "groups"
-                  },
-                  "columns": [
-                    {
-                      "field": "group_id",
-                      "label": "群号"
-                    },
-                    {
-                      "field": "group_name",
-                      "label": "群名"
-                    },
-                    {
-                      "field": "enabled",
-                      "label": "启用"
-                    },
-                    {
-                      "field": "observe_enabled",
-                      "label": "观察"
-                    },
-                    {
-                      "field": "relay_target_enabled",
-                      "label": "转述目标"
-                    },
-                    {
-                      "field": "stream_known",
-                      "label": "会话已知"
-                    }
-                  ]
-                },
-                {
-                  "type": "table",
                   "label": "主动候选",
                   "value": {
                     "source": "admin",
@@ -3334,74 +3427,6 @@
                     {
                       "field": "users",
                       "label": "涉及用户"
-                    }
-                  ]
-                },
-                {
-                  "type": "table",
-                  "label": "搜索来源",
-                  "value": {
-                    "source": "admin",
-                    "field": "sources.providers"
-                  },
-                  "columns": [
-                    {
-                      "field": "provider_id",
-                      "label": "服务 ID"
-                    },
-                    {
-                      "field": "provider_type",
-                      "label": "协议"
-                    },
-                    {
-                      "field": "enabled",
-                      "label": "启用"
-                    },
-                    {
-                      "field": "key_count",
-                      "label": "Key 数"
-                    },
-                    {
-                      "field": "endpoint",
-                      "label": "地址"
-                    },
-                    {
-                      "field": "model",
-                      "label": "模型"
-                    }
-                  ]
-                },
-                {
-                  "type": "table",
-                  "label": "Key 健康（仅指纹，不含凭据）",
-                  "value": {
-                    "source": "admin",
-                    "field": "sources.keys"
-                  },
-                  "columns": [
-                    {
-                      "field": "provider_id",
-                      "label": "服务 ID"
-                    },
-                    {
-                      "field": "fingerprint",
-                      "label": "指纹"
-                    },
-                    {
-                      "field": "status",
-                      "label": "状态"
-                    },
-                    {
-                      "field": "cooldown_until",
-                      "label": "冷却至"
-                    },
-                    {
-                      "field": "failure_count",
-                      "label": "失败次数"
-                    },
-                    {
-                      "field": "last_error_class",
-                      "label": "最近错误"
                     }
                   ]
                 }

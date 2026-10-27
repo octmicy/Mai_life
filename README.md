@@ -1,6 +1,6 @@
 # 麦生活（Mai_life）
 
-`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。并且还有其他功能，比如说消息防抖，联网搜索等。
+`Mai_life` 让同一个麦麦拥有持续的生活状态、日程、睡眠、梦境和面向不同 QQ 用户的独立关系。并且还有其他功能，比如说联网搜索、群聊白名单与转述等。
 
 ## 快速配置
 
@@ -16,52 +16,29 @@
 
 输入 `/麦麦` 或 `/麦麦帮助` 会返回纯文本指令菜单。自 v1.23.0 起插件不再本地渲染菜单图片（Pillow 生图链已整体移除），未识别的指令也会落进同一菜单兜底，不会报错。
 
-### 安装 Chromium（可选）、chinese-calendar（可选）、lunar-python（可选）
+### 安装 lunar-python（可选）
 
-playwright 这个 Python 包已写入 _manifest.json 的 dependencies，MaiBot 加载插件时会自动安装；但另外两个 Python 库（chinese-calendar、lunar-python）以及 Chromium 浏览器二进制需要手动安装一次。
+lunar-python 提供农历与节气数据，是可选增强：已写入 requirements.txt，正常随插件依赖一起安装；如果 MaiBot 自动安装失败，可手动补装一次。不装也不会阻止插件加载，只影响农历与节气相关的描述。
 
 关键：用哪个 python 运行 MaiBot，就用同一个环境安装依赖，确保组件装进插件运行时能看到的环境。
 
-如果 MaiBot 运行在虚拟环境（例如 Linux 上的 .venv），要进到 MaiBot 目录，用虚拟环境里的 pip 和 python 执行：
+如果 MaiBot 运行在虚拟环境（例如 Linux 上的 .venv），要进到 MaiBot 目录，用虚拟环境里的 pip 执行：
 
 ```bash
 cd /maibot安装的主文件夹
-# 1. 安装 Python 依赖包（如果 MaiBot 自动装失败，可手动补装）
-.venv/bin/pip install chinese-calendar lunar-python
-
-# 2. 下载 Playwright 专属的 Chromium 浏览器内核
-.venv/bin/python -m playwright install chromium
+.venv/bin/pip install lunar-python
 ```
 
 如果 MaiBot 用系统 Python 直接运行，则直接执行：
 
 ```bash
-# 1. 安装 Python 依赖包
-pip install chinese-calendar lunar-python
-
-# 2. 下载 Playwright 专属的 Chromium 浏览器内核
-python -m playwright install chromium
+pip install lunar-python
 ```
 
-针对 Docker 部署用户
-
-如果你的 MaiBot 是用 Docker 运行的，切勿在宿主机（服务器）上执行安装命令，务必让依赖装进容器内部。
-
-推荐修改你的 Dockerfile，在构建阶段加入以下指令：
+针对 Docker 部署用户：如果你的 MaiBot 是用 Docker 运行的，切勿在宿主机（服务器）上执行安装命令，务必让依赖装进容器内部。推荐修改你的 Dockerfile，在构建阶段加入：
 
 ```dockerfile
-# 安装 Playwright 运行所需的系统依赖
-RUN apt-get update && apt-get install -y \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libgbm1 libasound2 fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
-
-# 安装三个 Python 依赖包
-RUN pip install --no-cache-dir chinese-calendar lunar-python playwright
-
-# 下载 Chromium 浏览器内核
-RUN playwright install chromium
+RUN pip install --no-cache-dir lunar-python
 ```
 
 然后重建并重启容器：
@@ -72,51 +49,16 @@ docker compose build
 docker compose up -d
 ```
 
-如果容器里没有中文字体，Playwright 截图里的中文可能全是方块。如果需要网页截图功能，建议在 Dockerfile 里加一行：
-
-```dockerfile
-RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
-```
-
-- 不装 Chromium、chinese-calendar、lunar-python 不会阻止插件加载；联网搜索会记录 `browser_unavailable` 错误，并自动降级到后续 API 备援服务。
-
-### 安装中文字体（Linux 服务器，可选）
-
-自 v1.23.0 起插件不再本地渲染任何图片（Pillow 生图链已移除），中文字体只影响 `mai_life_browse_web` 的网页截图。没装时插件不会报错、也不影响加载，只是截图里的中文可能显示为方块；想让截图正常显示中文，装一次字体即可：
-
-```bash
-# Debian / Ubuntu：推荐 Noto CJK
-sudo apt-get update
-sudo apt-get install -y fonts-noto-cjk
-
-# 或者更轻量的文泉驿微米黑
-sudo apt-get install -y fonts-wqy-microhei
-```
-
-其它发行版装任意含中文的 Noto CJK / 文泉驿字体即可，Chromium 截图时自动使用系统字体，无需插件侧配置。
-
-字体由 Playwright 在截图时直接使用：装好后无需插件侧配置，后续截图即可正常显示中文。
-
-Docker 用户和上面装 Chromium 一样，把字体装进镜像：
-
-```dockerfile
-RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
-```
-
-和 Chromium 一样，不装字体也不会阻塞插件其它功能。
-
 ### 推荐开关
 
 | 功能 | 默认 | 建议 |
 | --- | --- | --- |
 | 被动回复增强 | 开 | 保持开启 |
-| 私聊消息防抖 | 开 | 保持默认等待 |
-| 群聊消息防抖 | 关 | 确认群回复节奏后再开启 |
 | 撤回增强 | 开 | 适配器需转发 OneBot 撤回通知 |
 | 撤回摘要缓存 | 关 | 仅确有需要时开启 |
 | 休息回复闸门 | 关 | 日程稳定后再开启 |
-| 新闻阅读 | 关 | 配置搜索 API 后再开启 |
-| 主动搜索 | 关 | 配置搜索 API 后再开启 |
+| 新闻阅读 | 关 | 在「联网」节开启总开关后再开启 |
+| 主动搜索 | 关 | 在「联网」节开启总开关后再开启 |
 | 社交转述 | 关 | 配置真实 QQ 群号后再开启 |
 | 书柜与创作 | 关 | 了解 SQLite 明文存储风险后再开启 |
 | 麦麦绘图联动 | 关 | 需已安装「麦麦绘图」插件；开启后仅在私聊注入一次性引导 |
@@ -127,34 +69,16 @@ RUN apt-get update && apt-get install -y fonts-noto-cjk && rm -rf /var/lib/apt/l
 
 ## 联网搜索
 
-新闻和主动搜索共用一条有序服务链。默认启用免 Key 的 Playwright/Bing 浏览器搜索；需要时可在它后面添加 API 服务作为备援。先开启“联网见闻”，再开启“新闻阅读”或“主动搜索”。
+v1.24.0 起联网全部走 MaiBot 主程序的统一联网服务（`ctx.web.search` / `ctx.web.fetch`），插件不再维护自有搜索服务列表，也不需要配置或购买任何搜索 API Key。请先在主程序「模型设置→功能分配→联网搜索」中配置并启用服务。
 
-启用“允许麦麦使用联网搜索工具”后，MaiBot 的 Planner/Replyer 可以调用 `mai_life_web_search` 查询近期事实、未知知识和资料来源。工具复用同一套服务降级与 Key 健康状态，不直接发送消息，也不会自动创建主动契机；查询前会清除 QQ 号、自动昵称、群名称、邮箱和 URL。工具不设置每日次数上限，但每次逻辑搜索仍受最多 12 次外部请求、Key 冷却和服务退避保护，可在 WebUI 单独关闭。
+插件「联网」设置节提供：
 
-用户明确要求打开、查看或截图某个网址时，Planner/Replyer 还可以调用 `mai_life_browse_web`：插件用 Playwright 打开公网 http/https 网页并截图，直接发到当前会话（v1.23.1 起群聊也可用，截图对全群可见）。内网地址会被拒绝，打开、截图或发送失败会返回明确说明；插件不会主动对聊天中提到的网页截图，同一网页不会重复截图。
+- **启用联网**：联网工具、新闻阅读与主动探索的共同总开关；
+- **允许麦麦使用联网搜索工具**：开启后 Planner/Replyer 可调用 `mai_life_web_search` 查询近期事实、未知知识和资料来源；工具不直接发送消息、不自动创建主动契机，查询前会清除 QQ 号、自动昵称和群名称；
+- **失败重试次数**：宿主搜索失败时按次数短退避重试（默认 3 次），仍失败记录历史并返回明确说明；
+- **记录搜索历史**：本地留痕每次逻辑搜索的查询词与结果摘要（可在 WebUI「见闻与搜索」页查看），可关闭。
 
-| 服务类型 | 需要填写 | 说明 |
-| --- | --- | --- |
-| Playwright `playwright` | 浏览器引擎、是否无头 | 默认 Bing，无需 API Key；可切换 DuckDuckGo |
-| 博查 `bocha` | 一个或多个 Key | 通常更适合中国大陆服务器 |
-| Tavily `tavily` | 一个或多个 Key | 海外网络可能超时 |
-| You.com `you` | 一个或多个 Key | 海外网络可能超时 |
-| Responses `openai_responses` | Key、地址、模型名 | 使用带 `web_search` 工具的兼容接口，可接支持该协议的中转 |
-| Chat `openai_chat` | Key、地址、模型名 | 模型本身必须具有联网能力，插件无法强制普通模型联网 |
-
-Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文。`playwright` 这个 Python 包已写入 `_manifest.json` 的 `dependencies`，MaiBot 加载插件时会自动安装；但 **Chromium 浏览器二进制仍需手动执行一次 `python -m playwright install chromium`**（它不属于 pip 包，无法自动安装）。验证码、搜索页结构变化、浏览器缺失或网络失败会记录为明确的服务错误，并按列表继续尝试 API 备援。自定义地址可以填写 API 基础地址，也可以填写完整的 `/responses` 或 `/chat/completions` 地址。插件不内置公共 Key、代理或中转地址。
-
-每个服务可按优先级填写多个 Key，第一个为主 Key：
-
-- 鉴权失败会停用该 Key，直到配置再次更新；
-- `429` 会按 `Retry-After` 或指数时间冷却，再尝试备用 Key；
-- 明确额度耗尽且没有重置时间时默认冷却 24 小时；
-- DNS、超时、网络和 `5xx` 不会逐个消耗同服务的所有 Key，而是切换到下一个服务，并从 15 分钟开始退避；
-- 单次逻辑搜索最多发起 12 次外部请求。
-
-原始 Key 只保存在本地 `config.toml`。SQLite、日志、Prompt、Token 明细和管理输出只使用不可逆指纹，但服务器文件权限不当时 TOML 仍可能泄露 Key。
-
-新闻默认每天最多读取 1 次，每次由麦麦根据人格自主决定想了解的新闻主题，最多保留 5 条结果并尝试读取前 3 篇正文。主动搜索默认每天最多 1 次，同样由麦麦根据人格自主规划搜索词。每日次数按整条降级链的一次逻辑尝试计算，失败或空结果也会计入，避免持续请求；模型不可用时新闻与主动搜索会跳过而不会退化为硬编码词条，所有服务失败时保留旧缓存，不生成虚假见闻。
+新闻阅读与主动搜索默认各每天 1 次，由麦麦根据人格自主规划想了解的主题；每日次数失败或空结果也计入，避免持续请求；模型不可用时新闻与主动搜索会跳过而不会退化为硬编码词条，搜索失败时保留旧缓存，不生成虚假见闻。新闻正文与网页读取经宿主 `web.fetch` 完成。
 
 ## 主要功能
 
@@ -174,10 +98,8 @@ Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文。`playw
 
 ### 消息体验
 
-- 私聊默认按文本 1.2 秒、单图 3 秒、合并转发 2 秒收口，整轮最长 6 秒。
-- 群聊防抖默认关闭；开启后使用独立的 0.8/2/1.2 秒参数，整轮最长 4 秒。
-- 群轮次按“平台 + 群 QQ 号 + 发送者 QQ 号”隔离，不会合并不同群或不同用户。
-- 配置私聊以及已开启防抖的群轮次中，同一最终消息只允许一次独立 Replyer 回复；正常分段不受影响。
+- v1.24.0 起插件不再做消息收口防抖：连发合并由 MaiBot 主程序内置防抖（natural 档）接管，插件层直接放行，回复更快。
+- 同轮回复防重：同一最终消息只允许一次独立 Replyer 回复（群聊轮次按“平台 + 群 QQ 号 + 发送者 QQ 号”隔离，可在「群聊设置→群聊轮次注册」关闭）；正常分段不受影响。
 - 撤回通知可取消尚未发送的回复和后续分段；插件不会撤回已经发送的 Bot 消息。
 
 ### 主动与社交
@@ -203,9 +125,9 @@ Playwright 搜索会延迟启动 Chromium，并复用浏览器上下文。`playw
 
 | 项目 | 影响 |
 | --- | --- |
-| 响应延迟 | 私聊防抖固定增加最多约 1.2 秒；单图默认等待 3 秒。群防抖开启后按群参数增加等待。模型判醒还可能增加额外网络延迟。 |
+| 响应延迟 | v1.24.0 起插件层不再有防抖等待；模型判醒（LLM 模式）可能增加额外网络延迟。 |
 | Token | 日程、场景、梦境、连续话题和回复上下文会增加模型调用或 Prompt 长度；新闻批量整理、自我关联和自定义联网模型会进一步消耗 Token。初步测量，平均会增加1M及以上的token消耗 |
-| 搜索 API 与费用 | 新闻默认每天最多 1 次，日程主动搜索默认每天最多 1 次；模型按需调用的联网 Tool 不设每日次数上限。主备 Key 和跨服务降级可能产生额外请求及费用，具体以服务商计费为准。 |
+| 联网与费用 | 联网走主程序统一服务，次数限制见插件「联网」节（新闻/主动搜索默认各每天 1 次，联网工具不设上限）；费用与配额以主程序所配服务的计费为准。 |
 | 存储 | SQLite 保存生活、关系、摘要、作品、Key 健康指纹和调用统计；不保存搜索原始 Key 和图片二进制。TOML 中的 Key 与书柜明文需要限制文件权限。 |
 
 ## 指令

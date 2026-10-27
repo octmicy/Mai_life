@@ -75,6 +75,9 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(config.information.enabled); self.assertFalse(config.news.enabled); self.assertFalse(config.search.enabled)
         self.assertEqual(config.search_api.max_results,5); self.assertEqual(config.search_api.max_attempts,3)
         self.assertFalse(hasattr(config.search_api,"providers"))
+        # 旧降级链时代 max_attempts 上限 12：收紧后旧 TOML 的 12 必须被夹回边界而不是整份配置拒绝。
+        legacy=MaiLifeSettings.model_validate({"search_api":{"max_attempts":12}})
+        self.assertEqual(legacy.search_api.max_attempts,5)
         self.assertFalse(config.social.enabled)
         self.assertFalse(config.users.profiles[0].group_to_private_enabled)
         self.assertFalse(config.creation.enabled); self.assertFalse(config.creation.plaintext_storage_acknowledged)

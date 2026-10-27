@@ -643,6 +643,15 @@ class SearchAPISettings(PluginConfigBase):
     max_attempts: int = Field(default=3,ge=1,le=5,description="宿主搜索失败后的最大尝试次数。",json_schema_extra=_ui(
         "失败重试次数","宿主搜索失败时按次数重试（短退避）；仍失败则记录历史并返回空结果。",2,
         label_en="Retry Attempts",hint_en="Retries host search failures with short backoff."))
+
+    @field_validator("max_attempts",mode="before")
+    @classmethod
+    def clamp_legacy_attempts(cls,value:Any)->Any:
+        """旧降级链时代该字段上限 12（默认 12）；收紧到 1～5 后旧配置会整体校验失败，
+        导致宿主暂停工具与调度。这里把超范围值夹回边界（12→5），旧 TOML 无需手改。"""
+        try:return max(1,min(5,int(value)))
+        except (TypeError,ValueError):return 3
+
     history_enabled: bool = Field(default=True,description="本地记录每次逻辑搜索的查询词与结果摘要。",json_schema_extra=_ui(
         "记录搜索历史","记录联网工具、主动搜索和新闻阅读的查询词与结果摘要；查询词已做隐私清洗。",3,
         label_en="Record Search History",hint_en="Store sanitized query and result summaries for local audit."))

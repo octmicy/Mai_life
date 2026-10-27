@@ -20,6 +20,10 @@
 - **插件自有联网链整体删除，联网全面走宿主统一服务**（主人决策）：`tool_web_search`、新闻阅读、主动搜索、联网见闻全部改走宿主 `ctx.web.search` / `ctx.web.fetch`（SDK 2.17+，失败按 `search_api.max_attempts`（默认 3）短退避重试，仍失败记录历史并返回空结果，**不做回退**）。删除 `search_service`/`search_providers`/`search_parsing`/`search_models`（约 870 行 Provider 降级链与 Key 冷却体系）与博查/Tavily/You.com/自定义中转/Playwright 浏览器五种 Provider。`search_api` 配置瘦身（节名不变，删 providers 列表与 timeout_seconds，新增语义为重试次数的 max_attempts）；`webui_admin_summary` 的 sources 范围、搜索来源/Key 健康表随之移除；usage 的「今日搜索请求」改由宿主搜索事件计数。
 - **网页截图工具 `mai_life_browse_web` 删除**（主人追加）：Playwright 依赖从 manifest/requirements 移除，`playwright_search.py`/`feed_parser.py` 删除；网页正文读取改用宿主 `web.fetch`（返回已提取正文）。天气获取仍走插件 HttpClient（宿主无对应能力）。
 
+### 修复
+
+- **旧配置 `search_api.max_attempts = 12` 导致整份配置校验失败、工具与调度暂停**：新上限收紧到 5 后，旧 TOML（默认 12）会被 pydantic 拒绝。现在加 before 校验器把超范围值夹回边界（12→5、0→1），旧配置无需手改即可通过校验。
+
 ### 说明
 
 - 联网质量取决于宿主「模型设置→功能分配→联网搜索」的配置；工具的 freshness 时间档随宿主能力一并移除，新闻新鲜度按 published_at 轻量过滤（可解析且早于 3 天丢弃）。

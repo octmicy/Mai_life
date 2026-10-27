@@ -248,30 +248,20 @@
           "columns": 4,
           "children": [
             {
-              "type": "card",
+              "type": "stat",
               "label": "睡眠相位",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.phase_zh"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.phase_zh"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "休息类型",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.kind_zh"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.kind_zh"
+              }
             },
             {
               "type": "stat",
@@ -282,62 +272,42 @@
               }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "最近事件",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.last_event"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.last_event"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "入睡于",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.started_at"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.started_at"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "宽限至",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.grace_until"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.grace_until"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "推迟至",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "sleep.defer_until"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "sleep.defer_until"
+              }
             }
           ]
         },
         {
           "type": "grid",
-          "label": "后台脉搏",
+          "label": "后台运行",
           "columns": 4,
           "children": [
             {
@@ -346,14 +316,6 @@
               "value": {
                 "source": "status",
                 "field": "services.background_tasks"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "活跃收口",
-              "value": {
-                "source": "status",
-                "field": "services.active_bursts"
               }
             },
             {
@@ -419,56 +381,36 @@
           },
           "children": [
             {
-              "type": "card",
+              "type": "stat",
               "label": "撤回增强",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "recall.enabled"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "recall.enabled"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "摘要缓存",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "recall.cache_enabled"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "recall.cache_enabled"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "最近撤回摘要",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "recall.latest.summary"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "recall.latest.summary"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "摘要距今",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "recall.latest.age"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "recall.latest.age"
+              }
             }
           ]
         },
@@ -478,82 +420,52 @@
           "columns": 3,
           "children": [
             {
-              "type": "card",
+              "type": "stat",
               "label": "机器人",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "bot_name"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "bot_name"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "插件版本",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "version"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "version"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "数据生成时间",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "generated_at"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "generated_at"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "模型健康",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "services.llm_health"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "services.llm_health"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "可用模型任务",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "services.available_tasks"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "services.available_tasks"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "私聊用户",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "status",
-                    "field": "services.users_summary"
-                  }
-                }
-              ]
+              "value": {
+                "source": "status",
+                "field": "services.users_summary"
+              }
             }
           ]
         },
@@ -1278,30 +1190,20 @@
                   "columns": 4,
                   "children": [
                     {
-                      "type": "card",
+                      "type": "stat",
                       "label": "创作功能",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "shelf",
-                            "field": "creation.enabled"
-                          }
-                        }
-                      ]
+                      "value": {
+                        "source": "shelf",
+                        "field": "creation.enabled"
+                      }
                     },
                     {
-                      "type": "card",
+                      "type": "stat",
                       "label": "明文存储确认",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "shelf",
-                            "field": "creation.plaintext_acknowledged"
-                          }
-                        }
-                      ]
+                      "value": {
+                        "source": "shelf",
+                        "field": "creation.plaintext_acknowledged"
+                      }
                     },
                     {
                       "type": "stat",
@@ -1636,43 +1538,28 @@
           "columns": 4,
           "children": [
             {
-              "type": "card",
+              "type": "stat",
               "label": "联网见闻",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "digest",
-                    "field": "status.information_enabled"
-                  }
-                }
-              ]
+              "value": {
+                "source": "digest",
+                "field": "status.information_enabled"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "新闻阅读",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "digest",
-                    "field": "status.news_enabled"
-                  }
-                }
-              ]
+              "value": {
+                "source": "digest",
+                "field": "status.news_enabled"
+              }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "主动搜索",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "digest",
-                    "field": "status.search_enabled"
-                  }
-                }
-              ]
+              "value": {
+                "source": "digest",
+                "field": "status.search_enabled"
+              }
             },
             {
               "type": "stat",
@@ -2142,17 +2029,12 @@
               }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "统计日",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "usage",
-                    "field": "day"
-                  }
-                }
-              ]
+              "value": {
+                "source": "usage",
+                "field": "day"
+              }
             },
             {
               "type": "stat",
@@ -2171,17 +2053,12 @@
               }
             },
             {
-              "type": "card",
+              "type": "stat",
               "label": "生成时间",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "usage",
-                    "field": "generated_at"
-                  }
-                }
-              ]
+              "value": {
+                "source": "usage",
+                "field": "generated_at"
+              }
             },
             {
               "type": "card",
@@ -2349,131 +2226,1017 @@
       },
       "content": [
         {
-          "type": "grid",
-          "label": "运行概览",
-          "columns": 4,
-          "children": [
-            {
-              "type": "stat",
-              "label": "启用用户",
-              "value": {
-                "source": "admin",
-                "field": "overview.users"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "主人",
-              "value": {
-                "source": "admin",
-                "field": "overview.owners"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "今日模型调用",
-              "value": {
-                "source": "admin",
-                "field": "overview.token_calls_today"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "今日 Token",
-              "value": {
-                "source": "admin",
-                "field": "overview.token_total_today"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "今日搜索请求",
-              "value": {
-                "source": "admin",
-                "field": "overview.search_calls_today"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "待确认日期",
-              "value": {
-                "source": "admin",
-                "field": "overview.pending_dates"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "待发送主动",
-              "value": {
-                "source": "admin",
-                "field": "overview.pending_proactive"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "书柜文档",
-              "value": {
-                "source": "admin",
-                "field": "overview.bookshelf_documents"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "私人文档",
-              "value": {
-                "source": "admin",
-                "field": "overview.private_documents"
-              }
-            },
-            {
-              "type": "card",
-              "label": "社交转述",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "admin",
-                    "field": "overview.social_enabled"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "card",
-              "label": "书柜创作",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "admin",
-                    "field": "overview.creation_enabled"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "card",
-              "label": "联网见闻",
-              "children": [
-                {
-                  "type": "text",
-                  "value": {
-                    "source": "admin",
-                    "field": "overview.network_enabled"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        {
           "type": "tabs",
           "label": "系统与配置",
           "children": [
             {
               "type": "stack",
-              "label": "群聊与主动",
+              "label": "配置总览",
               "children": [
+                {
+                  "type": "grid",
+                  "label": "插件与用户",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "麦生活总开关",
+                      "value": {
+                        "source": "config",
+                        "field": "plugin.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "插件版本",
+                      "value": {
+                        "source": "config",
+                        "field": "plugin.version"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "已配置用户",
+                      "value": {
+                        "source": "config",
+                        "field": "users.configured"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "已启用用户",
+                      "value": {
+                        "source": "config",
+                        "field": "users.enabled"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "模型与环境",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "快速任务",
+                      "value": {
+                        "source": "config",
+                        "field": "models.fast_task"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "推理任务",
+                      "value": {
+                        "source": "config",
+                        "field": "models.reasoning_task"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "时区",
+                      "value": {
+                        "source": "config",
+                        "field": "environment.timezone"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "天气城市",
+                      "value": {
+                        "source": "config",
+                        "field": "environment.city"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "天气刷新(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "environment.weather_refresh_minutes"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "插件联动",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "绘图联动开关",
+                      "value": {
+                        "source": "config",
+                        "field": "linkage.drawpic_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "绘图插件检测",
+                      "value": {
+                        "source": "config",
+                        "field": "linkage.drawpic_detected"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "被动回复与轮次锁",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "被动回复增强",
+                      "value": {
+                        "source": "config",
+                        "field": "context.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "连续话题",
+                      "value": {
+                        "source": "config",
+                        "field": "context.continuity_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "话题整理间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "context.continuity_interval_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "上下文字符上限",
+                      "value": {
+                        "source": "config",
+                        "field": "context.prompt_max_chars"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "同轮回复防重",
+                      "value": {
+                        "source": "config",
+                        "field": "context.outbound_turn_guard"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "轮次锁过期(秒)",
+                      "value": {
+                        "source": "config",
+                        "field": "context.turn_expire_seconds"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "背景缓存(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "context.background_cache_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "回复背景详略",
+                      "value": {
+                        "source": "config",
+                        "field": "context.replyer_detail"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "私聊休息闸门",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "闸门开关",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "判醒模式",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.mode"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "普通消息醒来概率",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.wake_probability"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "LLM 判醒阈值",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.llm_threshold"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "醒来缓冲(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.awake_grace_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "睡前静默(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.silence_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "夜间窗",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.night_window"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "午休窗",
+                      "value": {
+                        "source": "config",
+                        "field": "rest_gate.nap_window"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "群聊设置",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "群闸门开关",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群闸门范围",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_scope"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群轮次注册",
+                      "value": {
+                        "source": "config",
+                        "field": "group.turn_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群闸门段型",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_segment_types"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群夜间窗",
+                      "value": {
+                        "source": "config",
+                        "field": "group.night_window"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群午休窗",
+                      "value": {
+                        "source": "config",
+                        "field": "group.nap_window"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "撤回增强",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "撤回增强",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "撤回摘要缓存",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.cache_summary"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "摘要保留(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.summary_ttl_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "摘要长度上限",
+                      "value": {
+                        "source": "config",
+                        "field": "recall.summary_max_chars"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "梦境与日记",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "生活记忆",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "梦境碎片",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.dream_fragments_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "碎片数量",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.dream_fragment_count"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "抽象日记",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.diary_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "日记结算小时",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.diary_hour"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "日记长度上限",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.diary_max_chars"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "重要日期",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "重要日期",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.important_dates_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "日期模型分析",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.date_model_analysis_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "候选保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.date_candidate_retention_days"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "提前天数",
+                      "value": {
+                        "source": "config",
+                        "field": "memory.date_reminder_lead_days"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "日程与场景",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "日程生成小时",
+                      "value": {
+                        "source": "config",
+                        "field": "schedule.generate_hour"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "场景提前细化(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "schedule.detail_lead_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "模板文件",
+                      "value": {
+                        "source": "config",
+                        "field": "schedule.template_file"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "主动私聊",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "主动私聊",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "巡检间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.patrol_interval_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "最小间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.min_interval_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "用户发言后冷却(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.recent_user_silence_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "确认窗口(秒)",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.pending_expire_seconds"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "契机重试次数",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.max_retries_per_opportunity"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "主动最低精力",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.minimum_energy"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "候选分数阈值",
+                      "value": {
+                        "source": "config",
+                        "field": "proactive.score_threshold"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "见闻公共开关",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "联网见闻",
+                      "value": {
+                        "source": "config",
+                        "field": "information.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "自我关联",
+                      "value": {
+                        "source": "config",
+                        "field": "information.association_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "关联阈值",
+                      "value": {
+                        "source": "config",
+                        "field": "information.association_threshold"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "见闻主动分享",
+                      "value": {
+                        "source": "config",
+                        "field": "information.proactive_share_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "上下文条数",
+                      "value": {
+                        "source": "config",
+                        "field": "information.context_item_limit"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "新闻与主动搜索",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "新闻阅读",
+                      "value": {
+                        "source": "config",
+                        "field": "news.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "每日新闻次数",
+                      "value": {
+                        "source": "config",
+                        "field": "news.daily_max"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "正文读取数量",
+                      "value": {
+                        "source": "config",
+                        "field": "news.full_text_count"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "新闻保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "news.retention_days"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "主动搜索",
+                      "value": {
+                        "source": "config",
+                        "field": "search.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "每日搜索次数",
+                      "value": {
+                        "source": "config",
+                        "field": "search.daily_max"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "参考聊天话题",
+                      "value": {
+                        "source": "config",
+                        "field": "search.include_chat_topics"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "笔记保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "search.note_retention_days"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "联网搜索服务",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "搜索工具",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.tool_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "搜索历史",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.history_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "历史保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.history_retention_days"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "请求超时(秒)",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.timeout_seconds"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "单次最大尝试",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.max_attempts"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "单次结果数",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.max_results"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "服务数量",
+                      "value": {
+                        "source": "config",
+                        "field": "search_api.provider_count"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "社交转述边界",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "社交转述",
+                      "value": {
+                        "source": "config",
+                        "field": "social.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群转私",
+                      "value": {
+                        "source": "config",
+                        "field": "social.owner_group_to_private_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "离群时长(小时)",
+                      "value": {
+                        "source": "config",
+                        "field": "social.inactivity_hours"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "每日群转私上限",
+                      "value": {
+                        "source": "config",
+                        "field": "social.group_share_daily_max"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群转私最小间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "social.group_share_min_interval_minutes"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "公开话题阈值",
+                      "value": {
+                        "source": "config",
+                        "field": "social.interesting_threshold"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群摘要保留(小时)",
+                      "value": {
+                        "source": "config",
+                        "field": "social.summary_retention_hours"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "转述确认窗口(秒)",
+                      "value": {
+                        "source": "config",
+                        "field": "social.relay_pending_seconds"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "群白名单数量",
+                      "value": {
+                        "source": "config",
+                        "field": "social.groups"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "创作参数",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "书柜创作",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "明文存储确认",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.plaintext_storage_acknowledged"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "每日作品上限",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.daily_max"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "创作最低精力",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.minimum_energy"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "允许公开作品",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.public_works_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "灵感回看天数",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.inspiration_lookback_days"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "外部阅读联动",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.external_reading_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "创作巡检间隔(分钟)",
+                      "value": {
+                        "source": "config",
+                        "field": "creation.patrol_interval_minutes"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "grid",
+                  "label": "Token 监控",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "Token 统计",
+                      "value": {
+                        "source": "config",
+                        "field": "usage.enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "明细保留天数",
+                      "value": {
+                        "source": "config",
+                        "field": "usage.retention_days"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "运行状态",
+              "children": [
+                {
+                  "type": "grid",
+                  "label": "运行概览",
+                  "columns": 4,
+                  "children": [
+                    {
+                      "type": "stat",
+                      "label": "启用用户",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.users"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "主人",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.owners"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "今日模型调用",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.token_calls_today"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "今日 Token",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.token_total_today"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "今日搜索请求",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.search_calls_today"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "待确认日期",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.pending_dates"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "待发送主动",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.pending_proactive"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "书柜文档",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.bookshelf_documents"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "私人文档",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.private_documents"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "社交转述",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.social_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "书柜创作",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.creation_enabled"
+                      }
+                    },
+                    {
+                      "type": "stat",
+                      "label": "联网见闻",
+                      "value": {
+                        "source": "admin",
+                        "field": "overview.network_enabled"
+                      }
+                    }
+                  ]
+                },
                 {
                   "type": "table",
                   "label": "QQ 群配置",
@@ -2573,13 +3336,7 @@
                       "label": "涉及用户"
                     }
                   ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "来源与 Key",
-              "children": [
+                },
                 {
                   "type": "table",
                   "label": "搜索来源",
@@ -2645,1091 +3402,6 @@
                     {
                       "field": "last_error_class",
                       "label": "最近错误"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "总开关与模型",
-              "children": [
-                {
-                  "type": "grid",
-                  "label": "插件与用户",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "麦生活总开关",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "plugin.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "插件版本",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "plugin.version"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "已配置用户",
-                      "value": {
-                        "source": "config",
-                        "field": "users.configured"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "已启用用户",
-                      "value": {
-                        "source": "config",
-                        "field": "users.enabled"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "模型与环境",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "快速任务",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "models.fast_task"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "推理任务",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "models.reasoning_task"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "时区",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "environment.timezone"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "天气城市",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "environment.city"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "天气刷新(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "environment.weather_refresh_minutes"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "联动与防抖",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "绘图联动开关",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "linkage.drawpic_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "绘图插件检测",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "linkage.drawpic_detected"
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "闸门与上下文",
-              "children": [
-                {
-                  "type": "grid",
-                  "label": "私聊休息闸门",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "闸门开关",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "判醒模式",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.mode"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "普通消息醒来概率",
-                      "value": {
-                        "source": "config",
-                        "field": "rest_gate.wake_probability"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "LLM 判醒阈值",
-                      "value": {
-                        "source": "config",
-                        "field": "rest_gate.llm_threshold"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "醒来缓冲(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "rest_gate.awake_grace_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "睡前静默(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "rest_gate.silence_minutes"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "夜间窗",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.night_window"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "午休窗",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.nap_window"
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "群聊休息闸门",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "群闸门开关",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.gate_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "群闸门范围",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.gate_scope"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "群夜间窗",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.group_night_window"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "群午休窗",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "rest_gate.group_nap_window"
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "撤回与被动上下文",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "撤回增强",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "recall.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "撤回摘要缓存",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "recall.cache_summary"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要保留(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_ttl_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要长度上限",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_max_chars"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "被动回复增强",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "context.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "连续话题",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "context.continuity_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "话题整理间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "context.continuity_interval_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "上下文字符上限",
-                      "value": {
-                        "source": "config",
-                        "field": "context.prompt_max_chars"
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "记忆与日程",
-              "children": [
-                {
-                  "type": "grid",
-                  "label": "梦境与日记",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "生活记忆",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "梦境碎片",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.dream_fragments_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "碎片数量",
-                      "value": {
-                        "source": "config",
-                        "field": "memory.dream_fragment_count"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "抽象日记",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.diary_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "日记结算小时",
-                      "value": {
-                        "source": "config",
-                        "field": "memory.diary_hour"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "日记长度上限",
-                      "value": {
-                        "source": "config",
-                        "field": "memory.diary_max_chars"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "重要日期",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "重要日期",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.important_dates_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "日期模型分析",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.date_model_analysis_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "候选保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "memory.date_candidate_retention_days"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "提前天数",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "memory.date_reminder_lead_days"
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "日程与场景",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "日程生成小时",
-                      "value": {
-                        "source": "config",
-                        "field": "schedule.generate_hour"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "场景提前细化(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "schedule.detail_lead_minutes"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "模板文件",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "schedule.template_file"
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "主动私聊",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "主动私聊",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "proactive.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "巡检间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.patrol_interval_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "最小间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.min_interval_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "用户发言后冷却(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.recent_user_silence_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "确认窗口(秒)",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.pending_expire_seconds"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "契机重试次数",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.max_retries_per_opportunity"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "主动最低精力",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.minimum_energy"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "候选分数阈值",
-                      "value": {
-                        "source": "config",
-                        "field": "proactive.score_threshold"
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "联网与社交",
-              "children": [
-                {
-                  "type": "grid",
-                  "label": "见闻公共开关",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "联网见闻",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "information.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "自我关联",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "information.association_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "关联阈值",
-                      "value": {
-                        "source": "config",
-                        "field": "information.association_threshold"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "见闻主动分享",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "information.proactive_share_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "上下文条数",
-                      "value": {
-                        "source": "config",
-                        "field": "information.context_item_limit"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "新闻与主动搜索",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "新闻阅读",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "news.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "每日新闻次数",
-                      "value": {
-                        "source": "config",
-                        "field": "news.daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "正文读取数量",
-                      "value": {
-                        "source": "config",
-                        "field": "news.full_text_count"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "新闻保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "news.retention_days"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "主动搜索",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "search.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "每日搜索次数",
-                      "value": {
-                        "source": "config",
-                        "field": "search.daily_max"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "参考聊天话题",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "search.include_chat_topics"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "笔记保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "search.note_retention_days"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "联网搜索服务",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "搜索工具",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "search_api.tool_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "搜索历史",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "search_api.history_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "历史保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.history_retention_days"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "请求超时(秒)",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.timeout_seconds"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "单次最大尝试",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.max_attempts"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "单次结果数",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.max_results"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "服务数量",
-                      "value": {
-                        "source": "config",
-                        "field": "search_api.provider_count"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "社交转述边界",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "社交转述",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "social.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "群转私",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "social.owner_group_to_private_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "离群时长(小时)",
-                      "value": {
-                        "source": "config",
-                        "field": "social.inactivity_hours"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "每日群转私上限",
-                      "value": {
-                        "source": "config",
-                        "field": "social.group_share_daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群转私最小间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "social.group_share_min_interval_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "公开话题阈值",
-                      "value": {
-                        "source": "config",
-                        "field": "social.interesting_threshold"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群摘要保留(小时)",
-                      "value": {
-                        "source": "config",
-                        "field": "social.summary_retention_hours"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "转述确认窗口(秒)",
-                      "value": {
-                        "source": "config",
-                        "field": "social.relay_pending_seconds"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "群白名单数量",
-                      "value": {
-                        "source": "config",
-                        "field": "social.groups"
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "stack",
-              "label": "创作与统计",
-              "children": [
-                {
-                  "type": "grid",
-                  "label": "创作参数",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "书柜创作",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "creation.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "card",
-                      "label": "明文存储确认",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "creation.plaintext_storage_acknowledged"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "每日作品上限",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.daily_max"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "创作最低精力",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.minimum_energy"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "允许公开作品",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "creation.public_works_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "灵感回看天数",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.inspiration_lookback_days"
-                      }
-                    },
-                    {
-                      "type": "card",
-                      "label": "外部阅读联动",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "creation.external_reading_enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "创作巡检间隔(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "creation.patrol_interval_minutes"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "Token 监控",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "card",
-                      "label": "Token 统计",
-                      "children": [
-                        {
-                          "type": "text",
-                          "value": {
-                            "source": "config",
-                            "field": "usage.enabled"
-                          }
-                        }
-                      ]
-                    },
-                    {
-                      "type": "stat",
-                      "label": "明细保留天数",
-                      "value": {
-                        "source": "config",
-                        "field": "usage.retention_days"
-                      }
                     }
                   ]
                 }

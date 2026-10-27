@@ -495,19 +495,20 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_webui_config_summary_has_every_section_and_no_keys(self):
         data=await self.plugin.webui_config_summary()
         self.assertEqual(set(data),{"plugin","users","models","environment","linkage","recall",
-                                    "context","rest_gate","memory","information","news","search","search_api",
-                                    "social","creation","schedule","proactive","usage"})
+                                    "context","rest_gate","group","memory","information","news","search",
+                                    "search_api","social","creation","schedule","proactive","usage"})
         self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
                                                  "awake_grace_minutes","silence_minutes","night_window",
-                                                 "nap_window","gate_enabled","gate_scope",
-                                                 "group_night_window","group_nap_window",
-                                                 "group_segment_types"})
+                                                 "nap_window"})
+        self.assertEqual(set(data["group"]),{"gate_enabled","gate_scope","turn_enabled",
+                                             "gate_segment_types","night_window","nap_window"})
         self.assertEqual(set(data["search_api"]),{"tool_enabled","history_enabled","history_retention_days",
                                                   "timeout_seconds","max_attempts","max_results","provider_count"})
         # 布尔一律翻成「开启/关闭」，不出现裸布尔；数值型参数与 version 不参与该检查。
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
+                       "group":{"gate_enabled","turn_enabled"},
+                       "context":{"enabled","continuity_enabled","outbound_turn_guard"},
                        "recall":{"enabled","cache_summary"},
-                       "context":{"enabled","continuity_enabled"},
                        "memory":{"enabled","dream_fragments_enabled","diary_enabled",
                                  "important_dates_enabled","date_model_analysis_enabled"},
                        "information":{"enabled","association_enabled","proactive_share_enabled"},
@@ -524,7 +525,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["users"],{"configured":0,"enabled":0})
         self.assertEqual(data["rest_gate"]["night_window"],"22:30-08:00")
         self.assertEqual(data["rest_gate"]["silence_minutes"],10)
-        self.assertEqual(data["rest_gate"]["group_night_window"],"22:30-08:00")
+        self.assertEqual(data["group"]["night_window"],"22:30-08:00")
         self.assertEqual(data["plugin"]["version"],PLUGIN_VERSION)
         # 配置摘要不出任何 Key：整个响应里不得出现 api_keys/fingerprint 字样。
         blob=json.dumps(data,ensure_ascii=False)

@@ -12,12 +12,13 @@
 - **同轮回复防重（轮次锁）迁入 `[context]` 节**：`outbound_turn_guard`（默认开）、`turn_expire_seconds`（默认 120s）改由「被动回复增强」提供；行为不变。另一处隐藏引用 `_candidate` 候选寿命、recall 缓存 TTL 同步改读新路径。
 - **新增 `[group]` 群聊设置节（放在私聊用户之后）**：群闸门 9 个字段从 `[rest_gate]` 迁入并改名——`group_enabled`→`gate_enabled`、`group_mode`→`gate_scope`、`group_night_start/end`→`night_start/night_end`、`group_nap_start/nap_end`→`nap_start/nap_end`、`group_gate_segment_types`→`gate_segment_types`、`group_force_wake_terms`→`force_wake_terms`；语义不变（仍与私聊闸门共用 `rest_gate.gate_mode` 开关）。旧字段留在 `[rest_gate]` 会被忽略。
 - **群聊轮次注册独立开关 `group.turn_enabled`（默认开）**：原群轮次注册复用防抖开关 `debounce.group_enabled`（默认关），防抖删除后拆为独立字段；默认值由关变开，防止同一群消息触发多次回复。
-- **配置 Schema 版本升至 1.12.0**；`webui.json` 删除防抖卡片、群闸门绑定改指 `[group]` 字段；`webui_config_summary` 去掉 `debounce` 键。
+- **配置 Schema 版本升至 1.12.0**；`webui_config_summary` 去掉 `debounce` 键、新增 `group` 配置节（群闸门/群轮次注册/群时间窗/群段型）并补齐 `context` 的轮次锁与背景缓存字段。
+- **WebUI 配置页重排**：system 页 7 个 tab 收敛为「配置总览 / 运行状态」两个子 tab——配置按主题分组（总开关/模型/联动/轮次锁/闸门/群聊设置/撤回/记忆/日程/主动/联网/社交/创作/统计），admin 运行表归入运行状态；全站 `card>text` 空壳压成带 label 的 `stat`（约 55 处，overview 页 74→57、system 页 181→137 个组件，声明体积 116KB→107KB）；「后台脉搏」更名「后台运行」并移除防抖专属的「活跃收口」；overview 页新增 `background_cache_minutes`、`replyer_detail`、`gate_mode`、群聊设置、轮次锁等此前无入口字段的展示。
 
 ### 说明
 
 - SDK 2.17.0 起 `tool_web_search` 优先走宿主统一联网服务 `ctx.web.search()`，失败自动回退插件自身多 Provider 降级链（v1.23.8 的变更一并随本版发布）。
-- 全量测试 561 项通过（删除 17 条防抖行为用例；新增轮次锁/群配置字段默认值断言）。
+- 全量测试 561 项通过（删除 17 条防抖行为用例；新增轮次锁/群配置字段默认值断言；WebUI 结构/渲染/键集测试随重排同步）。
 
 ## [1.23.5] - 2026-10-25
 

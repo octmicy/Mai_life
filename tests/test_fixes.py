@@ -4412,7 +4412,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
     """webui_config_summary：19 个配置节键齐全、布尔转「开启/关闭」、窗口串与本 API 不出 Key。"""
 
     SECTIONS = ("plugin", "users", "models", "environment", "linkage", "recall",
-                "context", "rest_gate", "memory", "information", "news", "search",
+                "context", "rest_gate", "group", "memory", "information", "news", "search",
                 "search_api", "social", "creation", "schedule", "proactive", "usage")
 
     async def asyncSetUp(self):
@@ -4462,24 +4462,27 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["recall"]["enabled"], "开启")
         self.assertIsInstance(data["recall"]["summary_ttl_minutes"], int)
         self.assertEqual(set(data["context"]), {"enabled", "continuity_enabled",
-                                                "continuity_interval_minutes", "prompt_max_chars"})
+                                                "continuity_interval_minutes", "prompt_max_chars",
+                                                "outbound_turn_guard", "turn_expire_seconds",
+                                                "background_cache_minutes", "replyer_detail"})
         self.assertEqual(data["context"]["enabled"], "开启")
         # 休息闸门：窗口串由起止时刻拼接，静默时长取 bedtime 常量。
         self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
                                                   "llm_threshold", "awake_grace_minutes",
-                                                  "silence_minutes", "night_window", "nap_window",
-                                                  "gate_enabled", "gate_scope",
-                                                  "group_night_window", "group_nap_window",
-                                                  "group_segment_types"})
+                                                  "silence_minutes", "night_window", "nap_window"})
+        self.assertEqual(set(data["group"]), {"gate_enabled", "gate_scope", "turn_enabled",
+                                              "gate_segment_types", "night_window", "nap_window"})
         self.assertEqual(data["rest_gate"]["night_window"], "23:00-07:30")
         self.assertEqual(data["rest_gate"]["nap_window"], "12:00-14:30")
-        self.assertEqual(data["rest_gate"]["group_night_window"], "22:30-08:00")
-        self.assertEqual(data["rest_gate"]["group_nap_window"], "12:00-14:30")
+        self.assertEqual(data["group"]["night_window"], "22:30-08:00")
+        self.assertEqual(data["group"]["nap_window"], "12:00-14:30")
+        self.assertEqual(data["group"]["gate_enabled"], "关闭")
+        self.assertEqual(data["group"]["turn_enabled"], "开启")
         self.assertEqual(data["rest_gate"]["silence_minutes"], BEDTIME_SILENCE_MINUTES)
         self.assertEqual(data["rest_gate"]["mode"], "probability")
         self.assertAlmostEqual(data["rest_gate"]["wake_probability"], 0.42)
         self.assertEqual(data["rest_gate"]["enabled"], "关闭")
-        self.assertEqual(data["rest_gate"]["gate_enabled"], "关闭")
+        self.assertEqual(data["group"]["gate_enabled"], "关闭")
         self.assertEqual(set(data["memory"]), {"enabled", "dream_fragments_enabled",
                                                "dream_fragment_count", "diary_enabled", "diary_hour",
                                                "diary_max_chars", "important_dates_enabled",

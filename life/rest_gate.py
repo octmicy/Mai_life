@@ -69,12 +69,18 @@ class RestGate:
                 f"如需整夜生效请把结束时间设为起床时间（如 08:00）")
 
     def in_group_quiet_window(self,now:Any)->bool:
-        """当前是否处于群静音窗（群夜间或群午休窗，配置独立于私聊）。"""
+        """当前是否处于群静音窗（群夜间或群午休窗，配置独立于私聊）。
+
+        v1.24.3：窗口受 gate_segment_types 约束——夜窗只在其含 sleep/rest 类时生效，
+        午休窗只在其含 nap 时生效；段型列表去掉哪类，对应窗口即失效。
+        """
         cfg=getattr(self.config,"group",None)
         if cfg is None or not getattr(cfg,"gate_enabled",False):return False
+        kinds=set(getattr(cfg,"gate_segment_types",None) or [])
         current=now.strftime("%H:%M")
-        return (self._in_window(cfg.night_start,cfg.night_end,current)
-                or self._in_window(cfg.nap_start,cfg.nap_end,current))
+        window_night=self._in_window(cfg.night_start,cfg.night_end,current) and bool(kinds & {"sleep","rest"})
+        window_nap=self._in_window(cfg.nap_start,cfg.nap_end,current) and "nap" in kinds
+        return window_night or window_nap
 
     def group_gate_enabled_for(self,group_id:str)->bool:
         """该群是否受群闸门管辖。
@@ -97,8 +103,9 @@ class RestGate:
 
         不放行概率、不建待醒候选、不写积压——每条群消息独立判定；
         被阻断的消息不进入主程序，因此不产生 Planner/Replyer/VLM 等请求。
-        生效条件与私聊同构，共用「闸门生效方式」开关：按设定时间=群夜窗/群午休窗内
-        生效；按日程判断=日程段型命中 gate_segment_types 即生效（任意时间）。
+        生效条件与私聊同构，共用「闸门生效方式」开关与 gate_segment_types 列表：
+        按日程判断=日程段型命中列表即生效（任意时间）；按设定时间=群夜窗/群午休窗内
+        生效，且窗口各自受列表约束（夜窗需列表含 sleep/rest，午休窗需含 nap）。
         """
         cfg=getattr(self.config,"group",None)
         if cfg is None or not getattr(cfg,"gate_enabled",False):return True,"group_gate_disabled"
@@ -160,8 +167,10 @@ class RestGate:
         if schedule_mode:
             gate_active=kind_match
         else:
-            night=self._in_window(cfg.night_start,cfg.night_end,current)
-            nap=self._in_window(cfg.nap_start,cfg.nap_end,current)
+            # v1.24.3：时间窗各自受 gate_segment_types 约束（与群闸门同规则）——
+            # 夜窗需列表含 sleep/rest，午休窗需含 nap；列表去掉哪类对应窗口即失效。
+            night=self._in_window(cfg.night_start,cfg.night_end,current) and bool(set(cfg.gate_segment_types) & {"sleep","rest"})
+            nap=self._in_window(cfg.nap_start,cfg.nap_end,current) and "nap" in set(cfg.gate_segment_types)
             gate_active=night or nap
         if not gate_active:return True,"outside_gate_window"
         # 段型命中时用它细化（LLM 提示词里的"正在做什么"）；未命中时按生效路径推断

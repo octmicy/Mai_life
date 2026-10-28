@@ -2209,6 +2209,29 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
         late = NIGHT.replace(hour=10, minute=0)                          # leisure 段
         self.assertFalse(await observer._group_quiet_now(late))
 
+    async def test_time_windows_are_gated_by_segment_type_list(self):
+        """v1.24.3 回归：时间窗模式下列表去掉 nap，午休窗即失效（用户报告的场景）。"""
+        from Mai_life.life.rest_gate import RestGate
+        config = make_group_config(group_gate=True)
+        config.group.gate_segment_types = ["sleep"]   # nap 已移除
+        config.rest_gate.gate_mode = "time_window"
+        gate = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
+        noon = NIGHT.replace(hour=12, minute=30)
+        allowed, _ = gate.decide_group("中午聊天", noon, "100", {"kind": "nap"})
+        self.assertTrue(allowed, "nap 移除后午休窗不应再拦截")
+        night_allowed, _ = gate.decide_group("深夜聊天", NIGHT, "100", {"kind": "sleep"})
+        self.assertFalse(night_allowed, "sleep 在列表时夜窗仍应静默")
+        config.group.gate_segment_types = ["sleep", "nap"]  # nap 加回 → 午窗恢复
+        nap_allowed, _ = gate.decide_group("中午聊天", noon, "100", {"kind": "nap"})
+        self.assertFalse(nap_allowed, "nap 在列表时午休窗应静默")
+        # 观察侧同规则
+        observer = GroupObserver(self.store, config, DummyLLM(), DummyLogger())
+        self.assertTrue(await observer._group_quiet_now(noon))
+        config.group.gate_segment_types = ["sleep"]
+        observer = GroupObserver(self.store, config, DummyLLM(), DummyLogger())
+        self.assertFalse(await observer._group_quiet_now(noon))
+        self.assertTrue(await observer._group_quiet_now(NIGHT))
+
     async def test_observe_runs_outside_window(self):
         observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
         result = await observer.observe(group_message("o2", "白天群聊"), DAYTIME)

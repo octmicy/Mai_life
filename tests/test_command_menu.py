@@ -105,7 +105,7 @@ class CommandCatalogTests(unittest.TestCase):
 
     def test_manifest_declares_browse_web_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
-        self.assertEqual(manifest["version"],"1.24.2")
+        self.assertEqual(manifest["version"],"1.24.3")
         # v1.24.0 移除网页截图工具后，send.image 消费者是绘图联动（drawpic）转发的图片。
         self.assertIn("send.image",manifest["capabilities"])
         self.assertIn("chat.get_all_streams",manifest["capabilities"])

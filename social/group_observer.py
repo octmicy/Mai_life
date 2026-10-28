@@ -78,12 +78,17 @@ class GroupObserver:
                     return str(node.get("kind") or "") in kinds
             return False
         current=now.strftime("%H:%M")
+        # v1.24.3：窗口受 gate_segment_types 约束——夜窗需含 sleep/rest，午休窗需含 nap；
+        # 段型列表去掉哪类，对应窗口即失效（与群闸门 decide_group 同规则）。
+        kinds=set(getattr(cfg,"gate_segment_types",None) or [])
         start=str(getattr(cfg,"night_start","22:30")); end=str(getattr(cfg,"night_end","08:00"))
         nap_start=str(getattr(cfg,"nap_start","12:00")); nap_end=str(getattr(cfg,"nap_end","14:30"))
         def in_window(a:str,b:str)->bool:
             if a==b:return False
             return a<=current<b if a<b else current>=a or current<b
-        return in_window(start,end) or in_window(nap_start,nap_end)
+        window_night=in_window(start,end) and bool(kinds & {"sleep","rest"})
+        window_nap=in_window(nap_start,nap_end) and "nap" in kinds
+        return window_night or window_nap
 
     async def observe(self,message:dict[str,Any],now:datetime)->dict[str,Any]:
         """收口一个群话题；较早的并发调用返回 superseded。"""

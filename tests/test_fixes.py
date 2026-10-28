@@ -2186,6 +2186,29 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
         # 未写任何观察摘要。
         self.assertEqual(await self.store.recent_group_observations(NIGHT.timestamp(), 10), [])
 
+    async def test_observer_schedule_mode_matches_cross_midnight_and_respects_kind_list(self):
+        """v1.24.1 回归：观察静音的日程分支须支持跨午夜段并严格按 gate_segment_types 判定。"""
+        day = NIGHT.strftime("%Y-%m-%d")
+        await self.store.replace_framework(day, [
+            {"id": "a", "day": day, "start_minute": 480, "end_minute": 720, "kind": "leisure",
+             "summary": "上午", "location": "", "energy_load": 0.2, "shareability": 0.5},
+            {"id": "b", "day": day, "start_minute": 720, "end_minute": 870, "kind": "nap",
+             "summary": "午休", "location": "", "energy_load": 0.1, "shareability": 0.3},
+            {"id": "c", "day": day, "start_minute": 870, "end_minute": 1350, "kind": "leisure",
+             "summary": "下午", "location": "", "energy_load": 0.2, "shareability": 0.5},
+            {"id": "d", "day": day, "start_minute": 1350, "end_minute": 480, "kind": "sleep",
+             "summary": "夜间睡眠", "location": "", "energy_load": 0.0, "shareability": 0.2}])
+        self.config.group.gate_segment_types = ["sleep"]  # nap 已被用户移除
+        self.config.rest_gate.gate_mode = "schedule"
+        observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
+        noon = NIGHT.replace(hour=12, minute=30)
+        self.assertFalse(await observer._group_quiet_now(noon))          # nap 段不在列表 → 放行
+        self.assertTrue(await observer._group_quiet_now(NIGHT))          # sleep 段（跨午夜起点后）→ 静音
+        early = NIGHT.replace(hour=2, minute=0)                          # 跨午夜段的凌晨一侧
+        self.assertTrue(await observer._group_quiet_now(early))
+        late = NIGHT.replace(hour=10, minute=0)                          # leisure 段
+        self.assertFalse(await observer._group_quiet_now(late))
+
     async def test_observe_runs_outside_window(self):
         observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
         result = await observer.observe(group_message("o2", "白天群聊"), DAYTIME)

@@ -263,6 +263,26 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("私聊用户或私聊管理员",context.send.calls[0]["text"])
 
 
+    async def test_multi_segment_send_survives_after_first_success(self):
+        """v1.24.2 回归：direct 首段成功发送后，同锚点后续分段必须继续放行。
+
+        线上现场：主动任务三段回复，第 1 段 reserve_send 走 direct 分支并成功（sent=True），
+        第 2 段起 reserve_send 判 reply_anchor 不匹配而 abort，宿主把整轮回复判为失败。
+        """
+        plugin,session,event_id,task_id=await self._private_task(9,"napcat")
+        anchor="900001"
+        first=await plugin.on_send_before(message={"session_id":session,"message_info":{"additional_config":{
+            "napcat_message_type":"private"}},"raw_message":[{"type":"text","data":"行吧"}]},
+            set_reply=True,reply_message_id=anchor)
+        self.assertEqual(first["action"],"continue")
+        await plugin.on_send_after(message=first["modified_kwargs"]["message"],sent=True,reply_message_id=anchor)
+        for text in ("安息吧您嘞","醒了再说"):
+            seg=await plugin.on_send_before(message={"session_id":session,"message_info":{"additional_config":{
+                "napcat_message_type":"private"}},"raw_message":[{"type":"text","data":text}]},
+                set_reply=True,reply_message_id=anchor)
+            self.assertEqual(seg["action"],"continue",f"同锚分段 {text!r} 不应被拦")
+
+
 class ItemFirstContractTests(unittest.TestCase):
     """MaiBot 1.2.0+ Item-first 契约：标记解析、items 注入与撤回改写的双兼容行为。"""
 

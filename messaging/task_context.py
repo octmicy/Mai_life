@@ -252,14 +252,21 @@ class ActiveTaskRegistry:
             item.reply_reserved = False
 
     async def reserve_send(self, session_id: str, task_id: str, anchor: str, now: float) -> bool:
-        """允许同一 Replyer 结果的正常分段，但无 Replyer 锚点的直接发送只能占用一次。"""
+        """允许同一 Replyer 结果的正常分段，但无 Replyer 锚点的直接发送只能占用一次。
+
+        v1.24.2 修复：direct 首段成功发送后（sent=True），该锚点必须继续放行同锚分段——
+        否则多段回复的第 2 段起全部被 before_send 拦截，宿主把整轮回复判为失败。
+        """
         async with self._lock:
             self._prune_locked(now)
             item = self._active.get(session_id)
             if not item or item.task_id != task_id:
                 return False
             if item.sent:
-                return bool(item.reply_reserved and item.reply_anchor == anchor)
+                # direct 锚点仅在非空时放行同锚分段；空锚点 direct 发送无分段概念，
+                # sent 后必须继续拦截，防止同一主动任务重复发送多条消息。
+                return bool((item.reply_reserved and item.reply_anchor == anchor)
+                            or (anchor and item.direct_send_reserved and item.direct_anchor == anchor))
             if item.reply_reserved:
                 return item.reply_anchor == anchor
             if item.direct_send_reserved:

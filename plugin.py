@@ -1017,7 +1017,7 @@ class MaiLifePlugin(MaiBotPlugin):
             await self._store.upsert_group_directory(group_id,group_name,session,self._env.now().timestamp())
         if not uid or is_command(message):
             return {"action":"abort"} if await self._is_recalled(session,mid,*initial_sources) else {"action":"continue"}
-        merged=message; reason="group_disabled"
+        merged=message
         # v1.24.0 防抖移除：群聊消息直接放行（宿主防抖接管连发合并）
         uid,session,mid,_=message_identity(merged)
         source_ids=self._recall.source_message_ids(merged)
@@ -1064,7 +1064,7 @@ class MaiLifePlugin(MaiBotPlugin):
                 message_keys=[(session,source) for source in source_ids],
             )
         kwargs["message"]=merged
-        self.ctx.logger.debug(f"[MaiLife] 群聊收口完成 scope={self._group_scope(merged)} {reason}")
+        self.ctx.logger.debug(f"[MaiLife] 群聊消息放行 scope={self._group_scope(merged)} media={media_types(merged)}")
         return {"action":"continue","modified_kwargs":kwargs}
 
     async def _process_private_message(self,kwargs:dict[str,Any],message:dict[str,Any],uid:str,session:str,mid:str,
@@ -1093,7 +1093,7 @@ class MaiLifePlugin(MaiBotPlugin):
         except Exception as exc:self.ctx.logger.warning(f"[MaiLife] 合并撤回轮次注册失败，消息继续处理: {exc}")
         if await self._discard_recalled_private_turn(session,uid,mid,source_ids):return {"action":"abort"}
         intent=classify_intent(text,media)
-        # 纯空消息（无文字也无媒介）已被防抖放行；不再写互动历史，避免“发送了一条消息”污染关系时间线。
+        # 纯空消息（无文字也无媒介）不写互动历史，避免“发送了一条消息”污染关系时间线。
         if text or media:
             await self._store.record_interaction(
                 uid,text or f"发送了{','.join(media) or '一条消息'}",
@@ -1134,7 +1134,7 @@ class MaiLifePlugin(MaiBotPlugin):
             previous=await self._active_tasks.note_inbound(session,time.time())
             await self._supersede_active_task(previous)
         kwargs["message"]=merged
-        self.ctx.logger.debug(f"[MaiLife] 消息收口完成 session={session} {reason} media={media}")
+        self.ctx.logger.debug(f"[MaiLife] 私聊消息放行 session={session} media={media}")
         return {"action":"continue","modified_kwargs":kwargs}
 
     def _is_group_session(self,session_id:str)->bool:

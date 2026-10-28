@@ -2132,6 +2132,36 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         await asyncio_sleep_zero()
         self.assertEqual(observed, [])
 
+    async def test_pass_through_paths_do_not_reference_removed_debounce_vars(self):
+        """v1.24.0 防抖移除后的放行路径必须完整可走（NameError 回归：收口日志引用已删的 reason）。"""
+        plugin, logger = await self._plugin(make_group_config(group_gate=False))
+        private_plugin = plugin
+        result = await private_plugin._process_group_message(
+            {"message": group_message("g9", "普通群聊")}, group_message("g9", "普通群聊"),
+            "30001", "group-stream-100", "g9", ["g9"])
+        self.assertEqual(result.get("action"), "continue")
+        self.assertTrue(any("群聊消息放行" in text for text in logger.texts("debug")),
+                        f"放行日志缺失: {logger.texts('debug')[-3:]}")
+    async def test_private_pass_through_completes_without_name_error(self):
+        """私聊放行路径（线上 NameError 现场）：_process_private_message 必须完整走完 debug 日志。"""
+        from Mai_life.tests.support import build_plugin
+        config = MaiLifeSettings()
+        config.users.profiles = [UserProfile(user_id="30001", role="owner", enabled=True)]
+        logger = RecordingLogger()
+        plugin = await build_plugin(self.store, config, ctx=DummyCtx(logger), llm=DummyLLM(), now=NIGHT,
+                                    users=[UserProfile(user_id="30001", role="owner", enabled=True)])
+        msg = {"message_id": "p1", "session_id": "private-stream-30001", "platform": "qq",
+               "processed_plain_text": "你好呀",
+               "message_info": {"user_info": {"user_id": "30001", "user_nickname": "主人"},
+                                 "additional_config": {"napcat_message_type": "private"}},
+               "raw_message": [{"type": "text", "data": "你好呀"}],
+               "is_command": False, "is_notify": False}
+        kwargs = {"message": msg}
+        result = await plugin._process_private_message(kwargs, msg, "30001", "private-stream-30001", "p1", ["p1"])
+        self.assertEqual(result.get("action"), "continue")
+        self.assertTrue(any("私聊消息放行" in text for text in logger.texts("debug")),
+                        f"放行日志缺失: {logger.texts('debug')[-3:]}")
+
 
 async def asyncio_sleep_zero() -> None:
     import asyncio

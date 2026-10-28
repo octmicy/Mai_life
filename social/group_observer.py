@@ -71,7 +71,10 @@ class GroupObserver:
             nodes=await self.store.get_framework(now.strftime("%Y-%m-%d"))
             minute=now.hour*60+now.minute
             for node in nodes:
-                if int(node.get("start_minute") or 0)<=minute<int(node.get("end_minute") or 0):
+                s=int(node.get("start_minute") or 0); e=int(node.get("end_minute") or 0)
+                # 跨午夜段（如 22:30→08:00）与群闸门 _in_window 同规则：s<e 常规区间，否则绕午夜匹配。
+                hit=s<=minute<e if s<e else (minute>=s or minute<e)
+                if hit:
                     return str(node.get("kind") or "") in kinds
             return False
         current=now.strftime("%H:%M")

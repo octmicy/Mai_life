@@ -545,6 +545,7 @@ class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schedule_mode_group_gate_follows_segment(self):
         self.config.rest_gate.gate_mode = "schedule"
+        self.config.group.gate_mode = "schedule"
         self.config.group.gate_enabled = True
         gate = self._gate()
         allowed, _ = gate.decide_group("在吗", datetime(2026, 10, 25, 15, 0, tzinfo=TZ), "100", {"kind": "sleep"})
@@ -583,6 +584,7 @@ class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schedule_mode_resleep_inside_sleep_segment(self):
         from Mai_life.social.group_observer import GroupObserver
+        self.config.group.gate_mode = "schedule"
         self.config.rest_gate.gate_mode = "schedule"
         await self.store.replace_framework("2026-10-25", [
             {"id": "s1", "day": "2026-10-25", "start_minute": 840, "end_minute": 960,
@@ -1984,6 +1986,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """无对应时间窗的类型（rest）列出后任意时间生效（v1.23.3 时间窗优先后保持不变）。"""
         config = make_group_config(group_gate=True)
         config.group.gate_segment_types = ["sleep", "nap", "rest"]
+        config.group.gate_mode = "schedule"
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("下午好呀", DAYTIME, "100", {"kind": "rest"})
@@ -2007,6 +2010,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """日程类型命中时，强制唤醒词仍然放行（与时间窗内行为一致）。"""
         config = make_group_config(group_gate=True)
         config.group.gate_segment_types = ["sleep", "nap", "rest"]
+        config.group.gate_mode = "schedule"
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, reason = gate.decide_group("出事了救命啊", DAYTIME, "100", {"kind": "rest"})
@@ -2017,6 +2021,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         """配置改成 study 后，rest 段不再闸群、study 段才闸。"""
         config = make_group_config(group_gate=True)
         config.group.gate_segment_types = ["study"]
+        config.group.gate_mode = "schedule"
         config.rest_gate.gate_mode = "schedule"
         gate = self._gate(config)
         allowed, _ = gate.decide_group("在吗", DAYTIME, "100", {"kind": "rest"})
@@ -2199,6 +2204,7 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
             {"id": "d", "day": day, "start_minute": 1350, "end_minute": 480, "kind": "sleep",
              "summary": "夜间睡眠", "location": "", "energy_load": 0.0, "shareability": 0.2}])
         self.config.group.gate_segment_types = ["sleep"]  # nap 已被用户移除
+        self.config.group.gate_mode = "schedule"
         self.config.rest_gate.gate_mode = "schedule"
         observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
         noon = NIGHT.replace(hour=12, minute=30)
@@ -4487,7 +4493,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
                                                   "llm_threshold", "awake_grace_minutes",
                                                   "silence_minutes", "night_window", "nap_window"})
-        self.assertEqual(set(data["group"]), {"profiles", "gate_enabled", "gate_scope", "turn_enabled",
+        self.assertEqual(set(data["group"]), {"profiles", "gate_mode", "gate_enabled", "gate_scope", "turn_enabled",
                                               "gate_segment_types", "night_window", "nap_window",
                                               "relay_enabled", "observation_wait_seconds",
                                               "max_buffer_messages", "interesting_threshold",

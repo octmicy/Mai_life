@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.24.3"
+PLUGIN_VERSION = "1.24.4"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -737,9 +737,16 @@ class GroupChatSettings(PluginConfigBase):
         json_schema_extra=_ui("启用群聊休息闸门", "默认关闭。开启后，在群时间窗（按设定时间）或日程段型（按日程判断）期间，群里只有含强制唤醒词的消息会被回复，其余静默。", 1,
                               label_en="Enable Group Rest Gate", hint_en="During group quiet windows only force-wake terms get replies."),
     )
+    gate_mode: Literal["time_window", "schedule"] = Field(
+        default="time_window", description="群闸门生效方式：按设定时间=只认群夜窗/群午休窗；按日程判断=日程段型命中即生效（任意时间）。",
+        json_schema_extra=_ui("群闸门生效方式", "与私聊闸门的生效方式相互独立，可分别选择。按设定时间：只在群夜间/午休时间窗内生效（窗口仍受下方日程类型列表约束：夜窗需含 sleep/rest、午休窗需含 nap）；按日程判断：日程进入所列段型时即生效，忽略时间窗，跟着日程作息走。", 2,
+                              label_en="Group Gate Mode",
+                              hint_en="time_window: group windows only; schedule: gate on listed segment kinds. Independent from the private gate mode.",
+                              enum_labels={"time_window": "按设定时间", "schedule": "按日程判断"}),
+    )
     gate_scope: Literal["all", "selected"] = Field(
         default="all", description="群闸门作用范围：all=所有群；selected=只对群聊白名单中开了「夜间静音」的群生效。",
-        json_schema_extra=_ui("群闸门作用范围", "「所有群」开箱即用；「指定群」需先在上方白名单登记该群并打开「夜间静音」。", 2,
+        json_schema_extra=_ui("群闸门作用范围", "「所有群」开箱即用；「指定群」需先在上方白名单登记该群并打开「夜间静音」。", 3,
                               label_en="Group Gate Scope", hint_en="All groups, or only selected allowlisted groups with night-silence on.",
                               enum_labels={"all": "所有群", "selected": "指定群（白名单）"}),
     )
@@ -747,7 +754,7 @@ class GroupChatSettings(PluginConfigBase):
         default_factory=lambda: ["sleep", "nap"],
         description="按日程判断模式下触发群闸门的日程类型；按设定时间模式下不参与生效。",
         json_schema_extra=_ui("群闸门生效的日程类型",
-            "按日程判断模式下：日程进入所列段型时群闸门即生效（任意时间）；按设定时间模式下不参与生效。默认与私聊一致：夜间睡眠+午休。", 3,
+            "按日程判断模式下：日程进入所列段型时群闸门即生效（任意时间）；按设定时间模式下不参与生效。默认与私聊一致：夜间睡眠+午休。", 4,
             label_en="Group Gated Schedule Types",
             hint_en="In schedule mode the group gate activates on listed kinds; in time-window mode this list is inert."),
         enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）",
@@ -755,30 +762,30 @@ class GroupChatSettings(PluginConfigBase):
                      "meal": "餐饮（meal）", "travel": "出行（travel）"})
     night_start: str = Field(
         default="22:30", description="群夜间闸门开始时间。",
-        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 4, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
+        json_schema_extra=_ui("群夜间闸门开始", "默认 22:30，支持跨午夜；仅在群闸门「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 5, label_en="Group Night Start", hint_en="Group night window start in HH:MM format."),
     )
     night_end: str = Field(
         default="08:00", description="群夜间闸门结束时间。",
-        json_schema_extra=_ui("群夜间闸门结束", "默认 08:00。", 5, label_en="Group Night End", hint_en="Group night window end in HH:MM format."),
+        json_schema_extra=_ui("群夜间闸门结束", "默认 08:00。", 6, label_en="Group Night End", hint_en="Group night window end in HH:MM format."),
     )
     nap_start: str = Field(
         default="12:00", description="群午休闸门开始时间。",
-        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 6, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
+        json_schema_extra=_ui("群午休闸门开始", "默认 12:00。仅在群闸门「按设定时间」模式下生效。", 7, label_en="Group Nap Start", hint_en="Group nap window start in HH:MM format."),
     )
     nap_end: str = Field(
         default="14:30", description="群午休闸门结束时间。",
-        json_schema_extra=_ui("群午休闸门结束", "默认 14:30。", 7, label_en="Group Nap End", hint_en="Group nap window end in HH:MM format."),
+        json_schema_extra=_ui("群午休闸门结束", "默认 14:30。", 8, label_en="Group Nap End", hint_en="Group nap window end in HH:MM format."),
     )
     force_wake_terms: list[str] = Field(
         default_factory=lambda: ["救命","急事","报警","醒醒","快醒","叫醒","出事了","很难受","撑不住","危险","轻生","自杀"],
         description="群强制唤醒词：群消息含其中任意一词时放行；独立于私聊词表。",
-        json_schema_extra=_ui("群强制唤醒词","群消息含任意一词立即放行；可自由增删",8,
+        json_schema_extra=_ui("群强制唤醒词","群消息含任意一词立即放行；可自由增删",9,
                               label_en="Group Force Wake Terms",
                               hint_en="Group messages containing any term bypass the group silence."),
     )
     turn_enabled: bool = Field(
         default=True, description="群聊中为每条消息注册回复轮次锁，防止同一条群消息触发多次回复。",
-        json_schema_extra=_ui("群聊轮次注册", "开启后按群号和发送者隔离轮次；关闭则群聊不做防重。", 9,
+        json_schema_extra=_ui("群聊轮次注册", "开启后按群号和发送者隔离轮次；关闭则群聊不做防重。", 10,
                               label_en="Group Turn Registration",
                               hint_en="Register reply turns for group messages, isolated by group and sender."),
     )
@@ -1203,5 +1210,10 @@ class MaiLifeSettings(PluginConfigBase):
                             ("note_retention_days","search_note_retention_days")):
                 if old in search:net.setdefault(new,search[old])
         if net:data["network"]=net
+        group=data.get("group")
+        if isinstance(group,dict) and "gate_mode" not in group:
+            # 群闸门生效方式曾与私聊共用：旧配置继承 rest_gate.gate_mode，行为不变。
+            rest=data.get("rest_gate")
+            if isinstance(rest,dict) and "gate_mode" in rest:group["gate_mode"]=rest["gate_mode"]
         return data
 

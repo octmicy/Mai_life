@@ -65,7 +65,7 @@ class GroupObserver:
         """
         cfg=getattr(self.config,"group",None)
         if cfg is None or not getattr(cfg,"gate_enabled",False):return False
-        if str(getattr(self.config.rest_gate,"gate_mode","time_window") or "time_window")=="schedule":
+        if str(getattr(cfg,"gate_mode","time_window") or "time_window")=="schedule":
             kinds=set(getattr(cfg,"gate_segment_types",None) or [])
             if not kinds:return False
             nodes=await self.store.get_framework(now.strftime("%Y-%m-%d"))

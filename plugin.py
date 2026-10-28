@@ -1,4 +1,4 @@
-"""Mai_life v1.24.3 插件入口。"""
+"""Mai_life v1.24.4 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -1879,12 +1879,13 @@ class MaiLifePlugin(MaiBotPlugin):
     @Command(name="/麦麦配置",pattern=r"^(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦生活配置摘要")
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
+        group_gate_mode="按设定时间" if self.config.group.gate_mode=="time_window" else "按日程判断"
         text=(f"麦生活：{'开启' if self.config.plugin.enabled else '关闭'}\n"
               f"配置用户：已配置 {len(self.config.users.profiles)} 个（启用 {sum(1 for p in self.config.users.profiles if p.enabled)} 个）\n"
               f"休息闸门：{('开启（按设定时间）' if self.config.rest_gate.gate_mode=='time_window' else '开启（按日程判断）') if self.config.rest_gate.enabled else '关闭'}\n"
               f"睡前流程：{('跟随日程睡眠段' if self.config.rest_gate.gate_mode=='schedule' else '与夜间闸门同时段')+'（静默 %d 分钟后入睡）' % BEDTIME_SILENCE_MINUTES if self.config.rest_gate.enabled else '关闭'}\n"
               f"绘图联动：{'开启（已检测到麦麦绘图插件）' if (self.config.linkage.drawpic_enabled and self._drawpic_loaded is True) else ('开启（未检测到麦麦绘图插件，开关暂不生效）' if self.config.linkage.drawpic_enabled else '关闭')}\n"
-              f"群休息闸门：{'开启（%d 个群静音）' % sum(1 for g in self.config.group.profiles if g.enabled and g.rest_gate_enabled) if self.config.group.gate_enabled else '关闭'}\n"
+              f"群休息闸门：{'开启（' + group_gate_mode + '，%d 个群静音）' % sum(1 for g in self.config.group.profiles if g.enabled and g.rest_gate_enabled) if self.config.group.gate_enabled else '关闭'}\n"
               f"撤回增强：{'开启' if self.config.recall.enabled else '关闭'}（本人摘要缓存 {'开' if self.config.recall.cache_summary_enabled else '关'}）\n"
               f"生活记忆：{'开启' if self.config.memory.enabled else '关闭'}\n"
               f"联网见闻：{'开启' if self.config.network.enabled else '关闭'}（新闻 {'开' if self.config.network.news_enabled else '关'} / 搜索 {'开' if self.config.network.news_enabled else '关'}）\n"
@@ -2576,6 +2577,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                  "nap_window":f"{gate.nap_start}-{gate.nap_end}"},
                     "group":{"profiles":len(cfg.group.profiles),
                              "gate_enabled":_switch(cfg.group.gate_enabled),
+                             "gate_mode":str(cfg.group.gate_mode),
                              "gate_scope":str(cfg.group.gate_scope),
                              "turn_enabled":_switch(cfg.group.turn_enabled),
                              "gate_segment_types":"、".join(cfg.group.gate_segment_types),

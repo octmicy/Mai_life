@@ -113,8 +113,8 @@ class RestGate:
         if not self.group_gate_enabled_for(group_id):return True,"group_not_enabled"
         segment_kind=str((segment or {}).get("kind") or "")
         kind_match=segment_kind in set(getattr(cfg,"gate_segment_types",None) or [])
-        # v1.23.5 闸门生效方式（私聊群聊共用）：schedule=段型命中即静默；time_window=只认群时间窗。
-        gate_mode=str(getattr(self.config.rest_gate,"gate_mode","time_window") or "time_window")
+        # v1.24.3：群闸门有独立的生效方式（group.gate_mode），与私聊互不干扰。
+        gate_mode=str(getattr(cfg,"gate_mode","time_window") or "time_window")
         if gate_mode=="schedule":
             gate_active=kind_match
         else:
@@ -156,7 +156,7 @@ class RestGate:
         self._warn_degenerate_window(now.timestamp())
         if not cfg.enabled:return True,"disabled"
         if str(text or "").lstrip().startswith("/"):return True,"command"
-        # v1.23.5 闸门生效方式（私聊群聊共用 gate_mode）：
+        # v1.23.5 闸门生效方式（私聊用 rest_gate.gate_mode；群聊另有独立 group.gate_mode）：
         # schedule=日程段型命中 gate_segment_types 即生效（跟着日程作息走，任意时间）；
         # time_window=只认夜窗/午休窗——用户设定几点休息就几点休息，日程段型不提前触发。
         current=now.strftime("%H:%M")

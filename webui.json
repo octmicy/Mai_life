@@ -3019,6 +3019,14 @@
                     },
                     {
                       "type": "stat",
+                      "label": "群闸门生效方式",
+                      "value": {
+                        "source": "config",
+                        "field": "group.gate_mode"
+                      }
+                    },
+                    {
+                      "type": "stat",
                       "label": "群闸门范围",
                       "value": {
                         "source": "config",

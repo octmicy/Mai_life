@@ -5597,6 +5597,68 @@ class V11413ScheduleIdentityTests(unittest.IsolatedAsyncioTestCase):
 # ==========v1.14.14 输出预算与任务路由==========
 
 
+class ScheduleRetryTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.5：日程生成/场景细化在兜底模板之前先重试（宿主瞬时失败与结果不合格各重试）。"""
+
+    def _llm(self, script: list):
+        class FlakyLLM:
+            def __init__(self):
+                self.calls = 0; self.script = list(script)
+            def task_available(self, kind): return kind in {"schedule", "scene_detail"}
+            def task_for(self, kind): return "planner"
+            async def generate_json(self, prompt, system, fallback=None, max_tokens=0, **kwargs):
+                self.calls += 1
+                assert kwargs.get("raise_on_failure") is True, "重试契约要求失败抛错而非静默回退"
+                if self.script:
+                    item = self.script.pop(0)
+                    if isinstance(item, Exception):
+                        raise item
+                    return item
+                return fallback
+        return FlakyLLM()
+
+    @staticmethod
+    def _valid_framework():
+        return [
+            {"start": "00:00", "end": "08:00", "kind": "sleep", "summary": "夜间睡眠", "location": "卧室", "energy_load": 8, "shareability": 0.05},
+            {"start": "08:00", "end": "09:00", "kind": "meal", "summary": "起床洗漱并吃早餐", "location": "家里", "energy_load": -1, "shareability": 0.25},
+            {"start": "12:00", "end": "13:00", "kind": "meal", "summary": "准备午饭", "location": "厨房", "energy_load": -1, "shareability": 0.4},
+            {"start": "23:30", "end": "24:00", "kind": "sleep", "summary": "准备睡觉", "location": "卧室", "energy_load": 1, "shareability": 0.05}]
+
+    async def test_daily_schedule_retries_before_fallback(self):
+        tmp = tempfile.TemporaryDirectory()
+        store = LifeStore(tmp.name); await store.initialize()
+        try:
+            llm = self._llm([RuntimeError("瞬时失败"), RuntimeError("又失败"), self._valid_framework()])
+            service = ScheduleService(store, MaiLifeSettings(), llm,
+                                      str(Path(__file__).parents[1]), DummyLogger())
+            service.retry_backoff = (0, 0)
+            nodes = await service.ensure_day(datetime(2026, 10, 12, 3, 0, tzinfo=TZ),
+                                             "大二学生", "晴", force=True)
+            self.assertEqual(llm.calls, 3, "两次失败应各重试一次")
+            self.assertTrue(any(node["summary"] == "准备午饭" for node in nodes),
+                            "第三次成功后应采用模型结果而非兜底模板")
+        finally:
+            await store.close(); tmp.cleanup()
+
+    async def test_invalid_quality_result_is_retried_then_fallback(self):
+        tmp = tempfile.TemporaryDirectory()
+        store = LifeStore(tmp.name); await store.initialize()
+        try:
+            invalid = [node for node in self._valid_framework() if node["kind"] != "meal"]  # 缺餐 → 校验拒收
+            llm = self._llm([invalid, invalid, invalid])
+            service = ScheduleService(store, MaiLifeSettings(), llm,
+                                      str(Path(__file__).parents[1]), DummyLogger())
+            service.retry_backoff = (0, 0)
+            nodes = await service.ensure_day(datetime(2026, 10, 12, 3, 0, tzinfo=TZ),
+                                             "大二学生", "晴", force=True)
+            self.assertEqual(llm.calls, 3, "质量不合格应重试至上限")
+            self.assertGreaterEqual(sum(node["kind"] == "meal" for node in nodes), 2,
+                                    "重试耗尽后回退到含三餐的兜底模板")
+        finally:
+            await store.close(); tmp.cleanup()
+
+
 class V11414OutputBudgetTests(unittest.TestCase):
     """v1.14.14：输出 token 上限改配置驱动（默认不限制），调用点不得再写死正数。"""
 
@@ -5639,7 +5701,9 @@ class V11414OutputBudgetTests(unittest.TestCase):
             finally:
                 await store.close(); tmp.cleanup()
 
-        self.assertEqual(asyncio.run(run()), [0])  # 0 = 继承配置，不再写死 2200/12000
+        seen = asyncio.run(run())
+        # v1.24.5 重试机制：一次生成可能多次调用，断言改为全部继承配置（0）。
+        self.assertTrue(seen and set(seen) == {0})  # 0 = 继承配置，不再写死 2200/12000
 
     def test_config_summary_reports_output_budget(self):
         async def run() -> dict[str, Any]:

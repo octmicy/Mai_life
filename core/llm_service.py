@@ -182,10 +182,17 @@ class LLMService:
         return ""
 
     async def generate_json(self, prompt: str, system: str, fallback: Any, max_tokens: int = 0,
-                            *, task_kind: str = "reasoning", request_type: str = "structured") -> Any:
-        """从纯响应、Markdown 代码块或首个 JSON 边界中解析结构化结果。"""
+                            *, task_kind: str = "reasoning", request_type: str = "structured",
+                            raise_on_failure: bool = False) -> Any:
+        """从纯响应、Markdown 代码块或首个 JSON 边界中解析结构化结果。
+
+        raise_on_failure=True 时失败改为抛 RuntimeError，供调用方自行重试
+        （默认 False 保持旧行为：失败返回 fallback 交业务规则降级）。
+        """
         raw=await self.generate(prompt,system,max_tokens=max_tokens,task_kind=task_kind,request_type=request_type)
-        if not raw:return fallback
+        if not raw:
+            if raise_on_failure:raise RuntimeError("LLM 调用失败或返回为空")
+            return fallback
         candidates=[raw]
         if "```" in raw:
             chunks=raw.split("```")
@@ -202,6 +209,7 @@ class LLMService:
             f"type={request_type} chars={len(raw)}"
         )
         self._count_json_failure(task_kind)
+        if raise_on_failure:raise RuntimeError("结构化响应解析失败")
         return fallback
 
     def _count_json_failure(self, task_kind: str) -> None:

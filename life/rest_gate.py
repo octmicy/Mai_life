@@ -7,12 +7,16 @@ from typing import Any
 
 # 用户明确勿扰时的阻断原因；插件据此跳过 backlog，避免次日主动提起用户的勿扰表达。
 BLOCK_REASON = "用户明确希望继续休息"
+from .bedtime import BEDTIME_SILENCE_MINUTES
 
 
 class RestGate:
     def __init__(self,store:Any,config:Any,llm:Any,state_engine:Any,logger:Any,bot_name:str="麦麦")->None:
         self.store=store; self.config=config; self.llm=llm; self.state_engine=state_engine; self.logger=logger
         self.bot_name=bot_name
+        # 群聊睡前协商（v1.24.5）：每群的静默推迟截止时刻与最近放行消息时刻（内存态，重载即清）。
+        self._group_defer:dict[str,float]={}
+        self._group_last_seen:dict[str,float]={}
 
     def update_config(self,config:Any)->None:self.config=config
 
@@ -99,13 +103,16 @@ class RestGate:
         return False
 
     def decide_group(self,text:str,now:Any,group_id:str,segment:dict[str,Any]|None=None)->tuple[bool,str]:
-        """群聊轻量版闸门：总闸/分群开关 → 时间窗或日程类型 → 强制唤醒词放行 / 勿扰词阻断 / 其余静默。
+        """群聊轻量版闸门：总闸/分群开关 → 时间窗或日程类型 → 睡前协商 → 强制唤醒词放行 / 勿扰词阻断 / 其余静默。
 
         不放行概率、不建待醒候选、不写积压——每条群消息独立判定；
         被阻断的消息不进入主程序，因此不产生 Planner/Replyer/VLM 等请求。
         生效条件与私聊同构，共用「闸门生效方式」开关与 gate_segment_types 列表：
         按日程判断=日程段型命中列表即生效（任意时间）；按设定时间=群夜窗/群午休窗内
         生效，且窗口各自受列表约束（夜窗需列表含 sleep/rest，午休窗需含 nap）。
+        v1.24.5 群聊版睡前协商：静默期开始时群仍在聊天（最近 10 分钟内有放行消息），
+        静默推迟 10 分钟；期间每条消息继续顺延，静默满 10 分钟后正常拦截，
+        被拦消息不重开协商（与私聊 defer 一致）。
         """
         cfg=getattr(self.config,"group",None)
         if cfg is None or not getattr(cfg,"gate_enabled",False):return True,"group_gate_disabled"
@@ -119,11 +126,23 @@ class RestGate:
             gate_active=kind_match
         else:
             gate_active=self.in_group_quiet_window(now)
-        if not gate_active:return True,"outside_group_window"
+        now_ts=now.timestamp()
+        if not gate_active:
+            # 窗外放行：记录群最近活动（静默期开始的协商判定用它），协商态随窗口结束清除。
+            self._group_last_seen[group_id]=now_ts
+            self._group_defer.pop(group_id,None)
+            return True,"outside_group_window"
+        defer_until=self._group_defer.get(group_id,0.0)
+        last_seen=self._group_last_seen.get(group_id,0.0)
+        if now_ts<defer_until or (last_seen and 0<=now_ts-last_seen<BEDTIME_SILENCE_MINUTES*60):
+            self._group_defer[group_id]=now_ts+BEDTIME_SILENCE_MINUTES*60
+            self._group_last_seen[group_id]=now_ts
+            return True,"群聊还在聊，静默推迟10分钟"
         compact=re.sub(r"\s+","",str(text or "").lower())
         for term in (getattr(cfg,"force_wake_terms",None) or []):
             word=str(term or "").strip().lower()
             if word and word in compact:
+                self._group_last_seen[group_id]=now_ts
                 return True,f"群强制唤醒词：{str(term).strip()}"
         if re.search(r"(?:别回|不用回|不要回|继续睡|别醒|别打扰|安心睡|不用理我|别烦我|别吵)",compact):
             return False,BLOCK_REASON

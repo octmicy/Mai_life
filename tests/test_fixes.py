@@ -2027,7 +2027,7 @@ class GroupGateDecisionTests(unittest.IsolatedAsyncioTestCase):
         gate = self._gate(config)
         allowed, _ = gate.decide_group("在吗", DAYTIME, "100", {"kind": "rest"})
         self.assertTrue(allowed)
-        allowed, _ = gate.decide_group("在吗", DAYTIME, "100", {"kind": "study"})
+        allowed, _ = gate.decide_group("在吗", DAYTIME + timedelta(minutes=11), "100", {"kind": "study"})
         self.assertFalse(allowed)
 
     async def test_master_switch_off_passes(self):
@@ -2216,6 +2216,32 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
         late = NIGHT.replace(hour=10, minute=0)                          # leisure 段
         self.assertFalse(await observer._group_quiet_now(late))
 
+    async def test_group_gate_defers_silence_while_group_still_chatting(self):
+        """v1.24.5 回归：群聊版睡前协商——静默期开始时群仍在聊天则推迟 10 分钟。
+
+        时序：22:29 窗外最后发言（放行并记录活动）→ 22:31 静默期开始 2 分钟内
+        消息协商放行 → 协商期内顺延 → 静默满 10 分钟后拦截 → 被拦消息不重开协商。
+        无近期活动的群不受协商影响（首条直接拦）。
+        """
+        from Mai_life.life.rest_gate import RestGate
+        config = make_group_config(group_gate=True)
+        config.group.gate_segment_types = ["sleep", "nap"]
+        config.rest_gate.gate_mode = "time_window"
+        gate = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
+        pre = NIGHT.replace(hour=22, minute=29)
+        self.assertTrue(gate.decide_group("还没散场呢", pre, "100", {"kind": "leisure"})[0])
+        allowed, reason = gate.decide_group("最后聊几句", NIGHT.replace(hour=22, minute=31), "100", {"kind": "sleep"})
+        self.assertTrue(allowed)
+        self.assertIn("静默推迟", reason)
+        self.assertTrue(gate.decide_group("再聊会儿", NIGHT.replace(hour=22, minute=35), "100", {"kind": "sleep"})[0])
+        blocked, _ = gate.decide_group("深夜发言", NIGHT.replace(hour=22, minute=52), "100", {"kind": "sleep"})
+        self.assertFalse(blocked, "静默满 10 分钟后应正常拦截")
+        blocked2, _ = gate.decide_group("又一条", NIGHT.replace(hour=22, minute=53), "100", {"kind": "sleep"})
+        self.assertFalse(blocked2, "被拦消息不重开协商")
+        gate2 = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
+        blocked3, _ = gate2.decide_group("深夜冒泡", NIGHT.replace(hour=22, minute=31), "100", {"kind": "sleep"})
+        self.assertFalse(blocked3, "无近期活动的群首条直接拦")
+
     async def test_time_windows_are_gated_by_segment_type_list(self):
         """v1.24.3 回归：时间窗模式下列表去掉 nap，午休窗即失效（用户报告的场景）。"""
         from Mai_life.life.rest_gate import RestGate
@@ -2229,7 +2255,8 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
         night_allowed, _ = gate.decide_group("深夜聊天", NIGHT, "100", {"kind": "sleep"})
         self.assertFalse(night_allowed, "sleep 在列表时夜窗仍应静默")
         config.group.gate_segment_types = ["sleep", "nap"]  # nap 加回 → 午窗恢复
-        nap_allowed, _ = gate.decide_group("中午聊天", noon, "100", {"kind": "nap"})
+        later_noon = noon + timedelta(minutes=11)  # 与上次放行间隔>10 分钟，协商不生效
+        nap_allowed, _ = gate.decide_group("中午聊天", later_noon, "100", {"kind": "nap"})
         self.assertFalse(nap_allowed, "nap 在列表时午休窗应静默")
         # 观察侧同规则
         observer = GroupObserver(self.store, config, DummyLLM(), DummyLogger())

@@ -29,7 +29,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.24.4")
+        self.assertEqual(manifest["version"],"1.24.5")
         # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
         self.assertIn("web.search",manifest["capabilities"])
         self.assertIn("web.fetch",manifest["capabilities"])
@@ -40,10 +40,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.24.4")
+        self.assertEqual(PLUGIN_VERSION,"1.24.5")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.24.4，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.24.5，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):

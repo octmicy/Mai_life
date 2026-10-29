@@ -579,7 +579,8 @@ class V1235GateModeTests(unittest.IsolatedAsyncioTestCase):
         later = datetime(2026, 10, 25, 17, 0, tzinfo=TZ)  # leisure 段：时间窗被忽略
         await manager.tick(later)
         runtime = await self.store.get_sleep_runtime()
-        self.assertEqual(float(runtime.get("sleep_defer_until") or 0), 0.0)
+        # 预武装后 defer 恒为"最后消息+静默分钟"（无消息时是过去时刻）；消费方只比较 defer>now。
+        self.assertLess(float(runtime.get("sleep_defer_until") or 0), later.timestamp())
         self.assertFalse(manager.approaching(later))
 
     async def test_schedule_mode_resleep_inside_sleep_segment(self):
@@ -2405,13 +2406,41 @@ class V1146BedtimeManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.tick(deep)
         self.assertEqual(await self._defer(), night.replace(minute=40).timestamp())  # max(09-21 22:30, 23:40)
 
+    async def test_sleep_defer_is_prearmed_before_night_window(self):
+        """v1.24.4 回归：夜窗前的消息必须预武装 defer，状态引擎不得在夜窗第一拍入睡。
+
+        线上竞态：defer 只在夜窗内计算，状态推进先于睡前循环时相位立即入睡，
+        协商条件（非睡眠相位）从此永假——睡前推迟 10 分钟彻底失效。
+        """
+        user_id="100040"
+        await self.store.sync_users([UserProfile(user_id=user_id,role="owner")])
+        now=datetime(2026,9,21,22,28,tzinfo=TZ)  # 夜窗（22:30）前 2 分钟
+        day=now.strftime("%Y-%m-%d")
+        await self.store.replace_framework(day,[
+            {"id":"n","day":day,"start_minute":1350,"end_minute":480,"kind":"sleep",
+             "summary":"夜间睡眠","location":"卧室","energy_load":0,"shareability":0.2}])
+        await self.store.record_interaction(user_id,"还没睡呢",now.timestamp(),now.hour,
+                                            source_message_id="m1")
+        await self.manager.tick(now+timedelta(minutes=1))
+        runtime=await self.store.get_sleep_runtime()
+        defer_until=float(runtime.get("sleep_defer_until") or 0)
+        self.assertGreater(defer_until,now.timestamp(),"夜窗前应预武装 defer（最后消息+10 分钟）")
+        segment={"kind":"sleep","start_minute":1350,"summary":"夜间睡眠"}
+        await self.state.advance(now+timedelta(minutes=2,seconds=5),segment,None)
+        self.assertEqual((await self.store.get_sleep_runtime()).get("phase"),"awake",
+                         "defer 未到期时状态引擎不得在夜窗第一拍入睡")
+        gate=RestGate(self.store,self.config,DummyLLM(),self.state,DummyLogger())
+        allowed,reason=await gate.decide(user_id,"再聊会儿嘛",now+timedelta(minutes=4),segment,
+                                         session_id="s1",message_id="m2")
+        self.assertTrue(allowed)
+        self.assertIn("睡前对话未完",reason)
+
     async def test_defer_cleared_when_asleep_woken_outside_window_or_disabled(self):
         await self.store.sync_users([UserProfile(user_id="1")])
         await self.store.record_interaction("1", "在吗", datetime(2026, 9, 21, 23, 50, tzinfo=TZ).timestamp(), 23)
         cases = {
             "asleep": (datetime(2026, 9, 21, 23, 55, tzinfo=TZ), "deep_sleep"),
             "woken": (datetime(2026, 9, 21, 23, 55, tzinfo=TZ), "woken"),
-            "outside": (datetime(2026, 9, 21, 21, 0, tzinfo=TZ), "awake"),
         }
         for label, (now, phase) in cases.items():
             with self.subTest(case=label):
@@ -2421,6 +2450,15 @@ class V1146BedtimeManagerTests(unittest.IsolatedAsyncioTestCase):
                 self.env.now = lambda: now
                 await self.manager.tick(now)
                 self.assertEqual(await self._defer(), 0.0)
+        # v1.24.3 预武装：awake 时 defer 常驻（夜窗外也维护，最后消息+静默分钟），
+        # 闸门只在激活时消费该值；睡眠相位/叫醒/总闸关闭时仍清零。
+        runtime = await self.store.get_sleep_runtime()
+        runtime.update({"phase": "awake", "sleep_defer_until": 0})
+        await self.store.save_sleep_runtime(runtime)
+        outside = datetime(2026, 9, 21, 21, 0, tzinfo=TZ)
+        self.env.now = lambda: outside
+        await self.manager.tick(outside)
+        self.assertGreater(await self._defer(), outside.timestamp())
         # 总闸关闭时同样不协商。
         self.config.rest_gate.enabled = False
         night = datetime(2026, 9, 21, 23, 55, tzinfo=TZ)

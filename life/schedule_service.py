@@ -1,6 +1,7 @@
 """Daily framework generation and near-term scene expansion."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import random
@@ -61,6 +62,8 @@ class ScheduleService:
     def __init__(self, store: Any, config: Any, llm: Any, plugin_dir: str, logger: Any, bot_name: str = "麦麦") -> None:
         self.store=store; self.config=config; self.llm=llm; self.plugin_dir=Path(plugin_dir); self.logger=logger
         self.bot_name=bot_name; self._personality=""
+        # 结构化生成重试：宿主瞬时失败/结果不合格不再直接落到兜底模板。
+        self.retry_attempts=3; self.retry_backoff=(1.0,2.0)
 
     def update_config(self, config: Any) -> None:
         self.config=config
@@ -150,6 +153,27 @@ class ScheduleService:
         seed=f"{day}:{target['start_minute']}:{target['end_minute']}:{target['kind']}:{target['summary']}"
         target["id"]=hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
         return result
+
+    async def _generate_with_retry(self, prompt: str, system: str, fallback: Any, *,
+                                   task_kind: str, request_type: str,
+                                   check: Any) -> Any | None:
+        """结构化生成带重试：宿主瞬时失败或结果不合格各重试，全部失败返回 None 交调用方兜底。
+
+        check 收到模型原始返回，返回 False 视为本次不合格（质量闸门与传输失败同等重试）。
+        """
+        for attempt in range(max(1,int(self.retry_attempts))):
+            if attempt:
+                backoff=self.retry_backoff
+                await asyncio.sleep(backoff[min(attempt-1,len(backoff)-1)])
+            try:
+                raw=await self.llm.generate_json(prompt,system,fallback,max_tokens=0,
+                    task_kind=task_kind,request_type=request_type,raise_on_failure=True)
+            except Exception as exc:
+                self.logger.warning(f"[MaiLife] {request_type} 第 {attempt+1} 次生成失败: {exc}")
+                continue
+            if check(raw):return raw
+            self.logger.warning(f"[MaiLife] {request_type} 第 {attempt+1} 次结果不合格，重试")
+        return None
 
     # 所有 LLM 日程必须经过时间、类型、重叠和必要节点校验。
     def _validate(self, day: str, raw: Any, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -268,10 +292,16 @@ class ScheduleService:
                 "出行 -2~-4；全天 energy_load 合计应与当天精力消耗相抵（接近 0），睡眠增益不要重复计算白天消耗。\n"
                 "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
-        raw=fallback
+        nodes=[]
         if self.llm.task_available("schedule"):
-            raw=await self.llm.generate_json(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,max_tokens=0,task_kind="schedule",request_type="daily_schedule")
-        nodes=self._validate(day,raw,state) or fallback
+            raw=await self._generate_with_retry(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,
+                task_kind="schedule",request_type="daily_schedule",
+                check=lambda item: bool(self._validate(day,item,state)))
+            if raw is None:
+                self.logger.warning("[MaiLife] 日程生成重试后仍不合格，使用兜底模板")
+                raw=fallback
+            nodes=self._validate(day,raw,state)
+        if not nodes:nodes=fallback
         await self.store.replace_framework(day,nodes); return await self.store.get_framework(day)
 
     @staticmethod
@@ -298,10 +328,12 @@ class ScheduleService:
                     f"当前精力{state.get('energy')}、饥饿{state.get('hunger')}、天气{weather_text}。\n"
                     "返回JSON对象：scene字符串和opportunities数组。机会字段topic,motive,weight。"
                     "场景必须与人格身份一致（学生写在校场景，职场写工位场景），不要凭空制造重大事件，不要强行想用户。")
-            raw=fallback
-            if self.llm.task_available("scene_detail"):
-                raw=await self.llm.generate_json(prompt,"你是日常场景细化器，只返回JSON对象。",fallback,max_tokens=0,task_kind="scene_detail",request_type="scene_detail")
-            if not isinstance(raw,dict): raw=fallback
+            raw=await self._generate_with_retry(prompt,"你是日常场景细化器，只返回JSON对象。",fallback,
+                task_kind="scene_detail",request_type="scene_detail",
+                check=lambda item: isinstance(item,dict) and bool(str(item.get("scene") or "").strip()))
+            if not isinstance(raw,dict):
+                self.logger.warning("[MaiLife] 场景细化重试后仍不合格，使用兜底场景")
+                raw=fallback
             scene=str(raw.get("scene") or fallback["scene"])[:500]
             deltas=self._state_deltas(node)
             opportunities=[]

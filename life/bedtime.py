@@ -120,16 +120,18 @@ class BedtimeManager:
     async def _update_sleep_defer(self, now: datetime, runtime: dict[str, Any], phase: str) -> None:
         cfg = self.config.rest_gate
         defer = 0.0
-        # 只在休息期内、她还没睡着也没被叫醒时协商入睡点；睡眠期/宽限期内一律为 0，
+        # 只在她醒着也没被叫醒时协商入睡点；睡眠期/宽限期内一律为 0，
         # 防止被闸门拦下的消息（同样更新 last_user_message_at）把入睡点重新推开。
-        # 休息期的判定与下限随闸门生效方式：按日程=当前睡眠段；按设定时间=夜窗。
+        # v1.24.4 预武装修复：不再要求"已在夜窗内"（floor）——夜窗前也维护
+        # defer=最后一条消息+静默分钟，否则状态引擎在夜窗第一拍提前入睡，
+        # 相位进入睡眠后协商条件永假，睡前推迟彻底失效（线上竞态，实测复现）。
+        # 白天与夜窗前写入的 defer 无副作用：状态引擎与闸门都只对比 defer>now。
         if cfg.enabled and phase not in _SLEEP_PHASES and phase != "woken":
             floor = self._sleep_period_floor(now)
-            if floor:
-                users = await self.store.list_users()
-                # 麦麦是单一生命：任一用户还在聊，她就还没睡。
-                latest = max((float(user.get("last_user_message_at") or 0) for user in users), default=0.0)
-                defer = max(floor, latest + BEDTIME_SILENCE_MINUTES * 60)
+            users = await self.store.list_users()
+            # 麦麦是单一生命：任一用户还在聊，她就还没睡。
+            latest = max((float(user.get("last_user_message_at") or 0) for user in users), default=0.0)
+            defer = max(floor, latest + BEDTIME_SILENCE_MINUTES * 60)
         if float(runtime.get("sleep_defer_until", 0) or 0) != defer:
             runtime["sleep_defer_until"] = defer
             await self.store.save_sleep_runtime(runtime)

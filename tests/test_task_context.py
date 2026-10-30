@@ -9,7 +9,7 @@ import unittest
 from Mai_life.config import MaiLifeSettings,UserProfile
 from Mai_life.core.environment import EnvironmentService
 from Mai_life.core.storage import LifeStore
-from Mai_life.messaging.task_context import HOST_TASK_PREFIX,latest_plugin_task_marker
+from Mai_life.messaging.task_context import HOST_TASK_PREFIX, PLUGIN_ID, PluginTaskMarker, latest_plugin_task_marker
 from Mai_life.plugin import MaiLifePlugin
 from Mai_life.social.relay_service import RelayService
 
@@ -262,6 +262,34 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result),3); self.assertEqual(await self.store.list_important_dates("10001"),[])
         self.assertIn("私聊用户或私聊管理员",context.send.calls[0]["text"])
 
+
+    async def test_expired_pending_event_still_activates_for_late_send(self):
+        """v1.24.5 回归：过期但未结算的主动事件必须能激活归因，迟到放行通道才可用。
+
+        线上现场：清晨主动对话整轮耗时超过 pending 过期窗（默认 90s），
+        activate 此前只收未过期事件 → on_send_before 的 late_ok 永远拿不到
+        归因 → 回复被逐段 abort（96 条拦截，无平台 message ID）。
+        """
+        plugin, session, event_id, task_id = await self._private_task(41, "napcat")
+        # 事件过期 8 分钟、未结算（sent_at=0）
+        expired_at = time.time() - 480
+        with self.store._tx() as conn:
+            conn.execute(
+                "UPDATE proactive_events SET created_at=?, expires_at=? WHERE id=?",
+                (time.time() - 600, expired_at, event_id))
+        record = await self.store.proactive_event(event_id)
+        marker = PluginTaskMarker(plugin_id=PLUGIN_ID, task_id=task_id, metadata={})
+        active = await plugin._active_tasks.activate(session, marker, kind="proactive",
+                                                     record=record, now=time.time())
+        self.assertIsNotNone(active, "过期但未结算的事件应能激活归因")
+        message = {"session_id": session, "message_info": {"additional_config": {
+            "napcat_message_type": "private"}}, "raw_message": [{"type": "text", "data": "早安呀"}]}
+        result = await plugin.on_send_before(message=message, set_reply=True, reply_message_id=task_id)
+        self.assertEqual(result["action"], "continue", "迟到主动回复不应被逐段 abort")
+        # 已结算（expired 标记落库）后再发 → 防重复 abort
+        await self.store.set_proactive_event_status(event_id, "expired")
+        again = await plugin.on_send_before(message=dict(message), set_reply=True, reply_message_id=task_id)
+        self.assertEqual(again["action"], "abort")
 
     async def test_multi_segment_send_survives_after_first_success(self):
         """v1.24.2 回归：direct 首段成功发送后，同锚点后续分段必须继续放行。

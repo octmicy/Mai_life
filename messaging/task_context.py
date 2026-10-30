@@ -190,9 +190,13 @@ class ActiveTaskRegistry:
             if sent_at <= 0 or sent_at + self._retention_seconds <= now:
                 return None
             retain_until = sent_at + self._retention_seconds
-        elif status in {"pending", "sending"} and float(record.get("expires_at") or 0) > now:
+        elif status in {"pending", "sending"}:
             # 迟到 Replyer（事件已过期但尚未结算）仍需存活：保留窗取事件过期时刻与
             # now+max(保留窗, pending 过期窗)+120 的较大值，覆盖 130s 级迟到。
+            # v1.24.5 修复：过期但未结算（sent_at=0）的 pending 事件同样激活——
+            # 此前只收未过期事件，导致 on_send_before 的 late_ok"迟到放行"通道
+            # 永远拿不到归因（expire_pending 把它标 expired 后被 else 拒收），
+            # 清晨等长耗时轮次的主动回复会被逐段 abort（线上 96 条拦截）。
             retain_until = max(float(record.get("expires_at") or 0),
                                now + max(self._retention_seconds, self._pending_expire_seconds) + 120)
         else:

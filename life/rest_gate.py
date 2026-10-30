@@ -134,9 +134,10 @@ class RestGate:
             return True,"outside_group_window"
         defer_until=self._group_defer.get(group_id,0.0)
         last_seen=self._group_last_seen.get(group_id,0.0)
-        if now_ts<defer_until or (last_seen and 0<=now_ts-last_seen<BEDTIME_SILENCE_MINUTES*60):
+        # 静默期只协商一次：推迟 10 分钟后不再顺延，也不再刷新 _group_last_seen。
+        # 否则「最近 10 分钟内有消息」永远成立，午休/夜间静默被无限顺延而永不拦截。
+        if now_ts>=defer_until and last_seen and 0<=now_ts-last_seen<BEDTIME_SILENCE_MINUTES*60:
             self._group_defer[group_id]=now_ts+BEDTIME_SILENCE_MINUTES*60
-            self._group_last_seen[group_id]=now_ts
             return True,"群聊还在聊，静默推迟10分钟"
         compact=re.sub(r"\s+","",str(text or "").lower())
         for term in (getattr(cfg,"force_wake_terms",None) or []):

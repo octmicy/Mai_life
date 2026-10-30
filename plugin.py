@@ -1,4 +1,4 @@
-"""Mai_life v1.24.5 插件入口。"""
+"""Mai_life v1.24.6 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -986,7 +986,22 @@ class MaiLifePlugin(MaiBotPlugin):
                 except Exception as exc:self.ctx.logger.error(f"[MaiLife] 撤回通知处理失败: {exc}")
             return {"action":"abort"}
         if self._stopping or self._reloading or not self.config.plugin.enabled or not self._ready:return {"action":"continue"}
-        if message.get("is_notify"):return {"action":"continue"}
+        if message.get("is_notify"):
+            # v1.24.6（Issue #5）：群聊贴表情等通知此前直接放行，绕过群闸门——
+            # 深夜群里被贴表情也会吵醒麦麦。现在通知类消息同样接受群闸门判定：
+            # 静默期直接 abort（通知无对话价值），窗外放行。
+            if self._rest and self._ready and not self._stopping:
+                gid,_gname=group_identity(message)
+                if gid:
+                    segment=None
+                    if self._schedule:
+                        try:segment=(await self._schedule.context(self._env.now())).get("current")
+                        except Exception:segment=None
+                    allowed,reason=self._rest.decide_group("",self._env.now(),gid,segment)
+                    if not allowed:
+                        self.ctx.logger.info(f"[MaiLife] 群休息闸门阻断通知 group={gid} reason={reason}")
+                        return {"action":"abort"}
+            return {"action":"continue"}
         uid,session,mid,private=message_identity(message)
         if self._is_unmatched_mai_command(message):
             # 手滑命令不会被 Host 派发给本插件；直接显示菜单并 abort，避免落进 AI 闲聊。
@@ -1330,6 +1345,13 @@ class MaiLifePlugin(MaiBotPlugin):
         anchor=str(kwargs.get("reply_message_id") or "")
         group_turn=self._group_turn_for(session,anchor) if self.config.group.turn_enabled else {}
         active=None if group_turn else await self._active_tasks.current(session,time.time())
+        # v1.24.6：群静默协商期注入睡前收尾提示（bot 还在陪聊时提醒自然收尾）。
+        if group_turn and self._rest:
+            gid=str(group_turn.get("group_id") or "")
+            schedule_mode=str(getattr(self.config.group,"gate_mode","time_window") or "time_window")=="schedule"
+            if gid and self._rest.group_approaching(gid,time.time(),schedule_mode=schedule_mode):
+                suffix+="\n【睡前氛围】夜深了/到休息时间了，群里的话题差不多可以收尾了。"
+                "如果还要回复，简短自然带过并提到自己困了/要去休息，不要展开新话题；不要说是系统提示。\n"
         if self.config.context.enabled and not group_turn:
             payload=await self._prompt_payload(session,consume_backlog=True)
             if payload:
@@ -1593,6 +1615,11 @@ class MaiLifePlugin(MaiBotPlugin):
         # 即使发送期间刚好热禁用了社交模块，也必须收口已经进入 sending 的候选。
         if self._relay:await self._relay.confirm_after_send(message,sent)
         session=str(message.get("session_id") or ""); anchor=str(kwargs.get("reply_message_id") or "")
+        # v1.24.6：记录 bot 群发言时刻——群闸门的睡前协商以 bot 是否还在陪聊为基准。
+        if sent and self._rest and session in self._group_sessions:
+            from .messaging.adapter_compat import group_identity as _gid
+            gid,_gname=_gid(message)
+            if gid:self._rest.note_group_bot_send(gid,now_ts)
         info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
         additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}
         tagged_task_id=str(additional.get("mai_life_active_task_id") or "")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 # 用户明确勿扰时的阻断原因；插件据此跳过 backlog，避免次日主动提起用户的勿扰表达。
@@ -14,9 +15,30 @@ class RestGate:
     def __init__(self,store:Any,config:Any,llm:Any,state_engine:Any,logger:Any,bot_name:str="麦麦")->None:
         self.store=store; self.config=config; self.llm=llm; self.state_engine=state_engine; self.logger=logger
         self.bot_name=bot_name
-        # 群聊睡前协商（v1.24.5）：每群的静默推迟截止时刻与最近放行消息时刻（内存态，重载即清）。
+        # 群聊睡前协商（v1.24.5/v1.24.6）：每群的静默推迟截止时刻、bot 最近发言时刻（内存态，重载即清）。
         self._group_defer:dict[str,float]={}
         self._group_last_seen:dict[str,float]={}
+        self._group_bot_spoke:dict[str,float]={}
+
+    def note_group_bot_send(self,group_id:str,now:float)->None:
+        """记录 bot 在某群的一次成功发言（on_send_after 调用）；协商与顺延以它为基准。"""
+        target=str(group_id or "").strip()
+        if target:self._group_bot_spoke[target]=float(now)
+
+    def group_approaching(self,group_id:str,now:float,*,schedule_mode:bool=False)->bool:
+        """群静默协商期是否生效（Replyer 注入睡前收尾提示）。
+
+        defer 未到期即视为协商期；schedule 模式由调用方传当前段型判定
+        （time_window 模式内部自查时间窗）。
+        """
+        target=str(group_id or "").strip()
+        if not target:return False
+        if float(self._group_defer.get(target,0) or 0)<=float(now):return False
+        if schedule_mode:return True
+        now_dt=datetime.fromtimestamp(float(now),tz=timezone.utc).astimezone()
+        cfg=getattr(self.config,"group",None)
+        if cfg is None or not getattr(cfg,"gate_enabled",False):return False
+        return self.in_group_quiet_window(now_dt)
 
     def update_config(self,config:Any)->None:self.config=config
 
@@ -110,9 +132,10 @@ class RestGate:
         生效条件与私聊同构，共用「闸门生效方式」开关与 gate_segment_types 列表：
         按日程判断=日程段型命中列表即生效（任意时间）；按设定时间=群夜窗/群午休窗内
         生效，且窗口各自受列表约束（夜窗需列表含 sleep/rest，午休窗需含 nap）。
-        v1.24.5 群聊版睡前协商：静默期开始时群仍在聊天（最近 10 分钟内有放行消息），
-        静默推迟 10 分钟；期间每条消息继续顺延，静默满 10 分钟后正常拦截，
-        被拦消息不重开协商（与私聊 defer 一致）。
+        v1.24.5 群聊版睡前协商（v1.24.6 改按 bot 发言判定）：静默期开始时若 bot
+        最近 10 分钟内在该群发过言（还在陪聊），静默推迟 10 分钟；bot 每次发言
+        重新计时（defer 顺延），不发言则静默满 10 分钟后正常拦截；
+        被拦消息不重开协商。defer 期内调用方应注入睡前收尾提示词（group_approaching）。
         """
         cfg=getattr(self.config,"group",None)
         if cfg is None or not getattr(cfg,"gate_enabled",False):return True,"group_gate_disabled"
@@ -128,16 +151,24 @@ class RestGate:
             gate_active=self.in_group_quiet_window(now)
         now_ts=now.timestamp()
         if not gate_active:
-            # 窗外放行：记录群最近活动（静默期开始的协商判定用它），协商态随窗口结束清除。
+            # 窗外放行：清协商态（窗口结束=新一轮），bot 发言时间保留给下次窗口用。
             self._group_last_seen[group_id]=now_ts
             self._group_defer.pop(group_id,None)
             return True,"outside_group_window"
+        # v1.24.6：协商以 bot 发言为基准——bot 最近 10 分钟内在本群发过言才算"还在陪聊"。
+        # defer 每次放行都顺延（bot 持续发言=持续陪聊），bot 停止发言后静默满 10 分钟即拦。
+        bot_spoke_at=self._group_bot_spoke.get(group_id,0.0)
+        bot_recent=0<now_ts-bot_spoke_at<BEDTIME_SILENCE_MINUTES*60
         defer_until=self._group_defer.get(group_id,0.0)
-        last_seen=self._group_last_seen.get(group_id,0.0)
-        if now_ts<defer_until or (last_seen and 0<=now_ts-last_seen<BEDTIME_SILENCE_MINUTES*60):
-            self._group_defer[group_id]=now_ts+BEDTIME_SILENCE_MINUTES*60
-            self._group_last_seen[group_id]=now_ts
+        if bot_recent:
+            # defer 锚定在 bot 最后发言时刻 + 静默分钟：bot 持续发言自然顺延，
+            # 停止发言后恰好等满 10 分钟拦截（不随判定时刻无限后推）。
+            self._group_defer[group_id]=bot_spoke_at+BEDTIME_SILENCE_MINUTES*60
             return True,"群聊还在聊，静默推迟10分钟"
+        if now_ts<defer_until:
+            # bot 已停止发言但上一轮 defer 未到期：放行但不再顺延（收尾期）。
+            return True,"群聊收尾期，静默即将生效"
+        self._group_defer.pop(group_id,None)
         compact=re.sub(r"\s+","",str(text or "").lower())
         for term in (getattr(cfg,"force_wake_terms",None) or []):
             word=str(term or "").strip().lower()

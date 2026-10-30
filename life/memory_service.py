@@ -14,7 +14,13 @@ _BACKFILL_SCAN_DAYS=14
 _BACKFILL_MAX_DAYS=7
 
 
-_EXPLICIT_DATE_RE=re.compile(r"(?:(?P<year>20\d{2})\s*[年./-]\s*)?(?P<month>1[0-2]|0?[1-9])\s*[月./-]\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*日?")
+# v1.24.6（Issue #6）收紧：旧正则把「2.2s」「1.5倍」「3/4」等时长/倍率/比例全判成月日。
+# 现只接受两种形态：①「X年X月X日」全写（点/斜杠/连字符分隔需年份锚定）；
+# ②「X月X日（号）」中文式（无年份时仍做可验证的年度推算）。且前后不紧跟数字/字母/单位。
+_EXPLICIT_DATE_RE=re.compile(
+    r"(?<![\dA-Za-z.%/])"
+    r"(?:(?P<year>20\d{2})\s*[年./-]\s*(?P<month2>1[0-2]|0?[1-9])\s*[./-]\s*(?P<day2>3[01]|[12]\d|0?[1-9])"
+    r"|(?P<month>1[0-2]|0?[1-9])\s*月\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*[日号]?)")
 _FUZZY_DATE_RE=re.compile(r"(今天|明天|后天|下周[一二三四五六日天]?|下个月|月底|月末|过几天|最近几天)")
 _EVENT_WORDS=("生日","纪念日","考试","面试","约定","见面","截止","开学","毕业","比赛","复诊","旅行","婚礼","提醒")
 class MemoryService:
@@ -68,7 +74,11 @@ class MemoryService:
         # 明确年月日由本地规则直接落库；缺少年份时只做可验证的年度推算。
         explicit=False
         for match in _EXPLICIT_DATE_RE.finditer(clean):
-            explicit=True; year_text=match.group("year"); month=int(match.group("month")); day=int(match.group("day"))
+            explicit=True
+            if match.group("year") is not None:
+                year_text,month,day=match.group("year"),int(match.group("month2")),int(match.group("day2"))
+            else:
+                year_text,month,day="",int(match.group("month")),int(match.group("day"))
             name=self._event_name(clean,match.group(0)); annual=any(word in name for word in ("生日","纪念日"))
             try:
                 year=int(year_text) if year_text else now.year
@@ -83,6 +93,16 @@ class MemoryService:
                 for year in range(max(now.year,parsed.year+1),max(now.year,parsed.year+1)+9):
                     try:parsed=parsed.replace(year=year); break
                     except ValueError:continue
+            if name==self._event_name(clean,match.group(0)) and not any(
+                    word in name for word in _EVENT_WORDS):
+                # 事件名回落到整段文本 = 没有任何事件语义（Issue #6）：
+                # 日期极可能来自误匹配或无关数字，降级为候选等待用户确认，不进正式表。
+                await self.store.add_date_candidate(
+                    user_id,name,parsed.isoformat(),"",0.5,
+                    f"提到日期{parsed.isoformat()}，但未识别出事件描述，请确认是否为重要日期",
+                    now.timestamp(),source_message_id,
+                )
+                continue
             await self.store.add_important_date(
                 user_id,name,parsed.isoformat(),"annual" if annual else "none","local_rule",now.timestamp(),
                 source_message_id,

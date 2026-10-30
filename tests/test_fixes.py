@@ -2174,6 +2174,40 @@ async def asyncio_sleep_zero() -> None:
     await asyncio.sleep(0)
 
 
+class V1246GroupNoticeGateTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.6（Issue #5）：群聊贴表情等通知在静默期同样被群闸门阻断。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = make_group_config(group_gate=True)
+        self.config.group.gate_segment_types = ["sleep", "nap"]
+        self.config.rest_gate.gate_mode = "time_window"
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    @staticmethod
+    def _notice(group_id="100"):
+        return {"message_id": "n1", "session_id": f"group-stream-{group_id}", "platform": "qq",
+                "processed_plain_text": "", "is_notify": True, "is_command": False,
+                "message_info": {"user_info": {"user_id": "30001"},
+                                 "group_info": {"group_id": group_id, "group_name": "测试群"},
+                                 "additional_config": {"napcat_notice_type": "group_msg_emoji_like"}},
+                "raw_message": []}
+
+    async def test_notice_is_aborted_during_group_quiet_window(self):
+        plugin = await build_plugin(self.store, self.config, llm=DummyLLM(), now=NIGHT)
+        result = await plugin.on_receive(message=self._notice())
+        self.assertEqual(result.get("action"), "abort", "静默期贴表情通知应被闸门阻断")
+
+    async def test_notice_passes_outside_quiet_window(self):
+        daytime = NIGHT.replace(hour=15, minute=0)
+        plugin = await build_plugin(self.store, self.config, llm=DummyLLM(), now=daytime)
+        result = await plugin.on_receive(message=self._notice())
+        self.assertEqual(result.get("action"), "continue", "非静默期通知应放行")
+
+
 class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
     """群观察在群静音窗内跳过（不调 group_judgment/relay_summary）。"""
 
@@ -2217,30 +2251,39 @@ class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await observer._group_quiet_now(late))
 
     async def test_group_gate_defers_silence_while_group_still_chatting(self):
-        """v1.24.5 回归：群聊版睡前协商——静默期开始时群仍在聊天则推迟 10 分钟。
+        """v1.24.6 回归：群聊睡前协商以 bot 发言为基准。
 
-        时序：22:29 窗外最后发言（放行并记录活动）→ 22:31 静默期开始 2 分钟内
-        消息协商放行 → 协商期内顺延 → 静默满 10 分钟后拦截 → 被拦消息不重开协商。
-        无近期活动的群不受协商影响（首条直接拦）。
+        bot 最近 10 分钟在本群发过言 → 静默期消息协商放行并顺延；
+        bot 停止发言满 10 分钟 → 正常拦截，被拦消息不重开协商；
+        bot 无发言记录的群首条直接拦。
         """
         from Mai_life.life.rest_gate import RestGate
         config = make_group_config(group_gate=True)
         config.group.gate_segment_types = ["sleep", "nap"]
         config.rest_gate.gate_mode = "time_window"
         gate = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
-        pre = NIGHT.replace(hour=22, minute=29)
-        self.assertTrue(gate.decide_group("还没散场呢", pre, "100", {"kind": "leisure"})[0])
+        gate.note_group_bot_send("100", NIGHT.replace(hour=22, minute=29).timestamp())
         allowed, reason = gate.decide_group("最后聊几句", NIGHT.replace(hour=22, minute=31), "100", {"kind": "sleep"})
         self.assertTrue(allowed)
         self.assertIn("静默推迟", reason)
-        self.assertTrue(gate.decide_group("再聊会儿", NIGHT.replace(hour=22, minute=35), "100", {"kind": "sleep"})[0])
-        blocked, _ = gate.decide_group("深夜发言", NIGHT.replace(hour=22, minute=52), "100", {"kind": "sleep"})
-        self.assertFalse(blocked, "静默满 10 分钟后应正常拦截")
-        blocked2, _ = gate.decide_group("又一条", NIGHT.replace(hour=22, minute=53), "100", {"kind": "sleep"})
+        gate.note_group_bot_send("100", NIGHT.replace(hour=22, minute=33).timestamp())
+        self.assertTrue(gate.decide_group("再聊会儿", NIGHT.replace(hour=22, minute=35), "100", {"kind": "sleep"})[0],
+                        "bot 持续发言应持续放行")
+        blocked, _ = gate.decide_group("深夜发言", NIGHT.replace(hour=22, minute=44, second=10), "100", {"kind": "sleep"})
+        self.assertFalse(blocked, "bot 停止发言满 10 分钟后应正常拦截")
+        blocked2, _ = gate.decide_group("又一条", NIGHT.replace(hour=22, minute=45), "100", {"kind": "sleep"})
         self.assertFalse(blocked2, "被拦消息不重开协商")
         gate2 = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
         blocked3, _ = gate2.decide_group("深夜冒泡", NIGHT.replace(hour=22, minute=31), "100", {"kind": "sleep"})
-        self.assertFalse(blocked3, "无近期活动的群首条直接拦")
+        self.assertFalse(blocked3, "bot 无近期发言的群首条直接拦")
+        gate3 = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), DummyLogger())
+        gate3.note_group_bot_send("100", NIGHT.replace(hour=22, minute=29).timestamp())
+        gate3.decide_group("聊", NIGHT.replace(hour=22, minute=31), "100", {"kind": "sleep"})
+        self.assertTrue(gate3.group_approaching("100", NIGHT.replace(hour=22, minute=33).timestamp()),
+                        "协商期内应注入睡前提示")
+        self.assertFalse(gate3.group_approaching("100", NIGHT.replace(hour=23, minute=10).timestamp()),
+                         "defer 过期后不再注入")
+
 
     async def test_time_windows_are_gated_by_segment_type_list(self):
         """v1.24.3 回归：时间窗模式下列表去掉 nap，午休窗即失效（用户报告的场景）。"""
@@ -5655,6 +5698,55 @@ class ScheduleRetryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(llm.calls, 3, "质量不合格应重试至上限")
             self.assertGreaterEqual(sum(node["kind"] == "meal" for node in nodes), 2,
                                     "重试耗尽后回退到含三餐的兜底模板")
+        finally:
+            await store.close(); tmp.cleanup()
+
+
+class V1246DateRegexTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.6（Issue #6）：日期正则收紧——时长/倍率/比例不再误判为月日。"""
+
+    def test_duration_and_ratio_forms_are_not_dates(self):
+        from Mai_life.life.memory_service import _EXPLICIT_DATE_RE
+        for probe in ("2.2s", "1.5倍", "3/4", "每3.5天", "GIF 440x422 · 32帧 · 2.2s · 约15fps",
+                      "版本1.2发布", "10/29", "16:9"):
+            self.assertIsNone(_EXPLICIT_DATE_RE.search(probe), f"{probe!r} 不应判为日期")
+
+    def test_real_date_forms_still_match(self):
+        from Mai_life.life.memory_service import _EXPLICIT_DATE_RE
+        for probe in ("10月29日", "10月29号", "2月2日", "2026.10.29", "2026-10-29", "2026年10月29日"):
+            self.assertIsNotNone(_EXPLICIT_DATE_RE.search(probe), f"{probe!r} 应判为日期")
+
+    async def test_gif_caption_creates_no_important_date(self):
+        """GIF 解析文案不再落库里出现假日期。"""
+        tmp = tempfile.TemporaryDirectory()
+        store = LifeStore(tmp.name); await store.initialize()
+        try:
+            config = MaiLifeSettings()
+            config.memory.enabled = True
+            config.memory.important_dates_enabled = True
+            service = MemoryService(store, config, DummyLLM(), DummyLogger())
+            now = datetime(2026, 11, 1, 12, 0, tzinfo=TZ)
+            await service.observe_message("1", "[动图] GIF 440x422 · 32帧 · 2.2s · 约15fps", now,
+                                          source_message_id="m1")
+            self.assertEqual(await store.list_important_dates("1"), [])
+        finally:
+            await store.close(); tmp.cleanup()
+
+    async def test_explicit_date_without_event_semantics_goes_to_candidates(self):
+        """Issue #6：事件名回落到整段文本（无事件语义）时降级为候选，不直接落正式表。"""
+        tmp = tempfile.TemporaryDirectory()
+        store = LifeStore(tmp.name); await store.initialize()
+        try:
+            config = MaiLifeSettings()
+            config.memory.enabled = True
+            config.memory.important_dates_enabled = True
+            service = MemoryService(store, config, DummyLLM(), DummyLogger())
+            now = datetime(2026, 11, 1, 12, 0, tzinfo=TZ)
+            await service.observe_message("1", "哦对了 11月20日", now, source_message_id="m2")
+            self.assertEqual(await store.list_important_dates("1"), [],
+                             "无事件语义的日期不应直接落正式表")
+            candidates = await store.list_date_candidates("1")
+            self.assertTrue(candidates, "应改为待确认候选")
         finally:
             await store.close(); tmp.cleanup()
 

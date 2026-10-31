@@ -1327,8 +1327,8 @@ class MaiLifePlugin(MaiBotPlugin):
         if not suffix:return {"action":"continue"}
         return self._inject_planner_context(kwargs,suffix)
 
-    @HookHandler("maisaka.planner.after_response",mode=HookMode.OBSERVE)
-    async def on_planner_after(self,**kwargs:Any)->None:
+    @HookHandler("maisaka.planner.after_response",mode=HookMode.BLOCKING)
+    async def on_planner_after(self,**kwargs:Any)->dict[str,Any]:
         session=str(kwargs.get("session_id") or "")
         active=await self._active_tasks.current(session,time.time())
         scoped=bool(await self._user_by_session(session) or active or await self._relay_for_session(session))
@@ -1336,6 +1336,39 @@ class MaiLifePlugin(MaiBotPlugin):
             await self._llm.record_observed(source="host_planner",task_name="planner",request_type="planner",
                 model_name="",prompt_tokens=int(kwargs.get("prompt_tokens") or 0),completion_tokens=int(kwargs.get("completion_tokens") or 0),
                 total_tokens=int(kwargs.get("total_tokens") or 0))
+        return self._redirect_stale_group_calls(session,kwargs)
+
+    def _redirect_stale_group_calls(self,session:str,kwargs:dict[str,Any])->dict[str,Any]:
+        """轮次已过期时把 reply 调用就地改写成 stop，让本轮以“不发言”干净收尾。
+
+        群聊被动轮的回复目标被新消息顶掉后，Replyer 输出会被抑制为空；Host 把空输出当成
+        Reply 工具失败，Planner 每轮重看历史再调一次 reply，形成“思考-失败-再思考”的循环。
+        这里在 Planner 结果落到执行之前，把注定被抑制的 reply 换成 stop——stop 是“本轮不
+        发言”的正规出口（pause_execution），不是失败，因此不会触发任何重试。
+
+        判定键用调用自带的 msg_id：只拦真正会被抑制的那一次，Planner 换到更新的消息后
+        发得出去的情况保持原样。
+        """
+        if self._stopping or self._reloading or not self.config.plugin.enabled:return {"action":"continue"}
+        if not self.config.group.turn_enabled:return {"action":"continue"}
+        items=kwargs.get("output_items")
+        if not isinstance(items,list):return {"action":"continue"}
+        changed=False
+        for item in items:
+            if not isinstance(item,dict) or item.get("item_type")!="FunctionCallItem":continue
+            call=item.get("tool_call")
+            if not isinstance(call,dict) or str(call.get("func_name") or "")!="reply":continue
+            args=call.get("args")
+            anchor=str((args.get("msg_id") if isinstance(args,dict) else "") or "")
+            if not anchor:continue
+            turn=self._group_turn_for(session,anchor)
+            if not turn or self._is_latest_group_turn(turn):continue
+            call["func_name"]="stop"
+            call["args"]={}
+            changed=True
+            self._get_logger().info(f"[MaiLife] 轮次已过期，reply 调用改写为 stop session={session} anchor={anchor}")
+        if not changed:return {"action":"continue"}
+        return {"action":"continue","modified_kwargs":{"output_items":items}}
 
     @HookHandler("maisaka.replyer.before_request",mode=HookMode.BLOCKING)
     async def on_replyer(self,**kwargs:Any)->dict[str,Any]:

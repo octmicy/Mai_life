@@ -1368,7 +1368,11 @@ class MaiLifePlugin(MaiBotPlugin):
             changed=True
             self._get_logger().info(f"[MaiLife] 轮次已过期，reply 调用改写为 stop session={session} anchor={anchor}")
         if not changed:return {"action":"continue"}
-        return {"action":"continue","modified_kwargs":{"output_items":items}}
+        if changed:
+            # 必须回传完整 kwargs：宿主靠 item_schema_version 反序列化，只回 output_items 会被整体忽略
+            kwargs["output_items"]=items
+            return {"action":"continue","modified_kwargs":kwargs}
+        return {"action":"continue"}
 
     @HookHandler("maisaka.replyer.before_request",mode=HookMode.BLOCKING)
     async def on_replyer(self,**kwargs:Any)->dict[str,Any]:

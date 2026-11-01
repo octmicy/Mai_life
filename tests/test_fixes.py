@@ -1552,6 +1552,16 @@ class ForceWakeGateTests(unittest.IsolatedAsyncioTestCase):
             "1", "快起床", self.night, {"kind": "sleep"}, session_id="s2", message_id="m2")
         self.assertTrue(allowed); self.assertEqual(reason, "明确叫醒、紧急或安全需要")
 
+    async def test_allow_wake_false_keeps_word_from_bypassing(self):
+        # v1.24.8 陌生人无唤醒权：allow_wake=False 时唤醒词命中不再直接建立候选，
+        # 照常进入概率/LLM 判定（本类 wake_probability=0 → 必拦）。
+        allowed, reason = await self.gate.decide(
+            "1", "安心睡吧，救命", self.night, {"kind": "sleep"}, session_id="s8", message_id="m8",
+            allow_wake=False)
+        self.assertFalse(allowed); self.assertEqual(reason, "probability:0.00")
+        self.assertIsNone(self.store.conn.execute(
+            "SELECT reason FROM wake_candidates WHERE session_id='s8'").fetchone())
+
 
 class GroupPrivateSwitchTests(unittest.IsolatedAsyncioTestCase):
     """P2-5：群转私对主人是全局开关 AND 档案开关；朋友只看档案开关。"""
@@ -2131,6 +2141,70 @@ class V1246GroupNoticeGateTests(unittest.IsolatedAsyncioTestCase):
         plugin = await build_plugin(self.store, self.config, llm=DummyLLM(), now=daytime)
         result = await plugin.on_receive(message=self._notice())
         self.assertEqual(result.get("action"), "continue", "非静默期通知应放行")
+
+
+class V1248StrangerGateTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.8：私聊休息闸门覆盖未配置用户（陌生人无唤醒权）；关系温度 friend 封顶 80。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.rest_gate.enabled = True
+        self.config.rest_gate.wake_probability = 0.0
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self, now=None):
+        return await build_plugin(self.store, self.config, llm=DummyLLM(), now=now or NIGHT)
+
+    @staticmethod
+    def _private_message(mid="p1", text="你好呀", user_id="99999"):
+        return {"message_id": mid, "session_id": f"private-stream-{user_id}", "platform": "qq",
+                "processed_plain_text": text,
+                "message_info": {"user_info": {"user_id": user_id, "user_nickname": "路人"},
+                                 "additional_config": {"napcat_message_type": "private"}},
+                "raw_message": [{"type": "text", "data": text}],
+                "is_command": False, "is_notify": False}
+
+    async def test_unconfigured_user_blocked_in_night_window_without_side_effects(self):
+        plugin = await self._plugin()
+        message = self._private_message()
+        result = await plugin._process_private_message(
+            {"message": message}, message, "99999", "private-stream-99999", "p1")
+        self.assertEqual(result.get("action"), "abort")
+        # 不写互动、不建积压、不建待醒候选、不写运行态、不留用户行。
+        self.assertEqual(self.store.conn.execute(
+            "SELECT COUNT(*) FROM interaction_events WHERE user_id='99999'").fetchone()[0], 0)
+        self.assertEqual(await self.store.peek_rest_backlogs("99999"), [])
+        self.assertEqual(self.store.conn.execute(
+            "SELECT COUNT(*) FROM wake_candidates").fetchone()[0], 0)
+        self.assertEqual(plugin._session_runtime, {})
+        self.assertEqual(await self.store.get_user("99999"), {})
+
+    async def test_unconfigured_user_wake_word_does_not_bypass_judgment(self):
+        plugin = await self._plugin()
+        message = self._private_message(text="救命啊出事了")
+        result = await plugin._process_private_message(
+            {"message": message}, message, "99999", "private-stream-99999", "p1")
+        # 陌生人无唤醒权：唤醒词不再直接放行，落到概率判定（probability=0）被拦且不留候选。
+        self.assertEqual(result.get("action"), "abort")
+        self.assertEqual(self.store.conn.execute(
+            "SELECT COUNT(*) FROM wake_candidates").fetchone()[0], 0)
+
+    async def test_unconfigured_user_passes_outside_window(self):
+        plugin = await self._plugin(now=NIGHT.replace(hour=15, minute=0))
+        message = self._private_message()
+        result = await plugin._process_private_message(
+            {"message": message}, message, "99999", "private-stream-99999", "p1")
+        self.assertEqual(result.get("action"), "continue")
+
+    async def test_relationship_stage_boundary_moves_above_80(self):
+        from Mai_life.messaging.prompt_builder import relationship_stage
+        self.assertEqual(relationship_stage(79.9), "亲近")
+        self.assertEqual(relationship_stage(80.0), "亲近")
+        self.assertEqual(relationship_stage(80.5), "知己")
 
 
 class GroupObserverSleepTests(unittest.IsolatedAsyncioTestCase):

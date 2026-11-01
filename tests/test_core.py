@@ -141,6 +141,21 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual((await self.store.get_user("1"))["temperature"],28.8)
         self.assertEqual((await self.store.get_user("2"))["temperature"],10.0)
 
+    async def test_friend_temperature_caps_at_80(self):
+        # v1.24.8：friend 增益到 80 封顶（79+1.0 触顶）；存量超 80 的 friend 由下一次结算自动钳回。
+        await self.store.sync_users([UserProfile(user_id="1",initial_temperature=79),
+                                     UserProfile(user_id="2",initial_temperature=92)])
+        start=time.time()-86400; end=start+86400
+        for index in range(6):await self.store.record_interaction("1",f"msg-{index}",start+index+10,12)
+        await self.store.update_relationships("2026-07-10",start,end,time.time())
+        self.assertAlmostEqual((await self.store.get_user("1"))["temperature"],80.0)
+        self.assertAlmostEqual((await self.store.get_user("2"))["temperature"],80.0)
+
+    async def test_owner_temperature_ignores_friend_cap(self):
+        await self.store.sync_users([UserProfile(user_id="1",role="owner",initial_temperature=95)])
+        await self.store.update_relationships("2026-07-10",time.time()-86400,time.time(),time.time())
+        self.assertAlmostEqual((await self.store.get_user("1"))["temperature"],95.0)
+
     async def test_passive_reply_confirmation_does_not_open_write_transaction(self):
         journal=self.store.path.with_name(self.store.path.name+"-journal")
         self.assertFalse(await self.store.mark_pending_sent("no-pending-stream",time.time()))

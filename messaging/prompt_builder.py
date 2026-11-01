@@ -9,7 +9,9 @@ def relationship_stage(value:float)->str:
     if value<20:return "陌生"
     if value<40:return "认识"
     if value<60:return "熟悉"
-    if value<80:return "亲近"
+    # ≤80 都是"亲近"：friend 温度封顶 80（storage.update_relationships），
+    # 恰好 80.0 的 friend 不能显示成"知己"；owner 需 >80 才进入知己段位。
+    if value<=80:return "亲近"
     return "知己"
 
 

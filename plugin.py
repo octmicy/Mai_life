@@ -1,4 +1,4 @@
-"""Mai_life v1.24.7 插件入口。"""
+"""Mai_life v1.24.8 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -942,7 +942,20 @@ class MaiLifePlugin(MaiBotPlugin):
             initial_text=direct_text(message); initial_media=media_types(message); media_hint=initial_media
         if not uid or is_command(message):return {"action":"continue"}
         user=await self._store.get_user(uid)
-        if not user or not user.get("enabled"):return {"action":"continue"}
+        if not user or not user.get("enabled"):
+            # v1.24.8：未配置用户同样接受私聊休息闸门，但不写互动/积压/运行态；
+            # 陌生人无唤醒权——唤醒词命中不再直接叫醒，照常走概率/LLM 判定。
+            if self._rest and session:
+                segment=None
+                if self._schedule:
+                    segment=(await self._schedule.context(self._env.now())).get("current")
+                allowed,reason=await self._rest.decide(
+                    uid,initial_text,self._env.now(),segment,
+                    session_id=session,message_id=mid,media=initial_media,allow_wake=False)
+                if not allowed:
+                    self.ctx.logger.info(f"[MaiLife] 休息闸门阻断未配置用户 user={uid} reason={reason}")
+                    return {"action":"abort"}
+            return {"action":"continue"}
         if session and session!=user.get("stream_id"):await self._store.set_user_stream(uid,session)
         _sender_id,sender_name=sender_identity(message)
         if sender_name and sender_name!=str(user.get("display_name") or ""):

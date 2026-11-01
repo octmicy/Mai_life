@@ -2376,8 +2376,10 @@ class LifeStore:
                     if msg_count==0 and latest_before and day_end-float(latest_before)>7*86400:
                         delta=-0.4
                     current_temperature=float(user["temperature"])
+                    # v1.24.8：friend 温度封顶 80——"知己"段位是 owner 专属；存量超限由每日结算自动钳回。
+                    cap=100.0 if str(user["role"] or "friend")=="owner" else 80.0
                     floor=min(10.0,current_temperature) if delta<0 else 0.0
-                    temperature=max(floor,min(100.0,current_temperature+delta))
+                    temperature=max(floor,min(cap,current_temperature+delta))
                     conn.execute("UPDATE users SET temperature=?,last_relation_day=? WHERE user_id=?",(temperature,day,user["user_id"]))
 
     async def first_interaction_day(self, user_id: str) -> str:

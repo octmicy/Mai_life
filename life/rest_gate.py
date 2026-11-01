@@ -188,10 +188,15 @@ class RestGate:
             )
 
     async def decide(self,user_id:str,text:str,now:Any,segment:dict[str,Any]|None,
-                     *,session_id:str="",message_id:str="",media:list[str]|None=None)->tuple[bool,str]:
-        """按总开关、时间窗、规则边界及选定模式建立"待醒"候选，不直接提交醒来。"""
+                     *,session_id:str="",message_id:str="",media:list[str]|None=None,
+                     allow_wake:bool=True)->tuple[bool,str]:
+        """按总开关、时间窗、规则边界及选定模式建立"待醒"候选，不直接提交醒来。
+
+        allow_wake=False（未配置用户）：唤醒词命中不再直接叫醒，只保留勿扰拦截，
+        消息照常进入概率/LLM 判定——陌生人不能凭词表绕过判醒。
+        """
         allowed,reason=await self._decide(user_id,text,now,segment,session_id=session_id,
-                                          message_id=message_id,media=media)
+                                          message_id=message_id,media=media,allow_wake=allow_wake)
         # 闸门生效却放行时必须留痕：否则"夜里还在回消息"无法判断是 defer/宽限/
         # 唤醒词还是概率放行，只能看到机器人回话而没有任何线索。
         if allowed and reason not in {"disabled","command","outside_gate_window"}:
@@ -201,7 +206,8 @@ class RestGate:
         return allowed,reason
 
     async def _decide(self,user_id:str,text:str,now:Any,segment:dict[str,Any]|None,
-                      *,session_id:str="",message_id:str="",media:list[str]|None=None)->tuple[bool,str]:
+                      *,session_id:str="",message_id:str="",media:list[str]|None=None,
+                      allow_wake:bool=True)->tuple[bool,str]:
         cfg=self.config.rest_gate
         self._warn_degenerate_window(now.timestamp())
         if not cfg.enabled:return True,"disabled"
@@ -237,7 +243,7 @@ class RestGate:
         # 夜间纯图片/表情（无文字）直接阻断，不走概率与模型。
         if not str(text or "").strip() and media and any(item in {"image","emoji","gif"} for item in media):
             return False,"夜间媒体消息，不叫醒"
-        if action=="wake":
+        if action=="wake" and allow_wake:
             await self._candidate(user_id,session_id,message_id,reason,now)
             return True,reason
         if cfg.mode=="llm" and not self.llm.task_available("rest_wakeup"):

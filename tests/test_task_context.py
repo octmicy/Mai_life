@@ -312,7 +312,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ItemFirstContractTests(unittest.TestCase):
-    """MaiBot 1.2.0+ Item-first 契约：标记解析、items 注入与撤回改写的双兼容行为。"""
+    """MaiBot 1.2.0+ Item-first 契约：标记解析与 items 注入的双兼容行为。"""
 
     @staticmethod
     def _planner_items(task_id:str,metadata:dict[str,str])->list[dict[str,object]]:
@@ -369,16 +369,6 @@ class ItemFirstContractTests(unittest.TestCase):
         self.assertEqual(res["modified_kwargs"]["messages"][0]["role"],"system")
         self.assertEqual(MaiLifePlugin._inject_planner_context({"session_id":"s"},"note"),
                          {"action":"continue"})
-
-    def test_neutralize_recalled_latest_payload_supports_both_contracts(self):
-        kw={"items":self._planner_items(f"{HOST_TASK_PREFIX}1",{})}
-        MaiLifePlugin._neutralize_recalled_latest_payload(kw)
-        user_items=[item for item in kw["items"] if item.get("item_type")=="UserMessageItem"]
-        self.assertIn("已被用户撤回",user_items[-1]["parts"][0]["text"])
-        self.assertEqual(user_items[0]["parts"][0]["text"],"在吗")
-        kw={"messages":[{"role":"user","content":"hi"}]}
-        MaiLifePlugin._neutralize_recalled_latest_payload(kw)
-        self.assertIn("已被用户撤回",kw["messages"][0]["content"])
 
     def test_resolve_data_dir_prefers_ctx_paths_and_migrates_legacy(self):
         tmp=tempfile.TemporaryDirectory()

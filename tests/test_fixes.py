@@ -39,9 +39,7 @@ from Mai_life.life.memory_service import MemoryService
 from Mai_life.life.rest_gate import BLOCK_REASON, RestGate
 from Mai_life.life.schedule_service import ScheduleService
 from Mai_life.management.admin_service import AdminService
-from Mai_life.messaging.adapter_compat import recall_notice
 from Mai_life.messaging.prompt_builder import PromptBuilder
-from Mai_life.messaging.recall_service import RecallService
 from Mai_life.messaging.task_context import (
     ActivePluginTask,
     ActiveTaskRegistry,
@@ -309,19 +307,6 @@ class PluginFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("mai_life_browse_web",scopes)  # v1.24.0 网页截图工具随 Playwright 链删除
         # 日程工具仅群聊：群轮次不注入私聊背景，日程靠工具补齐；私聊本就有日程注入。
         self.assertEqual(scopes.get("mai_life_get_schedule"), "group")
-
-    async def test_group_recall_context_hides_message_ids(self):
-        recall = RecallService(DummyCtx(), self.store, self.config, DummyLogger())
-        now = time.time()
-        await recall.record_notice("group-session", {
-            "recalled_message_id": "secret-msg-1", "user_id": "1",
-            "group_id": "100", "notice_type": "group_recall", "adapter": "napcat",
-        }, now)
-        private_text = await recall.planner_context("group-session")
-        group_text = await recall.planner_context("group-session", include_ids=False)
-        self.assertIn("secret-msg-1", private_text)
-        self.assertNotIn("secret-msg-1", group_text)
-        self.assertIn("有消息被撤回", group_text)
 
     async def test_settle_relationships_looks_back_to_first_interaction(self):
         tz = timezone(timedelta(hours=8))
@@ -1618,36 +1603,6 @@ class GroupPrivateSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["target_user_id"] for item in targets], ["10002"])
 
 
-class GroupMergedSourceTests(unittest.IsolatedAsyncioTestCase):
-    """P2-10：合并轮全部来源 ID 进入观察摘要，较早分段撤回后摘要被删。"""
-
-    async def asyncSetUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.store = LifeStore(self.tmp.name); await self.store.initialize()
-        self.config = MaiLifeSettings()
-        self.config.group.relay_enabled = True
-        object.__setattr__(self.config.group, "observation_wait_seconds", 0.02)
-        self.config.group.profiles = [SocialGroupProfile(group_id="100", observe_enabled=True)]
-        self.now = datetime(2026, 9, 21, 18, 0, tzinfo=TZ)
-
-    async def asyncTearDown(self):
-        await self.store.close(); self.tmp.cleanup()
-
-    async def test_recall_of_merged_segment_deletes_observation(self):
-        observer = GroupObserver(self.store, self.config, DummyLLM(), DummyLogger())
-        merged = group_message("m3", "游戏有新的大型更新")
-        merged["message_info"]["additional_config"]["mai_life_merged_message_ids"] = ["m1", "m2", "m3"]
-        result = await observer.observe(merged, self.now)
-        self.assertEqual(result["status"], "saved")
-        rows = await self.store.recent_group_observations(self.now.timestamp(), 5)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(sorted(json.loads(rows[0]["source_message_ids"])), ["m1", "m2", "m3"])
-        # 撤回合并轮中最早的一条 → 观察摘要被删。
-        removed = await observer.recall("100", "m1", self.now)
-        self.assertGreaterEqual(removed["saved"], 1)
-        self.assertEqual(await self.store.recent_group_observations(self.now.timestamp(), 5), [])
-
-
 class LatestDreamOrderTests(unittest.IsolatedAsyncioTestCase):
     """P3-5：同秒梦境按 id 决胜，latest_dream 稳定返回最新一条。"""
 
@@ -1904,35 +1859,6 @@ class AdminTextFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂无搜索历史。",search_text)
         self.assertNotIn("最近本地搜索历史",search_text)
 
-class RecallNoticeFixTests(unittest.TestCase):
-    """P3-13：payload 为 JSON 字符串的撤回通知不再被静默忽略。"""
-
-    def test_json_string_payload_parsing(self):
-        """有效 JSON 字符串正常解析出撤回通知；非法 JSON 字符串静默返回空。"""
-        payload=json.dumps({"message_id":"m-json","user_id":"1","operator_id":"1"})
-        message={
-            "message_id":"notice-json","session_id":"private-1","platform":"qq","is_notify":True,
-            "message_info":{"user_info":{"user_id":"1"},
-                            "additional_config":{"napcat_notice_type":"friend_recall",
-                                                 "napcat_notice_payload":payload}},
-            "raw_message":[],
-        }
-        notice=recall_notice(message)
-        self.assertEqual(notice["notice_type"],"friend_recall")
-        self.assertEqual(notice["recalled_message_id"],"m-json")
-        self.assertEqual(notice["adapter"],"napcat")
-        message={
-            "message_id":"notice-bad","session_id":"private-1","platform":"qq","is_notify":True,
-            "message_info":{"user_info":{"user_id":"1"},
-                            "additional_config":{"napcat_notice_type":"friend_recall",
-                                                 "napcat_notice_payload":"not-a-json"}},
-            "raw_message":[],
-        }
-        self.assertEqual(recall_notice(message),{})
-
-
-# ==========v1.14.5 gate==========
-
 NIGHT = datetime(2026, 9, 22, 23, 0, tzinfo=TZ)
 NOON = datetime(2026, 9, 22, 12, 30, tzinfo=TZ)
 DAYTIME = datetime(2026, 9, 22, 15, 0, tzinfo=TZ)
@@ -2088,7 +2014,6 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin._rest = RestGate(self.store, config, DummyLLM(), DummyStateEngine(), logger)
         plugin._group_observer = GroupObserver(self.store, config, DummyLLM(), logger)
         plugin._relay = RelayService(DummyCtx(logger), self.store, config, logger)
-        plugin._recall = RecallService(DummyCtx(logger), self.store, config, logger)
         # 冻结假时钟：闸门按群夜窗判定（否则用真实时间会落在窗外而放行）。
         plugin._env.now = lambda: NIGHT
         return plugin, logger
@@ -2097,7 +2022,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin, logger = await self._plugin(self.config)
         result = await plugin._process_group_message(
             {"message": group_message("g1", "深夜水群")}, group_message("g1", "深夜水群"),
-            "30001", "group-stream-100", "g1", ["g1"])
+            "30001", "group-stream-100", "g1")
         self.assertEqual(result.get("action"), "abort")
         # 不写积压、不建待醒候选、不登记群轮次。
         self.assertEqual(await self.store.peek_rest_backlogs("30001"), [])
@@ -2109,7 +2034,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin, _logger = await self._plugin(self.config)
         result = await plugin._process_group_message(
             {"message": group_message("g2", "群友们出事了我很难受")}, group_message("g2", "群友们出事了我很难受"),
-            "30001", "group-stream-100", "g2", ["g2"])
+            "30001", "group-stream-100", "g2")
         self.assertEqual(result.get("action"), "continue")
         # 群轮次注册默认开启：放行到主程序前会登记 group_turns。
         self.assertIn("message", result.get("modified_kwargs", {}))
@@ -2118,7 +2043,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin, _logger = await self._plugin(self.config)
         message = group_message("g3", "/麦麦状态")
         result = await plugin._process_group_message(
-            {"message": message}, message, "30001", "group-stream-100", "g3", ["g3"])
+            {"message": message}, message, "30001", "group-stream-100", "g3")
         # is_command 在管线前部已直通，闸门不会收到命令消息。
         self.assertEqual(result.get("action"), "continue")
 
@@ -2134,7 +2059,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         plugin._group_observer.observe = spy
         await plugin._process_group_message(
             {"message": group_message("g4", "日常灌水")}, group_message("g4", "日常灌水"),
-            "30001", "group-stream-100", "g4", ["g4"])
+            "30001", "group-stream-100", "g4")
         await asyncio_sleep_zero()
         self.assertEqual(observed, [])
 
@@ -2144,7 +2069,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
         private_plugin = plugin
         result = await private_plugin._process_group_message(
             {"message": group_message("g9", "普通群聊")}, group_message("g9", "普通群聊"),
-            "30001", "group-stream-100", "g9", ["g9"])
+            "30001", "group-stream-100", "g9")
         self.assertEqual(result.get("action"), "continue")
         self.assertTrue(any("群聊消息放行" in text for text in logger.texts("debug")),
                         f"放行日志缺失: {logger.texts('debug')[-3:]}")
@@ -2163,7 +2088,7 @@ class GroupPipelineGateTests(unittest.IsolatedAsyncioTestCase):
                "raw_message": [{"type": "text", "data": "你好呀"}],
                "is_command": False, "is_notify": False}
         kwargs = {"message": msg}
-        result = await plugin._process_private_message(kwargs, msg, "30001", "private-stream-30001", "p1", ["p1"])
+        result = await plugin._process_private_message(kwargs, msg, "30001", "private-stream-30001", "p1")
         self.assertEqual(result.get("action"), "continue")
         self.assertTrue(any("私聊消息放行" in text for text in logger.texts("debug")),
                         f"放行日志缺失: {logger.texts('debug')[-3:]}")
@@ -3566,7 +3491,7 @@ class V11412WebuiOverviewTests(unittest.IsolatedAsyncioTestCase):
             "summary": "安安静静拼拼图", "location": "客厅", "energy_load": -1, "shareability": 0.4}])
         data = await plugin.webui_status_overview()
         for key in ("generated_at", "bot_name", "version", "state", "schedule", "weather",
-                    "day_type", "upcoming_festival", "sleep", "linkage", "services", "recall"):
+                    "day_type", "upcoming_festival", "sleep", "linkage", "services"):
             self.assertIn(key, data, f"响应缺少键 {key}")
         self.assertEqual(data["bot_name"], "小米")
         self.assertEqual(data["version"], PLUGIN_VERSION)
@@ -3602,7 +3527,7 @@ class V11412WebuiOverviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(schedule["next"]), {"kind_zh", "summary", "start"})
         self.assertEqual(schedule["next"]["summary"], "")
         self.assertEqual(schedule["scene"], {"scene": "", "applied": False})
-        # sleep / services / recall 三个新增子对象的键与契约逐字一致。
+        # sleep / services 子对象的键与契约逐字一致。
         self.assertEqual(set(data["sleep"]), {"phase_zh", "kind_zh", "grace_until", "woken_count",
                                               "last_event", "defer_until", "started_at"})
         self.assertEqual(set(data["services"]), {"llm_health", "available_tasks", "background_tasks",
@@ -3611,7 +3536,6 @@ class V11412WebuiOverviewTests(unittest.IsolatedAsyncioTestCase):
                                                  "exploration_count", "search_history_count",
                                                  "last_failure", "group_observations",
                                                  "archived_today", "pending_inspirations"})
-        self.assertEqual(set(data["recall"]), {"enabled", "cache_enabled", "latest"})
 
     async def test_overview_state_rounds_to_one_decimal(self):
         plugin = await self._plugin()
@@ -3751,37 +3675,6 @@ class V11412WebuiOverviewTests(unittest.IsolatedAsyncioTestCase):
         await self._seed_state()
         self.assertEqual((await plugin.webui_status_overview())["services"]["llm_health"],
                          "Host 未返回可用任务")
-
-    async def test_overview_recall_latest_private_summary(self):
-        plugin = await self._plugin()
-        await self._seed_state()
-        now_ts = self.now.timestamp()
-        # 私聊撤回摘要：group_id='' 且 summary_expires_at 在有效期内才进 latest。
-        self.store.conn.execute(
-            """INSERT OR REPLACE INTO recall_events
-            (session_id,recalled_message_id,user_id,operator_id,group_id,notice_type,
-             source_adapter,summary,summary_expires_at,media_types,created_at,expires_at)
-            VALUES(?,?,?,?,'','friend','qq',?,?,'["image"]',?,?)""",
-            ("stream-1", "m1", "30001", "30001", "刚发了一张照片又撤回了", now_ts + 600,
-             now_ts, now_ts + 86400))
-        self.store.conn.commit()
-        data = await plugin.webui_status_overview()
-        recall = data["recall"]
-        self.assertEqual(recall["enabled"], "开启")  # 开关中文化，网页不显示裸 true/false
-        self.assertEqual(recall["cache_enabled"], "关闭")
-        latest = recall["latest"]
-        self.assertIsNotNone(latest)
-        self.assertEqual(set(latest), {"user_id", "summary", "media_types", "age"})
-        self.assertEqual(latest["user_id"], "30001")
-        self.assertEqual(latest["summary"], "刚发了一张照片又撤回了")
-        self.assertEqual(latest["media_types"], ["image"])
-        self.assertEqual(latest["age"], "刚刚")
-
-    async def test_overview_recall_latest_is_null_without_summary(self):
-        plugin = await self._plugin()
-        await self._seed_state()
-        latest = (await plugin.webui_status_overview())["recall"]["latest"]
-        self.assertEqual(latest, {"user_id": "", "summary": "", "media_types": [], "age": ""})
 
     async def test_overview_narrative_note_reflects_model_availability(self):
         plugin = await self._plugin(llm=_WebuiLLM(tasks=("dream", "diary", "creation_body")))
@@ -4544,7 +4437,7 @@ class V11412WebuiUsageTests(unittest.IsolatedAsyncioTestCase):
 class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
     """webui_config_summary：19 个配置节键齐全、布尔转「开启/关闭」、窗口串与本 API 不出 Key。"""
 
-    SECTIONS = ("plugin", "users", "models", "environment", "linkage", "recall",
+    SECTIONS = ("plugin", "users", "models", "environment", "linkage",
                 "context", "rest_gate", "group", "network", "memory", "creation",
                 "schedule", "proactive", "usage")
 
@@ -4560,7 +4453,6 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.config.models.reasoning_task = "reason-x"
         self.config.linkage.drawpic_enabled = True
         self.config.group.turn_enabled = True
-        self.config.recall.cache_summary_enabled = True
         self.config.rest_gate.wake_probability = 0.42
         self.config.rest_gate.night_start = "23:00"
         self.config.rest_gate.night_end = "07:30"
@@ -4587,11 +4479,6 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["environment"]["city"], "杭州")
         self.assertEqual(data["environment"]["weather_refresh_minutes"], 45)
         self.assertEqual(data["linkage"], {"drawpic_enabled": "开启", "drawpic_detected": "开启"})
-        self.assertEqual(set(data["recall"]), {"enabled", "cache_summary", "summary_ttl_minutes",
-                                               "summary_max_chars"})
-        self.assertEqual(data["recall"]["cache_summary"], "开启")
-        self.assertEqual(data["recall"]["enabled"], "开启")
-        self.assertIsInstance(data["recall"]["summary_ttl_minutes"], int)
         self.assertEqual(set(data["context"]), {"enabled", "continuity_enabled",
                                                 "continuity_interval_minutes", "prompt_max_chars",
                                                 "outbound_turn_guard", "turn_expire_seconds",
@@ -5287,11 +5174,6 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
                     "topic": "群话题", "summary": "群观察摘要", "interest_score": 0.6,
                     "source_adapter": "mai", "created_at": now - 600, "expires_at": now + 3600,
                     "source_message_ids": ["msg-1"]})
-                await store.record_recall_event(
-                    session_id="sess-1", recalled_message_id="msg-2", user_id="10001",
-                    operator_id="10001", group_id="", notice_type="recall",
-                    source_adapter="mai", summary="撤回摘要", media=["image"], now=now,
-                    expires_at=now + 3600)
                 await store.upsert_news_item({
                     "id": "news-1", "source_id": "rss-tech", "title": "新闻标题",
                     "url": "https://example.com/news/1", "summary": "新闻摘要",

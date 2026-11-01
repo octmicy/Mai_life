@@ -77,9 +77,6 @@ def media_types(message: dict[str,Any]) -> list[str]:
 def classify_intent(text: str, media: list[str]) -> str:
     compact=" ".join(str(text or "").split())
     if _URGENT_RE.search(compact):return "安全或紧急需要"
-    recall_compact="".join(compact.lower().split())
-    if "撤回" in recall_compact and any(term in recall_compact for term in ("什么","啥","内容","看见","看到","记得","刚才","刚刚")):
-        return "询问本人撤回内容"
     if "image" in media or "gif" in media:
         if re.search(r"这(?:张|个)|图里|图片|看得出|是什么|什么意思",compact):return "询问当前图片"
         return "分享图片"

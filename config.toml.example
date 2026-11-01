@@ -250,15 +250,6 @@ background_cache_minutes = 5
 replyer_detail = "full"
 
 
-[recall]
-# 一个总开关同时覆盖私聊和群聊；需要适配器向 Host 转发 OneBot 撤回通知。
-enabled = true
-
-# 默认不保存撤回内容。开启后也只缓存已配置用户本人私聊的短摘要和媒介类型。
-cache_summary_enabled = false
-summary_ttl_minutes = 10
-summary_max_chars = 240
-
 
 [models]
 creation_outline_task = ""

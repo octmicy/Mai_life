@@ -29,7 +29,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.24.6")
+        self.assertEqual(manifest["version"],"1.24.7")
         # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
         self.assertIn("web.search",manifest["capabilities"])
         self.assertIn("web.fetch",manifest["capabilities"])
@@ -40,10 +40,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.24.6")
+        self.assertEqual(PLUGIN_VERSION,"1.24.7")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.24.6，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.24.7，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -65,8 +65,6 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(config.context.turn_expire_seconds,120)
         self.assertFalse(config.group.gate_enabled)
         self.assertTrue(config.group.turn_enabled)
-        self.assertTrue(config.recall.enabled)
-        self.assertFalse(config.recall.cache_summary_enabled)
         self.assertTrue(config.network.tool_enabled)
         self.assertEqual(config.context.prompt_max_chars,4000)
         self.assertEqual(config.models.scene_detail_task,"")
@@ -292,7 +290,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_webui_status_overview_keys_are_literal(self):
         data=await self.plugin.webui_status_overview()
         self.assertEqual(set(data),{"generated_at","bot_name","version","state","schedule","weather",
-                                    "day_type","upcoming_festival","sleep","linkage","services","recall"})
+                                    "day_type","upcoming_festival","sleep","linkage","services"})
         self.assertEqual(set(data["state"]),{"energy","hunger","mood_valence","mood_arousal","mood_label",
                                             "sleep_phase_zh","current_activity","current_location","health_note"})
         self.assertEqual(set(data["schedule"]),{"current","next","next_summary","scene"})
@@ -303,14 +301,12 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
                                                 "active_groups","users_summary","diary_last_day","narrative_note",
                                                 "news_count","exploration_count","search_history_count","last_failure",
                                                 "group_observations","archived_today","pending_inspirations"})
-        self.assertEqual(set(data["recall"]),{"enabled","cache_enabled","latest"})
         self.assertEqual(data["bot_name"],"麦麦")
         self.assertIsInstance(data["weather"],str)
         # 无日程/无撤回摘要时返回键齐全的空字典（渲染器途经 null 会抛错整页）。
         self.assertEqual(set(data["schedule"]["current"]),
                          {"kind", "kind_zh", "summary", "location", "start", "end", "window"})
         self.assertEqual(data["schedule"]["current"]["kind_zh"], "未知")
-        self.assertEqual(set(data["recall"]["latest"]), {"user_id", "summary", "media_types", "age"})
         day=self.now.date().isoformat()
         await self.store.replace_framework(day,[{"id":"n1","day":day,"start_minute":0,"end_minute":1439,
             "kind":"leisure","summary":"看书","location":"书房","energy_load":0.2,"shareability":0.5}])
@@ -322,22 +318,14 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["schedule"]["next_summary"],"")
         self.assertEqual(set(data["schedule"]["next"]), {"kind_zh", "summary", "start"})  # 无下一节点为空字典
 
-    async def test_webui_status_overview_rest_and_recall_runtime(self):
+    async def test_webui_status_overview_rest_runtime(self):
         now_ts=self.now.timestamp()
         await self.store.save_sleep_runtime({"phase":"deep_sleep","started_at":now_ts-3600,
             "awake_grace_until":now_ts+600,"woken_count":2,"last_event":"叫醒后重新入睡","sleep_defer_until":0})
-        await self.store.record_recall_event(session_id="s1",recalled_message_id="m1",user_id="10001",
-            operator_id="10001",group_id="",notice_type="private_recall",source_adapter="napcat",
-            summary="刚撤回的那句话",media=["image"],now=now_ts-120,
-            expires_at=now_ts+3600,summary_expires_at=now_ts+600)
         data=await self.plugin.webui_status_overview()
         self.assertEqual(data["sleep"]["phase_zh"],"深睡")
         self.assertEqual(data["sleep"]["woken_count"],2)
         self.assertEqual(data["sleep"]["kind_zh"],"休息")  # 无框架且窗内无段时按 rest 兜底
-        self.assertEqual(data["recall"]["enabled"],"开启")  # 开关中文化，网页不显示裸 true/false
-        self.assertEqual(data["recall"]["latest"]["user_id"],"10001")
-        self.assertEqual(data["recall"]["latest"]["media_types"],["image"])
-        self.assertEqual(data["recall"]["latest"]["age"],"2 分钟前")
 
     async def test_webui_status_history_is_bounded_ascending_and_literal(self):
         self.assertEqual(await self.plugin.webui_status_history(),{"points":[]})  # 无数据时空数组
@@ -523,7 +511,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_webui_config_summary_has_every_section_and_no_keys(self):
         data=await self.plugin.webui_config_summary()
-        self.assertEqual(set(data),{"plugin","users","models","environment","linkage","recall",
+        self.assertEqual(set(data),{"plugin","users","models","environment","linkage",
                                     "context","rest_gate","group","network","memory","creation",
                                     "schedule","proactive","usage"})
         self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
@@ -544,7 +532,6 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
                        "group":{"gate_enabled","turn_enabled","relay_enabled","owner_group_to_private_enabled"},
                        "context":{"enabled","continuity_enabled","outbound_turn_guard"},
-                       "recall":{"enabled","cache_summary"},
                        "memory":{"enabled","dream_fragments_enabled","diary_enabled",
                                  "important_dates_enabled","date_model_analysis_enabled"},
                        "network":{"enabled","tool_enabled","history_enabled","association_enabled",

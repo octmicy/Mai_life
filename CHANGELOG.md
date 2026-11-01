@@ -1,5 +1,19 @@
 # 更新日志
 
+## [1.24.7] - 2026-11-01
+
+### 移除
+
+- **撤回增强整体删除**（主人指令：MaiBot 主程序已内置消息防抖与撤回处理，插件层重复建设）：`RecallService` 退化为空壳（全部方法 no-op，仅为旧 `config.toml` 的 `[recall]` 段与导入兼容保留），插件侧的撤回通知处理（`_handle_recall`）、撤回墓碑查询（`_is_recalled`）、私聊撤回清洗（`_discard_recalled_private_turn`）、撤回复读问答（`is_recall_query` 意图与查询上下文注入）、发送链撤回取消（`_cancel_recalled_confirmations`/`message_keys` 派生任务索引/`recalled_now` 复核）、`GroupObserver.recall` 及 `LifeStore` 的 11 个撤回读写方法一并删除；`recall_events` 表结构保留（不做破坏性迁移，仅停止读写）。撤回相关配置项在 WebUI 中隐藏。
+- **群聊被动轮的同发送者抑制删除**（宿主 1.3.15+ 的 planner steering/new message interrupt 已覆盖）：`_is_latest_group_turn` 与 `_group_turns` 的 generation 取代计数删除。群轮次注册表保留——它还承担群被动轮的上下文隔离（不注入私聊关系）、睡前协商提示和 `group:*` 轮次锁作用域。
+- **行为不变的非撤回收口保留**：新入站消息取消旧待发送（`confirmation_cancelled`）、过期/重复/归因缺失抑制、主动与转述结算链路原样保留，与撤回无关。
+
+### 说明
+
+- 配置架构版本升至 1.13.0：旧 `[social]`/`[information]`/`[search_api]`/`[news]`/`[search]` 段自动迁移进 `[group]`/`[network]`，`[recall]` 段被静默忽略（`extra="ignore"`），无需手动改配置。
+- `classify_intent` 删除「询问本人撤回内容」意图分支：插件已看不到撤回内容，此类问题自然落入普通提问，模型会如实回答看不到。
+- 测试随功能删除同步收敛（`test_recall.py` 整文件删除，其余按新管线改写），全量 482 项。
+
 ## [1.24.6] - 2026-10-30
 
 ### 修复（含社区反馈）

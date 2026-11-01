@@ -115,7 +115,6 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     from Mai_life.life.rest_gate import RestGate
     from Mai_life.life.schedule_service import ScheduleService
     from Mai_life.management.admin_service import AdminService
-    from Mai_life.messaging.recall_service import RecallService
     from Mai_life.plugin import MaiLifePlugin
     from Mai_life.social.group_observer import GroupObserver
     from Mai_life.social.relay_service import RelayService
@@ -141,7 +140,6 @@ async def build_plugin(store, config, *, ctx=None, users=(), llm=None, now=None,
     plugin._schedule = ScheduleService(store, config, llm, plugin_dir, logger)
     plugin._rest = RestGate(store, config, llm, plugin._state, logger)
     plugin._proactive = ProactiveEngine(ctx, store, config, plugin._env, logger)
-    plugin._recall = RecallService(ctx, store, config, logger)
     plugin._continuity = ContinuityService(store, config, llm, logger)
     plugin._memory = MemoryService(store, config, llm, logger)
     plugin._information = InformationService(ctx, store, config, llm, logger)

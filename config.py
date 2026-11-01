@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.24.6"
+PLUGIN_VERSION = "1.24.7"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -894,43 +894,31 @@ class ContextSettings(PluginConfigBase):
 
 
 class RecallSettings(PluginConfigBase):
-    """SnowLuma 与 NapCat 共用的撤回通知处理。"""
+    """撤回增强已删除（v1.24.7）。保留空壳配置节以维持旧 config.toml 兼容。"""
 
-    __ui_label__: ClassVar[str] = "撤回增强"
-    __ui_order__: ClassVar[int] = 10
+    __ui_label__: ClassVar[str] = "撤回增强（已移除）"
+    __ui_order__: ClassVar[int] = 99
 
     enabled: bool = Field(
-        default=True,
-        description="同时处理私聊和群聊撤回通知。",
-        json_schema_extra=_ui(
-            "启用撤回增强", "只有这一个范围开关；开启后私聊和群聊使用相同取消规则。", 0,
-            label_en="Enable Recall Handling", hint_en="Use the same cancellation rules for private and group recalls.",
-        ),
-    )
+        default=False, description="已废弃，撤回增强功能已在 v1.24.7 删除。",
+        json_schema_extra=_ui("撤回增强（已移除）", "该功能已删除，此配置节仅为兼容旧 config.toml 保留，可整段删去。",
+                              0, label_en="Recall (Removed)", hint_en="Feature removed in v1.24.7; this section only keeps old config.toml valid.",
+                              hidden=True, disabled=True))
     cache_summary_enabled: bool = Field(
-        default=False,
-        description="短期保存本人私聊撤回消息的有限摘要。",
-        json_schema_extra=_ui(
-            "缓存本人撤回摘要", "默认关闭。开启后只保存已配置用户本人私聊的短文本和媒介类型，不保存任何二进制。", 1,
-            label_en="Cache Own Recall Summary", hint_en="Disabled by default; only configured private senders can query their own short summaries.",
-        ),
-    )
+        default=False, description="已废弃。",
+        json_schema_extra=_ui("撤回摘要缓存（已移除）", "该功能已删除。", 1,
+                              label_en="Summary Cache (Removed)", hint_en="Feature removed.",
+                              hidden=True, disabled=True))
     summary_ttl_minutes: int = Field(
-        default=10, ge=1, le=60,
-        description="可查询撤回摘要的保留时间。",
-        json_schema_extra=_ui(
-            "撤回摘要保留（分钟）", "只影响可选摘要；回复取消墓碑至少覆盖消息处理周期。", 2,
-            label_en="Recall Summary TTL (min)", hint_en="Retention period for optional private recall summaries.",
-        ),
-    )
+        default=10, description="已废弃。",
+        json_schema_extra=_ui("摘要缓存时长（已移除）", "该功能已删除。", 2,
+                              label_en="Summary TTL (Removed)", hint_en="Feature removed.",
+                              hidden=True, disabled=True))
     summary_max_chars: int = Field(
-        default=240, ge=40, le=1000,
-        description="单条撤回文字摘要的最大长度。",
-        json_schema_extra=_ui(
-            "撤回摘要长度", "超出部分会截断，媒介只记录类型。", 3,
-            label_en="Recall Summary Length", hint_en="Maximum characters stored for one recalled private message.",
-        ),
-    )
+        default=240, description="已废弃。",
+        json_schema_extra=_ui("摘要长度上限（已移除）", "该功能已删除。", 3,
+                              label_en="Summary Max Chars (Removed)", hint_en="Feature removed.",
+                              hidden=True, disabled=True))
 
 
 class ModelRoutingSettings(PluginConfigBase):
@@ -1138,11 +1126,6 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=ContextSettings,
         json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 7, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
     )
-    recall: RecallSettings = Field(
-        default_factory=RecallSettings,
-        json_schema_extra=_ui("撤回增强", "撤回通知取消回复与可选本人摘要。", 10,
-                              label_en="Recall Handling", hint_en="Cancel replies for recalled messages and optionally retain own summaries."),
-    )
     schedule: ScheduleSettings = Field(
         default_factory=ScheduleSettings,
         json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 8, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
@@ -1155,6 +1138,11 @@ class MaiLifeSettings(PluginConfigBase):
         default_factory=NetworkSettings,
         json_schema_extra=_ui("联网", "总开关、搜索工具、搜索历史、见闻关联、新闻与主动探索。", 11,
                               label_en="Networking", hint_en="Master switch, tool, history, discovery, news and exploration."),
+    )
+    recall: RecallSettings = Field(
+        default_factory=RecallSettings,
+        json_schema_extra=_ui("撤回增强（已移除）", "功能已删除，保留空壳以兼容旧配置。", 99,
+                              label_en="Recall (Removed)", hint_en="Feature removed in v1.24.7."),
     )
     creation: CreationSettings = Field(
         default_factory=CreationSettings,

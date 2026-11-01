@@ -10,7 +10,6 @@ from typing import Any
 
 from ..messaging.adapter_compat import adapter_name,group_identity,sender_identity
 from ..messaging.message_pipeline import media_types,plain_text
-from ..messaging.recall_service import RecallService
 
 
 _SENSITIVE_RE=re.compile(
@@ -124,9 +123,15 @@ class GroupObserver:
         if not digest.get("public") or not digest.get("summary"):return {"status":"private_or_empty"}
         stamp=now.timestamp(); key="\n".join(snippets)
         observation_id=hashlib.sha1(f"{group_id}:{stamp}:{key}".encode("utf-8","ignore")).hexdigest()[:24]
-        # observe 收到的是防抖合并后的消息：RecallService.source_message_ids 取合并轮
-        # 全部来源 ID，与撤回清理口径一致；窗口内其他发送者的消息 ID 也一并保留。
-        source_ids=list(RecallService.source_message_ids(message))
+        # 窗口内其他发送者的消息 ID 也一并保留（合并轮来源 ID 从 additional_config 提取）。
+        source_ids=[]
+        info=message.get("message_info") if isinstance(message.get("message_info"),dict) else {}
+        additional=info.get("additional_config") if isinstance(info.get("additional_config"),dict) else {}
+        for value in (additional.get("mai_life_merged_message_ids") if isinstance(additional.get("mai_life_merged_message_ids"),list) else []):
+            normalized=str(value or "").strip()
+            if normalized and normalized not in source_ids:source_ids.append(normalized)
+        message_id_str=str(message.get("message_id") or "").strip()
+        if message_id_str and message_id_str not in source_ids:source_ids.append(message_id_str)
         for entry_id,_snippet in entries:
             if entry_id and entry_id not in source_ids:source_ids.append(entry_id)
         # group_alias 是旧库兼容列，只保存 Host 自动读取的群名称，不参与任何匹配或权限判断。
@@ -139,20 +144,6 @@ class GroupObserver:
         if not await self.store.save_group_observation(item):return {"status":"duplicate"}
         queued=await self._queue_private_share(item,now)
         return {"status":"saved","observation_id":observation_id,"private_share_queued":queued}
-
-    async def recall(self,group_id:str,message_id:str,now:datetime)->dict[str,Any]:
-        """从群缓冲和已保存匿名摘要中删除撤回消息的整条衍生链。"""
-        removed_pending=False
-        async with self._lock:
-            burst=self._bursts.get(group_id)
-            if burst is not None:
-                retained=[entry for entry in burst.entries if entry[0]!=message_id]
-                removed_pending=len(retained)!=len(burst.entries)
-                if retained:burst.entries=retained
-                elif removed_pending:self._bursts.pop(group_id,None)
-        removed_saved=await self.store.retract_group_observation_source(group_id,message_id,now.timestamp())
-        removed_activity=await self.store.clear_recalled_group_activity(group_id,message_id)
-        return {"pending":removed_pending,"saved":removed_saved,"activity":removed_activity}
 
     async def _summarize(self,snippets:list[str])->dict[str,Any]:
         """在本地敏感过滤后一次调用完成判定与摘要；模型输出还会再次经过相同边界。"""

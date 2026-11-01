@@ -29,41 +29,6 @@ def adapter_name(message: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-def recall_notice(message: Mapping[str, Any]) -> dict[str, str]:
-    """把 SnowLuma/NapCat 的 OneBot 撤回通知归一化为同一结构。"""
-    if not bool(message.get("is_notify")):
-        return {}
-    additional=_additional_config(message)
-    adapter=adapter_name(message)
-    if adapter=="snowluma":
-        notice_type=str(additional.get("snowluma_notice_type") or additional.get("napcat_notice_type") or "").strip()
-        payload=additional.get("snowluma_notice_payload") or additional.get("napcat_notice_payload")
-    else:
-        notice_type=str(additional.get("napcat_notice_type") or "").strip()
-        payload=additional.get("napcat_notice_payload")
-    if notice_type not in {"friend_recall","group_recall"}:
-        return {}
-    if not isinstance(payload,Mapping):
-        # 部分适配器把 payload 整体序列化为 JSON 字符串；解析失败仍按无通知处理。
-        if isinstance(payload,str):
-            try:payload=json.loads(payload)
-            except (TypeError,ValueError):return {}
-        if not isinstance(payload,Mapping):return {}
-    recalled_message_id=str(payload.get("message_id") or "").strip()
-    if not recalled_message_id:return {}
-    info=message.get("message_info") if isinstance(message.get("message_info"),Mapping) else {}
-    group=info.get("group_info") if isinstance(info.get("group_info"),Mapping) else {}
-    return {
-        "notice_type":notice_type,
-        "recalled_message_id":recalled_message_id,
-        "user_id":str(payload.get("user_id") or "").strip(),
-        "operator_id":str(payload.get("operator_id") or payload.get("user_id") or "").strip(),
-        "group_id":str(payload.get("group_id") or group.get("group_id") or "").strip(),
-        "self_id":str(payload.get("self_id") or additional.get("self_id") or "").strip(),
-        "adapter":adapter,
-    }
-
-
 def group_identity(message: Mapping[str, Any]) -> tuple[str, str]:
     """读取 Host 标准群资料；两套适配器的私有字段只用于来源诊断。"""
     info=message.get("message_info")

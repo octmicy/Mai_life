@@ -370,52 +370,6 @@
         },
         {
           "type": "grid",
-          "label": "撤回增强运行时",
-          "columns": 4,
-          "when": {
-            "reference": {
-              "source": "status",
-              "field": "recall.latest.summary"
-            },
-            "operator": "not_empty"
-          },
-          "children": [
-            {
-              "type": "stat",
-              "label": "撤回增强（运行）",
-              "value": {
-                "source": "status",
-                "field": "recall.enabled"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "摘要缓存",
-              "value": {
-                "source": "status",
-                "field": "recall.cache_enabled"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "最近撤回摘要",
-              "value": {
-                "source": "status",
-                "field": "recall.latest.summary"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "摘要距今",
-              "value": {
-                "source": "status",
-                "field": "recall.latest.age"
-              }
-            }
-          ]
-        },
-        {
-          "type": "grid",
           "label": "关于本页",
           "columns": 3,
           "children": [
@@ -2401,45 +2355,6 @@
                       "value": {
                         "source": "config",
                         "field": "context.replyer_detail"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "grid",
-                  "label": "撤回增强",
-                  "columns": 4,
-                  "children": [
-                    {
-                      "type": "stat",
-                      "label": "撤回增强",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.enabled"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "撤回摘要缓存",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.cache_summary"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要保留(分钟)",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_ttl_minutes"
-                      }
-                    },
-                    {
-                      "type": "stat",
-                      "label": "摘要长度上限",
-                      "value": {
-                        "source": "config",
-                        "field": "recall.summary_max_chars"
                       }
                     }
                   ]

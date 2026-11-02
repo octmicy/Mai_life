@@ -4802,40 +4802,23 @@ class V11412WebuiErrorPathTests(unittest.IsolatedAsyncioTestCase):
 
 
 class V11412WebuiJsonStructureTests(unittest.TestCase):
-    """webui.json 声明结构：schema_version/workspace_title/页数/查询只绑已注册 API/组件白名单。
+    """webui.json 声明结构（v1.24.9 迁移至 custom_pages 自写 HTML 页面契约）：
 
-    白名单对齐宿主真实 schema（MaiBot src/plugin_runtime/webui_schema.py 的 WebUINode，
-    协议 v2：17 种组件 + when/selection/detail/disabled_when）。v2 相对 v1 移除了
-    repeat/gallery/upload 组件与 scope:"item"，新增 progress/image 组件与 custom 页面。
+    对齐宿主真实 schema（MaiBot src/plugin_runtime/webui_schema.py 的 CustomPage 与
+    load_webui_extension，协议 v2）：
+    1. schema_version=2，required_capabilities 含 "custom_pages"，workspace_title 非空；
+    2. 页面 mode="custom"，通过 entry 相对路径指向插件目录内 .html，不内联 document；
+    3. 每个 HTML entry 为 body 片段（不含 doctype/html/head/body 外壳），遵守 CSP 与沙箱桥契约
+       （无外链资源、无 fetch/XHR、无 location 跳转、并发请求受控 <=2）；
+    4. 11 个只读 WebUI @API 全部被页面 queries 绑定消费，且各页 HTML 脚本调用的 query 名与声明完全一致。
     """
 
-    COMMON_KEYS = {"type", "label", "when"}
-    INTERACTIVE_KEYS = {"disabled_when", "disabled_reason"}
-    COMPONENT_KEYS = {
-        "stack": {"children"},
-        "card": {"children"},
-        "grid": {"children", "columns"},
-        "tabs": {"children"},
-        "collapsible": {"children", "default_open"},
-        "dialog": {"name", "children"},
-        "text": {"value", "format"},
-        "stat": {"value"},
-        "progress": {"value"},
-        "image": {"value"},
-        "table": {"value", "columns", "selection", "detail"},
-        "chart": {"value", "chart_type", "x", "y"},
-        "pagination": {"value", "name"},
-        "input": {"name", "value"} | INTERACTIVE_KEYS,
-        "date": {"name", "value"} | INTERACTIVE_KEYS,
-        "select": {"name", "value", "options"} | INTERACTIVE_KEYS,
-        "switch": {"name", "value"} | INTERACTIVE_KEYS,
-        "button": {"action", "variant"} | INTERACTIVE_KEYS,
-    }
-    REMOVED_COMPONENTS = {"repeat", "gallery", "upload"}
-    FIELD_RE = re.compile(r"^(?:[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)?$")
+    ALLOWED_PAGE_KEYS = {"id", "title", "description", "placement", "icon",
+                         "mode", "entry", "layout", "queries", "actions", "uploads"}
 
     def setUp(self):
-        self.path = Path(__file__).parents[1] / "webui.json"
+        self.root = Path(__file__).parents[1].resolve()
+        self.path = self.root / "webui.json"
         self.declaration = json.loads(self.path.read_text(encoding="utf-8-sig"))
 
     def _registered_apis(self) -> set[str]:
@@ -4845,26 +4828,8 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
 
     def test_schema_version_and_workspace_title(self):
         self.assertEqual(self.declaration.get("schema_version"), 2)
-        self.assertIn("declarative_basic", self.declaration.get("required_capabilities") or [])
+        self.assertIn("custom_pages", self.declaration.get("required_capabilities") or [])
         self.assertTrue(str(self.declaration.get("workspace_title") or ""))
-
-    def test_protocol_v2_removed_components_are_absent(self):
-        """v2 移除 repeat/gallery/upload 与 scope:"item"：混用会让宿主整插件注册失败。"""
-        used = set()
-        for page in self.declaration["pages"]:
-            stack = list(page.get("content") or [])
-            while stack:
-                node = stack.pop()
-                used.add(str(node.get("type") or ""))
-                stack.extend(node.get("children") or [])
-        self.assertEqual(used & self.REMOVED_COMPONENTS, set())
-        for page in self.declaration["pages"]:
-            stack = list(page.get("content") or [])
-            while stack:
-                node = stack.pop()
-                for reference in self._references(node):
-                    self.assertNotEqual(reference.get("scope"), "item")
-                stack.extend(node.get("children") or [])
 
     def test_pages_within_limits_and_unique_ids(self):
         pages = self.declaration.get("pages") or []
@@ -4873,11 +4838,29 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
         ids = [str(page.get("id") or "") for page in pages]
         self.assertEqual(len(set(ids)), len(ids))
         self.assertTrue(any(str(page.get("placement") or "") == "workspace" for page in pages))
+        total_doc_bytes = 0
         for page in pages:
+            extra = set(page) - self.ALLOWED_PAGE_KEYS
+            self.assertEqual(extra, set(), f"{page.get('id')} 含协议外属性: {sorted(extra)}")
+            self.assertEqual(page.get("mode"), "custom", f"{page.get('id')} 必须为 custom 模式")
+            self.assertNotIn("document", page, "webui.json 不得内联 document 字段")
             self.assertIn(str(page.get("placement") or ""), {"sidebar", "workspace"})
             self.assertIn(str(page.get("icon") or ""),
                           {"puzzle", "chart", "settings", "database", "list"})
+            self.assertIn(str(page.get("layout", "document")), {"document", "viewport"})
             self.assertTrue(str(page.get("title") or ""))
+            entry = str(page.get("entry") or "")
+            rel = Path(entry)
+            self.assertTrue(entry and not rel.is_absolute() and ".." not in rel.parts
+                            and rel.suffix.lower() == ".html", f"非法 entry 路径: {entry}")
+            target = (self.root / rel).resolve()
+            self.assertTrue(target.is_relative_to(self.root) and target.is_file(),
+                            f"entry 文件不存在或越界: {entry}")
+            raw_doc = target.read_bytes()
+            self.assertGreater(len(raw_doc.strip()), 0, f"{entry} 不能为空")
+            self.assertLessEqual(len(raw_doc), 2 * 1024 * 1024, f"{entry} 超过 2MiB 上限")
+            total_doc_bytes += len(raw_doc)
+        self.assertLessEqual(total_doc_bytes, 8 * 1024 * 1024, "全部自定义页面总量超过 8MiB")
 
     def test_queries_only_bind_registered_apis(self):
         registered = self._registered_apis()
@@ -4895,98 +4878,26 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
         # 11 个 WebUI 只读 API 必须全部被页面消费，也不许多绑其他 API。
         self.assertEqual(bound, set(WEBUI_API_NAMES))
 
-    def test_components_use_whitelist_and_data_references(self):
+    def test_custom_html_fragments_obey_sandbox_and_bridge_contract(self):
+        """校验每个 HTML 片段遵循宿主 innerHTML 注入、CSP 无外链/无网络请求及 query 绑定一致性。"""
         for page in self.declaration["pages"]:
-            queries = set((page.get("queries") or {}).keys())
-            selections: set[str] = set()
-            pending = [(node, 1) for node in page.get("content") or []]
-            count = 0
-            while pending:
-                node, depth = pending.pop()
-                count += 1
-                self.assertLessEqual(depth, 8, f"{page['id']} 嵌套超过 8 层")
-                self.assertLessEqual(count, 200, f"{page['id']} 组件超过 200 个")
-                kind = str(node.get("type") or "")
-                self.assertIn(kind, self.COMPONENT_KEYS, f"组件类型不在白名单: {kind}")
-                extra = set(node) - self.COMPONENT_KEYS[kind] - self.COMMON_KEYS
-                self.assertEqual(extra, set(), f"{kind} 含协议外属性: {sorted(extra)}")
-                if node.get("selection") is not None:
-                    selections.add(str(node["selection"]))
-                    if node.get("detail") is not None:
-                        self.assertIsInstance(node["detail"], str)
-                if kind == "dialog":
-                    self.assertEqual(depth, 1, "dialog 必须声明在 content 顶层")
-                    self.assertTrue(node.get("name"), "dialog 必须声明 name")
-                value = node.get("value")
-                if isinstance(value, dict):
-                    self.assertEqual(set(value) - {"source", "field", "scope"}, set(),
-                                     f"{kind} 的数据引用含协议外键: {sorted(value)}")
-                    scope = value.get("scope", "query")
-                    self.assertIn(scope, {"query", "selection"})
-                    if scope == "query":
-                        self.assertIn(value["source"], queries,
-                                      f"数据引用未声明查询: {value['source']}")
-                    else:
-                        # selection/item 是交互上下文源，由 table.selection / repeat.name 声明。
-                        self.assertTrue(value["source"], f"{kind} 的 {scope} 引用缺少 source")
-                    self.assertRegex(value.get("field", ""), self.FIELD_RE)
-                if kind in {"table", "chart", "gallery", "pagination", "repeat"}:
-                    self.assertIsInstance(value, dict, f"{kind} 必须绑定数据引用")
-                if kind == "table":
-                    columns = node.get("columns") or []
-                    self.assertGreaterEqual(len(columns), 1)
-                    self.assertLessEqual(len(columns), 20)
-                    for column in columns:
-                        self.assertEqual(set(column), {"field", "label"})
-                if kind == "grid":
-                    self.assertIsInstance(node.get("columns"), int)
-                    self.assertGreaterEqual(node["columns"], 1)
-                    self.assertLessEqual(node["columns"], 4)
-                if kind == "chart":
-                    self.assertIn(str(node.get("chart_type") or ""), {"line", "bar"})
-                    self.assertTrue(node.get("x") and node.get("y"))
-                if kind == "tabs":
-                    self.assertTrue(node.get("children"))
-                    for child in node["children"]:
-                        self.assertTrue(child.get("label"), "tabs 子节点必须有 label")
-                if node.get("when") is not None:
-                    reference = node["when"].get("reference") or {}
-                    self.assertIn(reference.get("scope", "query"), {"query", "selection"})
-                    if reference.get("scope", "query") == "query":
-                        self.assertIn(reference.get("source"), queries,
-                                      f"when 引用未声明查询: {reference.get('source')}")
-                pending.extend((child, depth + 1) for child in node.get("children") or [])
-
-    def test_selection_scoped_bindings_declare_their_source(self):
-        """scope:selection 的绑定必须能找到同页 table.selection 声明的行上下文名。"""
-        for page in self.declaration["pages"]:
-            declared = {str(node.get("selection")) for node in self._walk(page)
-                        if node.get("selection")}
-            for node in self._walk(page):
-                for reference in self._references(node):
-                    if reference.get("scope") != "selection":
-                        continue
-                    self.assertIn(reference.get("source"), declared,
-                                  f"selection 引用未声明来源: {reference.get('source')}")
-
-    def _walk(self, page: dict[str, Any]):
-        pending = list(page.get("content") or [])
-        while pending:
-            node = pending.pop()
-            yield node
-            pending.extend(node.get("children") or [])
-
-    def _references(self, node: dict[str, Any]) -> list[dict[str, Any]]:
-        refs: list[dict[str, Any]] = []
-        if isinstance(node.get("value"), dict):
-            refs.append(node["value"])
-        when = node.get("when")
-        if isinstance(when, dict) and isinstance(when.get("reference"), dict):
-            refs.append(when["reference"])
-        disabled = node.get("disabled_when")
-        if isinstance(disabled, dict) and isinstance(disabled.get("reference"), dict):
-            refs.append(disabled["reference"])
-        return refs
+            entry = str(page["entry"])
+            html = (self.root / entry).read_text(encoding="utf-8")
+            # 宿主将 entry 包入 <!doctype html>...<body>${html}</body>，片段不得带完整文档外壳
+            self.assertIsNone(re.search(r"<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]", html, re.I),
+                              f"{entry} 必须是 body 片段，不得包含 doctype/html/head/body 标签")
+            # CSP connect-src/img-src/script-src/style-src 限制：严禁外链与直接网络请求
+            self.assertIsNone(re.search(r"""(?:src|href)\s*=\s*["']https?://""", html, re.I),
+                              f"{entry} 含外部 http(s) src/href，违反 CSP 或会导致 iframe 导航停桥")
+            self.assertIsNone(re.search(r"\bfetch\s*\(|\bXMLHttpRequest\b", html),
+                              f"{entry} 不得使用 fetch/XHR，数据只能走 window.maibot.query")
+            self.assertIsNone(re.search(r"\blocation\.(?:href|assign|replace)\b", html),
+                              f"{entry} 禁止 location 跳转（二次 load 会触发宿主停桥）")
+            self.assertIn("window.maibot", html, f"{entry} 必须接入 window.maibot 桥")
+            declared_queries = set((page.get("queries") or {}).keys())
+            used_queries = set(re.findall(r"""name\s*:\s*['"]([a-zA-Z0-9_-]+)['"]""", html))
+            self.assertEqual(used_queries, declared_queries,
+                             f"{entry} 调用的 query 集合 {used_queries} 与 webui.json 声明 {declared_queries} 不一致")
 
     def test_declaration_size_within_host_limits(self):
         raw = self.path.read_bytes()
@@ -5113,107 +5024,47 @@ class PlannerReplyAnchorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
-    """v1.14.12 修复回归：按 dashboard 渲染器同规则校验 webui.json 全部绑定。
+    """v1.24.9 改为 custom HTML 页面后：按宿主 API 网关规则 + 前端消费契约校验全部页面绑定。
 
-    渲染器（dashboard/src/lib/plugin-webui.ts + plugin-webui-renderer.tsx）对以下情况
-    直接 throw，整页显示"插件返回的数据与组件声明不一致"：
-    query 引用缺 source 或途经 null/缺失字段；text/stat 绑到对象或数组；
-    table 非对象数组；chart 行缺数值 y 或标量 x。
-    真实渲染器规则（逐行对齐宿主源码，协议 v2）：scope 仅 query/selection，
-    selection 未选中时返回 null 不抛错；when 为 VisibilityCondition，不可见节点的
-    value 不解析；dialog 仅在打开时渲染。空库与种子库都必须零问题。
+    校验内容（空库与种子库均须零问题）：
+    1. 每个 custom 页面声明的 query 均可调用对应 @API，返回合法 JSON 字典且无 success=False；
+    2. 响应通过宿主网关 JSON 护栏（深度 <=12、元素数 <=20000、UTF-8 <=512KiB、无 NaN/Inf）；
+    3. 各 query 的核心顶层字段在空库/种子库下均齐全，且在对应 entry HTML 脚本中真实被读取消费。
     """
 
-    def _resolve(self, binding: Any, data: dict[str, Any], contexts: dict[str, Any] | None = None) -> Any:
-        if not isinstance(binding, dict):
-            return binding
-        contexts = contexts or {}
-        scope = binding.get("scope", "query")
-        if scope == "selection":
-            source = contexts.get("selection")
-            if not isinstance(source, dict) or binding["source"] not in source:
-                return None  # 渲染器：未选中行返回 null，不抛错
-        else:
-            source = data
-        if not isinstance(source, dict) or binding["source"] not in source:
-            raise AssertionError(f"missing source {binding['source']}")
-        value = source[binding["source"]]
-        for field in (binding.get("field") or "").split("."):
-            if value is None or not isinstance(value, dict) or field not in value:
-                raise AssertionError(f"missing {binding['source']}.{binding.get('field')}")
-            value = value[field]
-        return value
+    EXPECTED_QUERY_KEYS = {
+        "status": {"generated_at", "bot_name", "version", "state", "schedule", "weather", "sleep", "linkage", "services"},
+        "history": {"points"},
+        "schedule": {"day", "generated_at", "current", "next", "scene", "nodes", "tomorrow"},
+        "usage": {"day", "generated_at", "totals", "tokens", "searches", "daily", "parse_failures"},
+        "users": {"counts", "users"},
+        "dates": {"counts", "dates", "candidates"},
+        "memories": {"generated_at", "last_diary_day", "diary_count", "dream_count", "diaries", "diaries_full_text", "latest_dream", "dreams"},
+        "shelf": {"counts", "creation", "books", "books_full_text", "runs"},
+        "digest": {"status", "news", "news_full_text", "explorations", "explorations_full_text", "search_history"},
+        "config": {"plugin", "users", "models", "environment", "linkage", "context", "rest_gate", "group", "memory", "network", "creation", "schedule", "proactive", "usage"},
+        "admin": {"overview", "groups", "proactive"},
+    }
 
-    def _visible(self, node: dict[str, Any], data: dict[str, Any],
-                 contexts: dict[str, Any]) -> bool:
-        when = node.get("when")
-        if not when:
-            return True
-        value = self._resolve(when["reference"], data, contexts)
-        empty = (value is None or value == ""
-                 or (isinstance(value, list) and not value)
-                 or (isinstance(value, dict) and not value))
-        operator = when.get("operator", "not_empty")
-        if operator == "empty":
-            return empty
-        if operator == "not_empty":
-            return not empty
-        if operator == "equals":
-            return value == when.get("expected")
-        return bool(value)  # truthy
-
-    def _check_node(self, node: Any, data: dict[str, Any], page_id: str,
-                    contexts: dict[str, Any] | None = None) -> None:
-        if not isinstance(node, dict):
-            return
-        contexts = contexts or {}
-        label = node.get("label")
-        if not self._visible(node, data, contexts):
-            return
-        kind = node.get("type")
-        if kind == "dialog":
-            return  # 渲染器：仅在打开时渲染，静态检查跳过
-        if "value" in node:
-            value = self._resolve(node["value"], data, contexts)
-            if kind in ("text", "stat"):
-                self.assertNotIsInstance(value, (dict, list), f"{page_id}/{label} 绑到非标量")
-            if kind == "table":
-                self.assertIsInstance(value, list, f"{page_id}/{label} 表数据非数组")
-                for row in value:
-                    self.assertIsInstance(row, dict, f"{page_id}/{label} 表行非对象")
-            if kind == "chart":
-                self.assertIsInstance(value, list, f"{page_id}/{label} 图数据非数组")
-                self.assertLessEqual(len(value), 2000, f"{page_id}/{label} 图超 2000 行")
-                for row in value:
-                    self.assertIsInstance(row, dict, f"{page_id}/{label} 图行非对象")
-                    y = row.get(node.get("y"))
-                    # 渲染器：y 必须是有限 number（布尔不算），x 必须是 string 或 number。
-                    self.assertIsInstance(y, (int, float), f"{page_id}/{label} y 非数值")
-                    self.assertNotIsInstance(y, bool, f"{page_id}/{label} y 不能是布尔")
-                    self.assertTrue(math.isfinite(y), f"{page_id}/{label} y 非有限数")
-                    self.assertIsInstance(row.get(node.get("x")), (str, int, float),
-                                          f"{page_id}/{label} x 非标量")
-                    self.assertNotIsInstance(row.get(node.get("x")), bool,
-                                             f"{page_id}/{label} x 不能是布尔")
-            if kind == "gallery":
-                self.assertIsInstance(value, list, f"{page_id}/{label} 画廊数据非数组")
-                self.assertLessEqual(len(value), 24, f"{page_id}/{label} 画廊超 24 项")
-                for row in value:
-                    self.assertIsInstance(row, dict, f"{page_id}/{label} 画廊项非对象")
-            if kind == "pagination":
-                self.assertIsInstance(value, dict, f"{page_id}/{label} 分页数据非对象")
-                self.assertIsInstance(value.get("page"), int, f"{page_id}/{label} page 非整数")
-                self.assertIsInstance(value.get("pages"), int, f"{page_id}/{label} pages 非整数")
-                self.assertIsInstance(value.get("total"), int, f"{page_id}/{label} total 非整数")
-        for child in node.get("children") or []:
-            self._check_node(child, data, page_id, contexts)
-
-    def _walk(self, page: dict[str, Any]):
-        pending = list(page.get("content") or [])
+    def _validate_host_json_limits(self, value: Any, label: str) -> None:
+        pending = [(value, 0)]
+        count = 0
         while pending:
-            node = pending.pop()
-            yield node
-            pending.extend(node.get("children") or [])
+            item, depth = pending.pop()
+            count += 1
+            self.assertLessEqual(depth, 12, f"{label} JSON 超过 12 层")
+            self.assertLessEqual(count, 20000, f"{label} JSON 超过 20000 个元素")
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    self.assertIsInstance(k, str, f"{label} JSON 键必须为字符串")
+                    pending.append((v, depth + 1))
+            elif isinstance(item, list):
+                for v in item:
+                    pending.append((v, depth + 1))
+            elif isinstance(item, float):
+                self.assertTrue(math.isfinite(item), f"{label} 含非有限浮点数")
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        self.assertLessEqual(len(encoded), 512 * 1024, f"{label} JSON 超过 512KiB")
 
     async def _collect_problems(self, seed: bool) -> list[str]:
         tmp = tempfile.TemporaryDirectory()
@@ -5225,8 +5076,6 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
                 await store.set_user_stream("10001", "stream-10001")
                 await store.save_diary("2026-10-01", "标题", "内容", "平静", "digest", now - 3600)
                 await store.save_state_snapshot(now - 3600, await store.get_state())
-                # 覆盖七个页面的每张表与每个 dialog 的 selection 上下文：日程/社交/内心/
-                # 资讯/书架/用量至少一行真实数据，dialog 详情绑定才对真实行对象生效。
                 await store.add_dream("梦里在散步", 0.1, -0.2, now - 7200, ["片段一"], created_at=now - 3600)
                 await store.create_bookshelf_document({
                     "id": "doc-1", "doc_type": "work", "work_type": "essay",
@@ -5273,39 +5122,27 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
                     latency_ms=80.44, result_count=4, error_class="")
             plugin = await build_plugin(store, MaiLifeSettings(),
                                         users=[UserProfile(user_id="10001", role="owner")] if seed else [])
-            ext = json.loads((Path(__file__).parents[1] / "webui.json").read_text(encoding="utf-8"))
+            root = Path(__file__).parents[1]
+            ext = json.loads((root / "webui.json").read_text(encoding="utf-8"))
             problems: list[str] = []
             for page in ext["pages"]:
-                data: dict[str, Any] = {}
+                html = (root / str(page["entry"])).read_text(encoding="utf-8")
                 for name, query in (page.get("queries") or {}).items():
                     handler = getattr(plugin, str(query["api"]), None)
                     self.assertIsNotNone(handler, f"{page['id']} 绑定不存在的 API {query['api']}")
-                    data[name] = await handler()
-                for node in page.get("content") or []:
+                    payload = await handler()
                     try:
-                        self._check_node(node, data, page["id"])
+                        self.assertIsInstance(payload, dict, f"{page['id']}.{name} 响应非字典")
+                        self.assertIsNot(payload.get("success"), False, f"{page['id']}.{name} 返回失败: {payload}")
+                        self._validate_host_json_limits(payload, f"{page['id']}.{name}")
+                        expected_keys = self.EXPECTED_QUERY_KEYS.get(name, set())
+                        missing = expected_keys - set(payload.keys())
+                        self.assertEqual(missing, set(), f"{page['id']}.{name} 缺少字段: {sorted(missing)}")
+                        for key in expected_keys:
+                            if key not in ("generated_at", "parse_failures"):
+                                self.assertIn(key, html, f"{page['entry']} 未消费 {name}.{key}")
                     except AssertionError as exc:
                         problems.append(str(exc))
-                # dialog 详情树只在打开时渲染：用各行首行模拟 selection 上下文再校验一遍，
-                # 保证 detail 里的绑定对真实行对象可达（渲染器 selection = {选择名: 行}）。
-                selection: dict[str, Any] = {}
-                for node in self._walk(page):
-                    if node.get("type") != "table" or not node.get("selection"):
-                        continue
-                    try:
-                        rows = self._resolve(node["value"], data)
-                    except AssertionError:
-                        continue
-                    if isinstance(rows, list) and rows:
-                        selection[str(node["selection"])] = rows[0]
-                for node in page.get("content") or []:
-                    if not isinstance(node, dict) or node.get("type") != "dialog":
-                        continue
-                    for child in node.get("children") or []:
-                        try:
-                            self._check_node(child, data, page["id"], {"selection": selection})
-                        except AssertionError as exc:
-                            problems.append(str(exc))
             return problems
         finally:
             await store.close(); tmp.cleanup()
@@ -5814,13 +5651,19 @@ class V11417WebuiProtocolV2Tests(unittest.TestCase):
             spec.loader.exec_module(module)
         except Exception as exc:  # 宿主依赖不完整（缺 pydantic 等）时跳过而非误报
             self.skipTest(f"宿主 schema 加载失败: {exc}")
-        raw = (Path(__file__).parents[1] / "webui.json").read_bytes()
+        plugin_dir = str(Path(__file__).parents[1])
         try:
-            extension = module.WebUIExtension.model_validate_json(raw.decode("utf-8-sig"))
+            extension = module.load_webui_extension(plugin_dir)
         except Exception as exc:
-            self.fail(f"webui.json 未通过宿主 schema: {exc}")
+            self.fail(f"webui.json + custom HTML 未通过宿主 load_webui_extension: {exc}")
+        self.assertIsNotNone(extension)
         self.assertEqual(extension.schema_version, 2)
-        self.assertGreaterEqual(len(extension.pages), 1)
+        self.assertIn("custom_pages", extension.required_capabilities)
+        self.assertEqual(len(extension.pages), 3)
+        for page in extension.pages:
+            self.assertEqual(page.mode, "custom")
+            self.assertTrue(page.document.strip())
+            self.assertEqual(len(page.document_revision), 64)
 
 
 if __name__ == "__main__":

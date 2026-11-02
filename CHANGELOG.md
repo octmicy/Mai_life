@@ -1,5 +1,13 @@
 # 更新日志
 
+## [1.24.9] - 2026-11-03
+
+### 变更
+
+- **WebUI 扩展整体迁移为自写 HTML 页面（宿主 custom page 协议 v2）**：原 7 个声明式组件页（332 组件）废弃，改为 3 个 `mode:"custom"` 沙箱页面——「麦麦此刻」（工作区：生命实况舱、生理体征仪表、二维情绪罗盘、72h 双轴轨迹、24h 日程甘特轴、Token 监控台）、「记忆与牵挂」（5-Tab：关系温度/重要日期/日记梦境/书柜创作/联网见闻）、「系统与配置」（耦合自检、主动巡检漏斗、群矩阵、配置透视）。数据层零改动：11 个 `webui_*` 只读 @API 原样复用，页面经宿主 `window.maibot` 桥调用（并发≤2、60s 超时、CSP 全内联、主题/暗色/三皮肤自动跟随）。需要 MaiBot ≥1.3.19（custom page 引入版本）。
+- **交付文档** `docs/webui-extension.md` 重写为 custom page 契约（页面/API 映射、沙箱规范、热重载与 schema 校验命令）。
+- 结构契约测试重写：`V11412WebuiJsonStructureTests`/`V11412WebuiRendererBindingTests`/`V11417WebuiProtocolV2Tests` 对齐 custom_pages 与宿主 `load_webui_extension` 真实 schema（宿主缺失时自动 skip）；11 个 API 形状测试类不动。
+
 ## [1.24.8] - 2026-11-01
 
 ### 新增

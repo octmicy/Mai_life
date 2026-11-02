@@ -306,6 +306,41 @@
     text-align: right;
     word-break: break-all;
   }
+  .ml-cfg-edit {
+    background: transparent;
+    color: var(--ml-muted);
+    border: 1px solid var(--ml-border);
+    border-radius: calc(var(--ml-radius) - 6px);
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 7px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .ml-cfg-edit:hover { color: var(--ml-ink); border-color: var(--ml-primary, var(--ml-ink)); }
+  .ml-cfg-input {
+    background: var(--maibot-soft, rgba(128,128,128,0.08));
+    color: var(--ml-ink);
+    border: 1px solid var(--ml-border);
+    border-radius: calc(var(--ml-radius) - 6px);
+    padding: 3px 8px;
+    font: inherit;
+    font-size: 12px;
+    font-family: var(--ml-font-mono);
+    max-width: 170px;
+  }
+  .ml-cfg-input:focus-visible { outline: 2px solid var(--ml-primary, var(--ml-ink)); outline-offset: 1px; }
+  .ml-cfg-act {
+    background: transparent;
+    border: none;
+    font-size: 11.5px;
+    padding: 3px 6px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .ml-cfg-act.ok { color: var(--status-good-ink); }
+  .ml-cfg-act.cancel { color: var(--ml-muted); }
+  .ml-cfg-act:disabled { opacity: 0.5; cursor: wait; }
 
   .ml-input {
     padding: 7px 12px;
@@ -729,10 +764,12 @@
       </div>
     `;
 
-    // 2. Render 13 Config Sections with keyword filter
+    // 2. Render 13 Config Sections with keyword filter（editable 是回写清单，不当配置节渲染）
+    const EDITABLE = cfg.editable || {};
     const q = state.cfgSearch.trim().toLowerCase();
     const grid = document.getElementById('cfg-cards-grid');
-    const entries = Object.entries(cfg).filter(([secKey, secObj]) => typeof secObj === 'object' && secObj !== null);
+    const entries = Object.entries(cfg).filter(([secKey, secObj]) =>
+      secKey !== 'editable' && typeof secObj === 'object' && secObj !== null);
 
     const cardsHtml = [];
     for (const [secKey, secObj] of entries) {
@@ -760,10 +797,12 @@
               const valStr = String(v ?? '—');
               const isOn = valStr === '开启' || valStr === '开';
               const isOff = valStr === '关闭' || valStr === '关';
+              const etype = (EDITABLE[secKey] || {})[k];
               return `
                 <div class="ml-cfg-kv">
                   <span class="ml-cfg-k" title="${esc(k)}">${esc(label)} <small style="opacity:0.65;">(${esc(k)})</small></span>
                   <span class="ml-cfg-v" style="${isOn ? 'color:var(--status-good-ink);' : isOff ? 'color:var(--ml-muted);' : ''}">${esc(valStr)}</span>
+                  ${etype ? `<button type="button" class="ml-cfg-edit" data-sec="${esc(secKey)}" data-key="${esc(k)}" data-type="${esc(etype)}" data-raw="${esc(valStr)}" title="修改 ${esc(secKey)}.${esc(k)}">✎</button>` : ''}
                 </div>
               `;
             }).join('')}
@@ -775,6 +814,78 @@
     grid.innerHTML = cardsHtml.length
       ? cardsHtml.join('')
       : '<div class="ml-empty">没有匹配该搜索词的配置项</div>';
+  }
+
+  // ---- 配置回写编辑器：单格 ✎ → 输入 → 保存（宿主确认弹窗 → webui_config_save 热生效）----
+  let cfgEditing = null; // {sec, key, vSpan, oldHtml}
+
+  function openCfgEditor(btn) {
+    if (cfgEditing) cancelCfgEditor();
+    const sec = btn.dataset.sec, key = btn.dataset.key, type = btn.dataset.type, cur = btn.dataset.raw || '';
+    const vSpan = btn.closest('.ml-cfg-kv').querySelector('.ml-cfg-v');
+    let fieldHtml;
+    if (type === 'bool') {
+      const on = cur === '开启' || cur === '开';
+      fieldHtml = `<select class="ml-cfg-input"><option value="true"${on ? ' selected' : ''}>开启</option><option value="false"${on ? '' : ' selected'}>关闭</option></select>`;
+    } else if (type === 'int' || type === 'float') {
+      const numeric = /^-?\d+(\.\d+)?$/.test(cur) ? cur : '';
+      fieldHtml = `<input type="number"${type === 'int' ? ' step="1"' : ' step="any"'} class="ml-cfg-input" value="${esc(numeric)}" placeholder="${esc(cur)}">`;
+    } else {
+      fieldHtml = `<input type="text" class="ml-cfg-input" value="${esc(cur)}">`;
+    }
+    cfgEditing = { sec, key, vSpan, oldHtml: vSpan.innerHTML };
+    vSpan.innerHTML = `${fieldHtml}<button type="button" class="ml-cfg-act ok">保存</button><button type="button" class="ml-cfg-act cancel">取消</button>`;
+    const input = vSpan.querySelector('.ml-cfg-input');
+    if (input.tagName === 'INPUT') input.select();
+    vSpan.querySelector('.ml-cfg-act.ok').addEventListener('click', submitCfgEdit);
+    vSpan.querySelector('.ml-cfg-act.cancel').addEventListener('click', cancelCfgEditor);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitCfgEdit();
+      if (e.key === 'Escape') cancelCfgEditor();
+    });
+    input.focus();
+  }
+
+  function cancelCfgEditor() {
+    if (!cfgEditing) return;
+    cfgEditing.vSpan.innerHTML = cfgEditing.oldHtml;
+    cfgEditing = null;
+  }
+
+  async function submitCfgEdit() {
+    if (!cfgEditing) return;
+    const input = cfgEditing.vSpan.querySelector('.ml-cfg-input');
+    const { sec, key } = cfgEditing;
+    const okBtn = cfgEditing.vSpan.querySelector('.ml-cfg-act.ok');
+    okBtn.disabled = true;
+    okBtn.textContent = '…';
+    try {
+      const res = await window.maibot.action('save', { section: sec, key, value: input.value });
+      if (res && res.success === false) throw new Error(res.error || '保存失败');
+      if (cfgEditing) {
+        cfgEditing.vSpan.innerHTML = '<span style="color:var(--status-good-ink);font-size:12px;">已保存，刷新中…</span>';
+        cfgEditing = null;
+      }
+      await refreshConfig();
+    } catch (err) {
+      const banner = document.getElementById('error-banner');
+      document.getElementById('error-text').textContent = `配置保存失败：${err?.message || String(err)}`;
+      banner.classList.add('active');
+      if (cfgEditing) {
+        cfgEditing.vSpan.innerHTML = cfgEditing.oldHtml;
+        cfgEditing = null;
+      }
+    }
+  }
+
+  async function refreshConfig() {
+    const errors = await runQueriesWithLimit([
+      { name: 'config', label: '配置摘要', onSuccess: (r) => { state.config = r; renderConfig(); } },
+    ], 2);
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      document.getElementById('error-banner').classList.add('active');
+    }
   }
 
   async function loadAll() {
@@ -804,6 +915,13 @@
   document.getElementById('cfg-search-input').addEventListener('input', (e) => {
     state.cfgSearch = e.target.value || '';
     renderConfig();
+  });
+
+  document.getElementById('cfg-cards-grid').addEventListener('click', (e) => {
+    const edit = e.target.closest('.ml-cfg-edit');
+    if (edit) { openCfgEditor(edit); return; }
+    if (e.target.closest('.ml-cfg-act.ok')) { submitCfgEdit(); return; }
+    if (e.target.closest('.ml-cfg-act.cancel')) cancelCfgEditor();
   });
 
   document.getElementById('btn-refresh').addEventListener('click', loadAll);

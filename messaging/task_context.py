@@ -260,6 +260,10 @@ class ActiveTaskRegistry:
 
         v1.24.2 修复：direct 首段成功发送后（sent=True），该锚点必须继续放行同锚分段——
         否则多段回复的第 2 段起全部被 before_send 拦截，宿主把整轮回复判为失败。
+        v1.24.9 修复（Issue #10）：两个 Hook 的 reply_message_id 不同源——replyer.after_response
+        阶段 reply_message 为 None（登记空锚点），before_send 却拿到首段 target_message 的
+        真实消息号（_resolve_segment_reply_context 不检查 set_quote）。空锚点不构成"不同锚点"
+        的证据，视为同一轮；首个真实锚点回填登记，多段发送继续按字面相等放行。
         """
         async with self._lock:
             self._prune_locked(now)
@@ -269,9 +273,15 @@ class ActiveTaskRegistry:
             if item.sent:
                 # direct 锚点仅在非空时放行同锚分段；空锚点 direct 发送无分段概念，
                 # sent 后必须继续拦截，防止同一主动任务重复发送多条消息。
-                return bool((item.reply_reserved and item.reply_anchor == anchor)
+                # reply 锚点放宽只认"登记为空"（Issue #10 的登记形态）：登记了真实锚点后，
+                # 空锚点直发依旧拦截，保持同一任务只发一轮回复的语义。
+                return bool((item.reply_reserved and (not item.reply_anchor or item.reply_anchor == anchor))
                             or (anchor and item.direct_send_reserved and item.direct_anchor == anchor))
             if item.reply_reserved:
+                if not item.reply_anchor:
+                    # 空登记锚点：任一传入都算同一轮，真实锚点顺手回填，后续分段走严格相等。
+                    item.reply_anchor = anchor
+                    return True
                 return item.reply_anchor == anchor
             if item.direct_send_reserved:
                 return False

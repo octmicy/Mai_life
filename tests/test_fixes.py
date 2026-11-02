@@ -23,6 +23,7 @@ import re
 import sqlite3
 import tempfile
 import time
+import tomllib
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -47,7 +48,7 @@ from Mai_life.messaging.task_context import (
     PLUGIN_ID,
     PluginTaskMarker,
 )
-from Mai_life.plugin import MaiLifePlugin
+from Mai_life.plugin import MaiLifePlugin,_config_scalar_type
 from Mai_life.social.group_observer import GroupObserver
 from Mai_life.social.relay_service import RelayService
 
@@ -4543,7 +4544,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_config_summary_sections_keys_and_switch_words(self):
         plugin = await self._plugin()
         data = await plugin.webui_config_summary()
-        self.assertEqual(set(data), set(self.SECTIONS))
+        self.assertEqual(set(data), set(self.SECTIONS) | {"editable"})
         self.assertEqual(set(data["plugin"]), {"enabled", "version"})
         self.assertEqual(data["plugin"], {"enabled": "开启", "version": PLUGIN_VERSION})
         self.assertEqual(data["users"], {"configured": 2, "enabled": 1})
@@ -4636,6 +4637,100 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         plugin = await self._plugin(drawpic_loaded=None)
         data = await plugin.webui_config_summary()
         self.assertEqual(data["linkage"], {"drawpic_enabled": "开启", "drawpic_detected": "关闭"})
+
+
+class V1249ConfigSaveTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.9：webui_config_save 单键回写——字符串强转、全模型校验、落盘 config.toml、
+    set_plugin_config + self 热更新；派生键/未知键/非法值/越界值全部拒绝且无副作用。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.users.profiles = [UserProfile(user_id="30001", role="owner", enabled=True)]
+        self.logger = RecordingLogger()
+        self.plugin = await build_plugin(self.store, self.config, ctx=DummyCtx(self.logger), llm=DummyLLM(),
+                                         users=[UserProfile(user_id="30001", role="owner", enabled=True)])
+        self.toml_path = os.path.join(self.tmp.name, "config.toml")
+        self.plugin._config_toml_path = self.toml_path
+        # 热更新链路单测只验证接线（scope/数据/版本），完整 _apply_config_update 有既有测试覆盖。
+        self.applied: list[tuple[str, dict[str, Any], str]] = []
+        self.plugin.on_config_update = self._record_apply
+
+    async def _record_apply(self, scope: str, config_data: dict, version: str):
+        self.applied.append((scope, config_data, version))
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    def _file(self) -> dict:
+        self.assertTrue(os.path.exists(self.toml_path), "config.toml 未落盘")
+        with open(self.toml_path, "rb") as handle:
+            return tomllib.load(handle)
+
+    async def test_bool_roundtrip_updates_instance_and_file(self):
+        result = await self.plugin.webui_config_save(section="context", key="enabled", value="关闭")
+        self.assertTrue(result.get("success"), result)
+        self.assertEqual(result["applied"], {"section": "context", "key": "enabled", "value": False})
+        self.assertFalse(self.plugin.config.context.enabled)
+        self.assertEqual(self._file()["context"]["enabled"], False)
+        self.assertEqual(self.applied[0][0], "self")
+        self.assertEqual(self.applied[0][2], "1.13.0")
+        self.assertFalse(self.applied[0][1]["context"]["enabled"])
+
+    async def test_int_and_float_coercion(self):
+        ok = await self.plugin.webui_config_save(section="rest_gate", key="llm_threshold", value="88")
+        self.assertTrue(ok.get("success"), ok)
+        self.assertEqual(self.plugin.config.rest_gate.llm_threshold, 88)
+        ok = await self.plugin.webui_config_save(section="memory", key="dream_probability", value="0.55")
+        self.assertTrue(ok.get("success"), ok)
+        self.assertEqual(self.plugin.config.memory.dream_probability, 0.55)
+        self.assertEqual(self._file()["memory"]["dream_probability"], 0.55)
+
+    async def test_literal_choice_enforced(self):
+        bad = await self.plugin.webui_config_save(section="rest_gate", key="gate_mode", value="bogus")
+        self.assertFalse(bad.get("success"))
+        self.assertIn("取值只能是", str(bad.get("error")))
+        good = await self.plugin.webui_config_save(section="rest_gate", key="gate_mode", value="schedule")
+        self.assertTrue(good.get("success"), good)
+        self.assertEqual(self.plugin.config.rest_gate.gate_mode, "schedule")
+
+    async def test_range_rejection_leaves_no_side_effects(self):
+        with open(self.toml_path, "w", encoding="utf-8") as handle:
+            handle.write("[rest_gate]\nllm_threshold = 70\n")
+        bad = await self.plugin.webui_config_save(section="rest_gate", key="wake_probability", value="5")
+        self.assertFalse(bad.get("success"))
+        self.assertIn("校验未通过", str(bad.get("error")))
+        self.assertEqual(self.plugin.config.rest_gate.wake_probability, 0.18)
+        self.assertEqual(self.applied, [])
+        self.assertEqual(self._file()["rest_gate"], {"llm_threshold": 70})
+
+    async def test_unknown_and_derived_keys_rejected(self):
+        unknown = await self.plugin.webui_config_save(section="context", key="not_a_field", value="1")
+        self.assertFalse(unknown.get("success"))
+        self.assertIn("未知", str(unknown.get("error")))
+        derived = await self.plugin.webui_config_save(section="rest_gate", key="night_window", value="00:00-23:59")
+        self.assertFalse(derived.get("success"))
+        self.assertIn("不可修改", str(derived.get("error")))
+        derived_list = await self.plugin.webui_config_save(section="group", key="gate_segment_types", value="sleep")
+        self.assertFalse(derived_list.get("success"))
+        self.assertEqual(self.applied, [])
+
+    async def test_summary_exposes_editable_map(self):
+        data = await self.plugin.webui_config_summary()
+        editable = data["editable"]
+        self.assertEqual(editable["rest_gate"]["wake_probability"], "float")
+        self.assertEqual(editable["context"]["enabled"], "bool")
+        self.assertEqual(editable["models"]["fast_task"], "str")
+        self.assertNotIn("night_window", editable.get("rest_gate", {}))
+        self.assertNotIn("users", editable)
+        self.assertEqual(editable["plugin"], {"enabled": "bool"})
+        # editable 清单里的每一项都必须能被 save 通道解析到类型层（非法值才会被拒）。
+        for section, fields in editable.items():
+            model = self.plugin._config_section_model(section)
+            for key, kind in fields.items():
+                self.assertEqual(_config_scalar_type(model.model_fields[key].annotation), kind)
+                self.assertNotIn(key, self.plugin._EDITABLE_DERIVED.get(section, frozenset()))
 
 
 class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
@@ -4873,8 +4968,20 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 self.assertIn(binding.get("api"), registered,
                               f"查询 {alias} 绑定未注册 API: {binding.get('api')}")
                 bound.add(str(binding.get("api")))
-            # 只读约束：零 actions，写操作全部走命令层。
-            self.assertEqual(page.get("actions") or {}, {}, f"{page['id']} 不得声明 actions")
+            # v1.24.9 起仅 system 页可写：save 动作回写单键配置，其余页保持零 actions。
+            actions = page.get("actions") or {}
+            if str(page.get("id")) == "system":
+                self.assertEqual(set(actions), {"save"}, f"{page['id']} 只允许 save 动作")
+                save = actions["save"]
+                self.assertEqual(save.get("api"), "webui_config_save")
+                self.assertEqual(save.get("version"), "1")
+                self.assertTrue(str(save.get("confirmation") or ""), "配置回写必须声明确认文案")
+                self.assertEqual(set(save.get("parameters") or {}), {"section", "key", "value"})
+                for param in (save.get("parameters") or {}).values():
+                    self.assertEqual(param.get("type"), "string")
+                    self.assertTrue(param.get("required"))
+            else:
+                self.assertEqual(actions, {}, f"{page['id']} 不得声明 actions")
         # 11 个 WebUI 只读 API 必须全部被页面消费，也不许多绑其他 API。
         self.assertEqual(bound, set(WEBUI_API_NAMES))
 
@@ -5042,7 +5149,7 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
         "memories": {"generated_at", "last_diary_day", "diary_count", "dream_count", "diaries", "diaries_full_text", "latest_dream", "dreams"},
         "shelf": {"counts", "creation", "books", "books_full_text", "runs"},
         "digest": {"status", "news", "news_full_text", "explorations", "explorations_full_text", "search_history"},
-        "config": {"plugin", "users", "models", "environment", "linkage", "context", "rest_gate", "group", "memory", "network", "creation", "schedule", "proactive", "usage"},
+        "config": {"plugin", "users", "models", "environment", "linkage", "context", "rest_gate", "group", "memory", "network", "creation", "schedule", "proactive", "usage", "editable"},
         "admin": {"overview", "groups", "proactive"},
     }
 

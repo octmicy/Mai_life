@@ -513,7 +513,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         data=await self.plugin.webui_config_summary()
         self.assertEqual(set(data),{"plugin","users","models","environment","linkage",
                                     "context","rest_gate","group","network","memory","creation",
-                                    "schedule","proactive","usage"})
+                                    "schedule","proactive","usage","editable"})
         self.assertEqual(set(data["rest_gate"]),{"enabled","mode","gate_mode","wake_probability","llm_threshold",
                                                  "awake_grace_minutes","silence_minutes","night_window",
                                                  "nap_window"})

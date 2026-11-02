@@ -2,9 +2,18 @@
 
 ## [1.24.9] - 2026-11-03
 
+### 新增
+
+- **「系统与配置」页支持修改插件自身设置**：新增 `webui_config_save` 单键回写 API（字符串强转 → 全模型校验 → 写回 config.toml → `set_plugin_config` + self 作用域热更新），配置摘要带 `editable` 字段类型清单驱动页面编辑器；保存走宿主确认弹窗，派生键/列表字段/未知键/越界值全部拒绝且无副作用；落盘优先 tomlkit 保留注释，缺库时退化为重写。可编辑范围 = 配置摘要中与模型字段同名且为标量（bool/int/float/str，含 Literal 枚举约束）的键。
+
+### 修复
+
+- **主动/转述回复在发送前被静默 abort（Issue #10）**：`replyer.after_response` 阶段 Host 传空 `reply_message_id`（生成阶段 reply_message 为 None），`send_service.before_send` 却拿到首段 target_message 的真实消息号（`_resolve_segment_reply_context` 不检查 `set_quote`）——`reserve_send` 严格相等比较把空锚点≠真实消息号判为不同轮，整轮回复被拦。现在空登记锚点视为同一轮并回填首个真实锚点（多段发送走严格相等），sent 后的放宽只认"登记为空"，空锚点直发依旧拦截；已回填真实锚点后其他消息号不得劫持本轮。
+- **发送前拦截全程可观测**：`on_send_before` 六个 abort 分支补 reason 日志（此前 Host 侧静默，线上无法定位）。
+
 ### 变更
 
-- **WebUI 扩展整体迁移为自写 HTML 页面（宿主 custom page 协议 v2）**：原 7 个声明式组件页（332 组件）废弃，改为 3 个 `mode:"custom"` 沙箱页面——「麦麦此刻」（工作区：生命实况舱、生理体征仪表、二维情绪罗盘、72h 双轴轨迹、24h 日程甘特轴、Token 监控台）、「记忆与牵挂」（5-Tab：关系温度/重要日期/日记梦境/书柜创作/联网见闻）、「系统与配置」（耦合自检、主动巡检漏斗、群矩阵、配置透视）。数据层零改动：11 个 `webui_*` 只读 @API 原样复用，页面经宿主 `window.maibot` 桥调用（并发≤2、60s 超时、CSP 全内联、主题/暗色/三皮肤自动跟随）。需要 MaiBot ≥1.3.19（custom page 引入版本）。
+- **WebUI 扩展整体迁移为自写 HTML 页面（宿主 custom page 协议 v2）**：原 7 个声明式组件页（332 组件）废弃，改为 3 个 `mode:"custom"` 沙箱页面——「麦麦此刻」（工作区：生命实况舱、生理体征仪表、二维情绪罗盘、72h 双轴轨迹、24h 日程甘特轴、Token 监控台）、「记忆与牵挂」（5-Tab：关系温度/重要日期/日记梦境/书柜创作/联网见闻）、「系统与配置」（耦合自检、主动巡检漏斗、群矩阵、配置透视与回写）。数据层：11 个 `webui_*` 只读 @API 原样复用 + 1 个回写 API，页面经宿主 `window.maibot` 桥调用（并发≤2、60s 超时、CSP 全内联、主题/暗色/三皮肤自动跟随）。需要 MaiBot ≥1.3.19（custom page 引入版本）。
 - **交付文档** `docs/webui-extension.md` 重写为 custom page 契约（页面/API 映射、沙箱规范、热重载与 schema 校验命令）。
 - 结构契约测试重写：`V11412WebuiJsonStructureTests`/`V11412WebuiRendererBindingTests`/`V11417WebuiProtocolV2Tests` 对齐 custom_pages 与宿主 `load_webui_extension` 真实 schema（宿主缺失时自动 skip）；11 个 API 形状测试类不动。
 

@@ -83,6 +83,18 @@
           "api": "webui_admin_summary",
           "version": "1"
         }
+      },
+      "actions": {
+        "save": {
+          "api": "webui_config_save",
+          "version": "1",
+          "parameters": {
+            "section": {"type": "string", "required": true, "max_length": 64},
+            "key": {"type": "string", "required": true, "max_length": 64},
+            "value": {"type": "string", "required": true, "max_length": 4000}
+          },
+          "confirmation": "确认修改该配置项？保存后写入 config.toml 并立即热生效。"
+        }
       }
     }
   ]

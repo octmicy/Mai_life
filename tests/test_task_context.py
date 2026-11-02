@@ -221,6 +221,45 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await plugin.on_send_before(message=message,set_reply=False,
                                                       reply_message_id=anchor))["action"],"abort")
 
+    async def test_issue10_replyer_empty_anchor_then_real_send_anchor_passes(self):
+        """Issue #10：replyer.after_response 登记空锚点（生成阶段 reply_message 为 None），
+        before_send 拿到首段 target_message 的真实消息号（不检查 set_quote）——同一轮必须放行。"""
+        plugin,session,event_id,task_id=await self._private_task(51,"napcat")
+        generated=await plugin.on_replyer_after(session_id=session,response="早安呀，夜航～",
+                                                reply_message_id="")
+        self.assertEqual(generated["modified_kwargs"]["response"],"早安呀，夜航～")
+        message={"session_id":session,"message_info":{"additional_config":{"napcat_message_type":"private"}},
+                 "raw_message":[{"type":"text","data":"早安呀，夜航～"}]}
+        before=await plugin.on_send_before(message=message,set_reply=False,reply_message_id="1594727086")
+        self.assertEqual(before["action"],"continue",before)
+        # 空锚点已被回填为真实消息号：同轮复核按字面相等放行。
+        again=await plugin.on_send_before(message=message,set_reply=False,reply_message_id="1594727086")
+        self.assertEqual(again["action"],"continue")
+
+    async def test_issue10_multi_segment_after_sent_passes_with_real_anchor(self):
+        plugin,session,event_id,task_id=await self._private_task(52,"napcat")
+        await plugin.on_replyer_after(session_id=session,response="第一段",reply_message_id="")
+        message={"session_id":session,"message_info":{"additional_config":{"napcat_message_type":"private"}},
+                 "raw_message":[{"type":"text","data":"第一段"}]}
+        first=await plugin.on_send_before(message=message,set_reply=False,reply_message_id="1594727086")
+        self.assertEqual(first["action"],"continue")
+        await plugin._active_tasks.finish_send(session,task_id,"1594727086",True,time.time())
+        second=await plugin.on_send_before(message=message,set_reply=False,reply_message_id="1594727086")
+        self.assertEqual(second["action"],"continue")
+
+    async def test_issue10_different_real_anchor_still_blocked(self):
+        """锚点放宽只覆盖空↔非空：真实锚点回填后，别的消息号依旧不得劫持本轮发送。"""
+        plugin,session,event_id,task_id=await self._private_task(53,"napcat")
+        await plugin.on_replyer_after(session_id=session,response="回复",reply_message_id="")
+        message={"session_id":session,"message_info":{"additional_config":{"napcat_message_type":"private"}},
+                 "raw_message":[{"type":"text","data":"回复"}]}
+        self.assertEqual((await plugin.on_send_before(message=message,set_reply=False,
+                                                      reply_message_id="1594727086"))["action"],"continue")
+        hijack={"session_id":session,"message_info":{"additional_config":{"napcat_message_type":"private"}},
+                "raw_message":[{"type":"text","data":"别的消息号"}]}
+        self.assertEqual((await plugin.on_send_before(message=hijack,set_reply=False,
+                                                      reply_message_id="9999999999"))["action"],"abort")
+
     async def test_relay_keeps_plain_segments_and_real_quote_for_both_adapters(self):
         for index,adapter in enumerate(("napcat","snowluma"),start=40):
             now=time.time(); session=f"group-{index}"; relay_id=f"relay-{index}"

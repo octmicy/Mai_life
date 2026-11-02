@@ -1,0 +1,945 @@
+<style>
+  .ml-root {
+    --ml-bg: var(--maibot-background, #f9f9f7);
+    --ml-surface: var(--maibot-surface, #fcfcfb);
+    --ml-fg: var(--maibot-foreground, #0b0b0b);
+    --ml-muted: var(--maibot-muted, #6e6d68);
+    --ml-soft: var(--maibot-soft, #f1f0ec);
+    --ml-border: var(--maibot-border, rgba(11, 11, 11, 0.10));
+    --ml-primary: var(--maibot-primary, #2a78d6);
+    --ml-primary-fg: var(--maibot-primary-foreground, #ffffff);
+    --ml-danger: var(--maibot-danger, #d03b3b);
+    --ml-radius: var(--maibot-radius, 12px);
+    --ml-font-body: var(--maibot-font-body, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif);
+    --ml-font-display: var(--maibot-font-display, var(--ml-font-body));
+    --ml-font-mono: var(--maibot-font-mono, ui-monospace, "JetBrains Mono", Consolas, monospace);
+
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --status-good: #0ca30c;
+    --status-good-ink: #006300;
+    --status-warn: #fab219;
+    --status-serious: #ec835a;
+    --status-crit: #d03b3b;
+
+    font-family: var(--ml-font-body);
+    color: var(--ml-fg);
+    padding: 20px 24px 40px;
+    max-width: 1440px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+
+  :root.dark .ml-root,
+  html.dark .ml-root {
+    --ml-bg: var(--maibot-background, #0d0d0d);
+    --ml-surface: var(--maibot-surface, #1a1a19);
+    --ml-fg: var(--maibot-foreground, #f0efec);
+    --ml-muted: var(--maibot-muted, #9a9890);
+    --ml-soft: var(--maibot-soft, #252523);
+    --ml-border: var(--maibot-border, rgba(255, 255, 255, 0.10));
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --status-good-ink: #0ca30c;
+  }
+
+  .ml-root *, .ml-root *::before, .ml-root *::after {
+    box-sizing: border-box;
+  }
+
+  .ml-topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ml-brand-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--series-3);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 17px;
+  }
+  .ml-brand-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .ml-brand-sub {
+    font-size: 12px;
+    color: var(--ml-muted);
+    margin-top: 2px;
+  }
+  .ml-nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ml-btn {
+    padding: 7px 13px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ml-btn:hover:not(:disabled) {
+    background: var(--ml-soft);
+  }
+  .ml-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .ml-btn-primary {
+    background: var(--ml-primary);
+    color: var(--ml-primary-fg);
+    border-color: var(--ml-primary);
+  }
+
+  .ml-error-banner {
+    display: none;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--status-crit);
+    background: rgba(208, 59, 59, 0.08);
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .ml-error-banner.active {
+    display: flex;
+  }
+
+  .ml-card {
+    background: var(--ml-surface);
+    border: 1px solid var(--ml-border);
+    border-radius: var(--ml-radius);
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .ml-card-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-card-title {
+    font-size: 15px;
+    font-weight: 650;
+    margin: 0;
+  }
+
+  .ml-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .ml-kpi-tile {
+    padding: 12px 14px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+  }
+  .ml-kpi-label {
+    font-size: 11.5px;
+    color: var(--ml-muted);
+    margin-bottom: 4px;
+  }
+  .ml-kpi-value {
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .ml-kpi-sub {
+    font-size: 11px;
+    color: var(--ml-muted);
+    margin-top: 3px;
+  }
+
+  .ml-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    font-size: 11.5px;
+    font-weight: 500;
+    border-radius: 999px;
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    white-space: nowrap;
+  }
+  .ml-badge-good {
+    color: var(--status-good-ink);
+    border-color: rgba(12, 163, 12, 0.35);
+    background: rgba(12, 163, 12, 0.08);
+  }
+  .ml-badge-warn {
+    border-color: rgba(250, 178, 25, 0.55);
+    background: rgba(250, 178, 25, 0.16);
+  }
+
+  /* Diagnostic Callouts */
+  .ml-diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .ml-diag-card {
+    padding: 13px 15px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+    border-left: 4px solid var(--series-1);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .ml-diag-card.warn {
+    border-left-color: var(--status-warn);
+  }
+
+  /* Proactive Split */
+  .ml-split-2 {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 960px) {
+    .ml-split-2 {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .ml-skip-row {
+    margin-bottom: 10px;
+  }
+  .ml-skip-top {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    margin-bottom: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ml-skip-track {
+    height: 8px;
+    background: var(--ml-soft);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .ml-skip-fill {
+    height: 100%;
+    background: var(--series-1);
+    border-radius: 4px;
+  }
+
+  /* Config Inspector Grid */
+  .ml-cfg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 14px;
+  }
+  .ml-cfg-card {
+    padding: 14px 16px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+  }
+  .ml-cfg-sec-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 0 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--ml-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .ml-cfg-kv {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 0;
+    font-size: 12.5px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  }
+  .ml-cfg-kv:last-child {
+    border-bottom: none;
+  }
+  .ml-cfg-k {
+    color: var(--ml-muted);
+  }
+  .ml-cfg-v {
+    font-weight: 600;
+    font-family: var(--ml-font-mono);
+    text-align: right;
+    word-break: break-all;
+  }
+  .ml-cfg-edit {
+    background: transparent;
+    color: var(--ml-muted);
+    border: 1px solid var(--ml-border);
+    border-radius: calc(var(--ml-radius) - 6px);
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 7px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .ml-cfg-edit:hover { color: var(--ml-ink); border-color: var(--ml-primary, var(--ml-ink)); }
+  .ml-cfg-input {
+    background: var(--maibot-soft, rgba(128,128,128,0.08));
+    color: var(--ml-ink);
+    border: 1px solid var(--ml-border);
+    border-radius: calc(var(--ml-radius) - 6px);
+    padding: 3px 8px;
+    font: inherit;
+    font-size: 12px;
+    font-family: var(--ml-font-mono);
+    max-width: 170px;
+  }
+  .ml-cfg-input:focus-visible { outline: 2px solid var(--ml-primary, var(--ml-ink)); outline-offset: 1px; }
+  .ml-cfg-act {
+    background: transparent;
+    border: none;
+    font-size: 11.5px;
+    padding: 3px 6px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .ml-cfg-act.ok { color: var(--status-good-ink); }
+  .ml-cfg-act.cancel { color: var(--ml-muted); }
+  .ml-cfg-act:disabled { opacity: 0.5; cursor: wait; }
+
+  .ml-input {
+    padding: 7px 12px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    font-size: 13px;
+    min-width: 250px;
+  }
+
+  .ml-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .ml-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .ml-table th,
+  .ml-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ml-border);
+    text-align: left;
+  }
+  .ml-table th {
+    color: var(--ml-muted);
+    font-weight: 600;
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .ml-table td.num,
+  .ml-table th.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ml-empty {
+    padding: 24px 14px;
+    text-align: center;
+    color: var(--ml-muted);
+    font-size: 13px;
+  }
+</style>
+
+<div class="maibot-page ml-root">
+  <!-- 顶部栏 -->
+  <header class="ml-topbar">
+    <div class="ml-brand">
+      <div class="ml-brand-icon" aria-hidden="true">统</div>
+      <div>
+        <h1 class="ml-brand-title">系统与配置 · 巡检诊断、群矩阵与配置透视</h1>
+        <div class="ml-brand-sub" id="sys-subtitle">规则层确定性守门 · 只读安全透视（修改配置请前往插件设置）</div>
+      </div>
+    </div>
+    <div class="ml-nav-actions">
+      <button type="button" class="ml-btn" id="btn-to-overview">← 麦麦此刻</button>
+      <button type="button" class="ml-btn" id="btn-to-life">记忆与牵挂 →</button>
+      <button type="button" class="ml-btn ml-btn-primary" id="btn-refresh">刷新诊断</button>
+    </div>
+  </header>
+
+  <div class="ml-error-banner" id="error-banner" role="alert">
+    <div><strong>诊断数据拉取异常：</strong><span id="error-text"></span></div>
+    <button type="button" class="ml-btn" id="btn-retry">立即重试</button>
+  </div>
+
+  <!-- 顶层核心计数 KPI -->
+  <section class="ml-kpi-row" id="admin-kpi-row"></section>
+
+  <!-- 耦合与高频排坑诊断条（根据 config 实时推导） -->
+  <section class="ml-diag-grid" id="diag-callouts"></section>
+
+  <!-- 主动私聊巡检漏斗诊断台 -->
+  <section class="ml-card" id="sec-proactive">
+    <div class="ml-card-header">
+      <h2 class="ml-card-title">主动私聊巡检诊断台 (Proactive Patrol Funnel)</h2>
+      <span class="ml-badge">硬过滤 → 软评分 → 消费契机 → Host Planner 终审</span>
+    </div>
+    <div class="ml-split-2">
+      <!-- 左侧：待发送/近期主动候选事件 -->
+      <div>
+        <div style="font-size:13px;font-weight:650;margin-bottom:8px;">近期主动契机队列 (Candidates)</div>
+        <div class="ml-table-wrap">
+          <table class="ml-table">
+            <thead>
+              <tr>
+                <th>目标用户 (QQ)</th>
+                <th>契机话题 (Topic)</th>
+                <th>状态</th>
+                <th>创建 / 过期时间</th>
+              </tr>
+            </thead>
+            <tbody id="proactive-candidates-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 右侧：今日主动跳过原因分布 -->
+      <div>
+        <div style="font-size:13px;font-weight:650;margin-bottom:8px;">今日巡检跳过原因分布 (Skip Reasons)</div>
+        <div id="proactive-skips-bars"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- QQ 群白名单与观察/转述矩阵 -->
+  <section class="ml-card" id="sec-groups">
+    <div class="ml-card-header">
+      <h2 class="ml-card-title">QQ 群观察与转述配置矩阵 (Group Profiles)</h2>
+      <span class="ml-badge" id="groups-count-badge">0 个群</span>
+    </div>
+    <div class="ml-table-wrap">
+      <table class="ml-table">
+        <thead>
+          <tr>
+            <th>群号 (group_id)</th>
+            <th>群名称备注</th>
+            <th>群总开关</th>
+            <th>后台群观察 (observe)</th>
+            <th>群转述目标 (relay_target)</th>
+            <th>Stream 会话已识别</th>
+          </tr>
+        </thead>
+        <tbody id="groups-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 全量配置只读透视面板 -->
+  <section class="ml-card" id="sec-config">
+    <div class="ml-card-header">
+      <h2 class="ml-card-title">全量只读配置透视 (13 个配置节)</h2>
+      <input type="search" class="ml-input" id="cfg-search-input" placeholder="搜索配置节或参数名（如 gate_mode / drawpic / 阈值）…"/>
+    </div>
+    <div class="ml-cfg-grid" id="cfg-cards-grid">
+      <div class="ml-empty">正在读取配置摘要…</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const state = {
+    admin: null,
+    config: null,
+    cfgSearch: '',
+    loading: false,
+  };
+
+  const SECTION_META = {
+    plugin: { title: '插件基础 (plugin)', badge: '核心' },
+    users: { title: '用户档案统计 (users)', badge: '社交' },
+    models: { title: '模型任务路由 (models)', badge: 'LLM' },
+    environment: { title: '环境与天气 (environment)', badge: '感知' },
+    linkage: { title: '外部插件联动 (linkage)', badge: '联动' },
+    context: { title: '上下文注入与连续性 (context)', badge: '管线' },
+    rest_gate: { title: '私聊休息闸门 (rest_gate)', badge: '守门' },
+    group: { title: '群聊观察与闸门 (group)', badge: '群聊' },
+    memory: { title: '记忆：梦境/日记/日期 (memory)', badge: '记忆' },
+    network: { title: '联网见闻与搜索 (network)', badge: '联网' },
+    creation: { title: '书柜与自主创作 (creation)', badge: '创作' },
+    schedule: { title: '每日日程生成 (schedule)', badge: '日程' },
+    proactive: { title: '主动私聊巡检 (proactive)', badge: '主动' },
+    usage: { title: '用量统计保留 (usage)', badge: '审计' },
+  };
+
+  const KEY_LABELS = {
+    enabled: '总开关',
+    version: '插件版本',
+    configured: '已配置数量',
+    fast_task: '快速模型任务名',
+    reasoning_task: '推理模型任务名',
+    max_output_tokens: '单次最大输出 Token',
+    timezone: '配置时区',
+    city: '天气城市',
+    weather_refresh_minutes: '天气刷新间隔(分)',
+    drawpic_enabled: '麦麦绘图联动开关',
+    drawpic_detected: 'drawpic 插件已探测',
+    continuity_enabled: '未完话题连续性',
+    continuity_interval_minutes: '连续性刷新间隔(分)',
+    prompt_max_chars: '注入背景最大字符',
+    outbound_turn_guard: '出站轮次防重守卫',
+    turn_expire_seconds: '轮次过期秒数',
+    background_cache_minutes: '背景缓存分钟',
+    replyer_detail: 'Replyer 注入详略',
+    mode: '拦截模式 (mode)',
+    gate_mode: '闸门生效判据 (gate_mode)',
+    wake_probability: '随机被吵醒概率',
+    llm_threshold: '急事判醒字数阈值',
+    awake_grace_minutes: '被叫醒宽限期(分)',
+    silence_minutes: '晚安后静默时长(分)',
+    night_window: '夜间休息时间窗',
+    nap_window: '午休时间窗',
+    profiles: '已配置群数量',
+    gate_enabled: '群休息闸门开关',
+    gate_scope: '群闸门作用范围',
+    turn_enabled: '群轮次注入开关',
+    gate_segment_types: '命中闸门的日程段',
+    relay_enabled: '群聊转述开关',
+    observation_wait_seconds: '群观察聚合等待(秒)',
+    max_buffer_messages: '群缓冲最大消息数',
+    interesting_threshold: '群话题趣味度阈值',
+    summary_retention_hours: '群摘要保留小时',
+    relay_pending_seconds: '转述待确认过期(秒)',
+    owner_group_to_private_enabled: '主人群聊转私聊跟进',
+    inactivity_hours: '群冷场判定小时',
+    group_share_daily_max: '每日群分享上限',
+    group_share_min_interval_minutes: '群分享最小间隔(分)',
+    dream_fragments_enabled: '梦境碎片开关',
+    dream_fragment_count: '单次梦境碎片数',
+    dream_probability: '苏醒做梦概率',
+    dream_weekly_max: '每周做梦上限',
+    diary_enabled: '每日日记开关',
+    diary_hour: '日记生成整点(时)',
+    diary_max_chars: '日记最大字数',
+    important_dates_enabled: '重要日期提醒开关',
+    date_model_analysis_enabled: '模型自动抽取日期',
+    date_candidate_retention_days: '日期候选保留天数',
+    date_reminder_lead_days: '提前提醒天数列表',
+    tool_enabled: '联网搜索 Tool 暴露',
+    max_results: '单次搜索结果上限',
+    max_attempts: '搜索最大重试次数',
+    history_enabled: '搜索历史记录开关',
+    history_retention_days: '搜索历史保留天数',
+    association_enabled: '见闻关联生活契机',
+    association_threshold: '见闻关联度阈值',
+    proactive_share_enabled: '见闻转主动分享',
+    context_item_limit: '注入见闻条数上限',
+    news_enabled: '定时新闻采集开关',
+    news_daily_max: '每日新闻采集上限',
+    search_enabled: '自主探索搜索开关',
+    search_daily_max: '每日自主搜索上限',
+    plaintext_storage_acknowledged: '明文入库知情确认',
+    daily_max: '每日创作归档上限',
+    minimum_energy: '触发最低精力阈值',
+    public_works_enabled: '允许公开作品',
+    inspiration_lookback_days: '灵感回溯天数',
+    external_reading_enabled: '外部阅读笔记开关',
+    patrol_interval_minutes: '后台巡检间隔(分)',
+    continuation_enabled: '长篇连载续写开关',
+    continuation_probability: '巡检续写触发概率',
+    continuation_min_gap_days: '续写最小间隔天数',
+    continuation_max_chapters: '单作品最大章节数',
+    continuation_stale_days: '连载断更判定天数',
+    continuation_work_types: '允许续写体裁',
+    continuation_context_chapters: '续写携带前文章节数',
+    continuation_chapter_tail_chars: '前文章节尾部截取字数',
+    generate_hour: '每日框架生成整点(时)',
+    detail_lead_minutes: '临近场景细化提前量(分)',
+    template_file: '作息模板文件名',
+    min_interval_minutes: '同用户最小主动间隔(分)',
+    recent_user_silence_minutes: '用户刚发言静默期(分)',
+    pending_expire_seconds: '主动任务待响应过期(秒)',
+    max_retries_per_opportunity: '单契机最大重试次数',
+    score_threshold: '主动触发软评分阈值',
+    retention_days: '统计数据保留天数',
+  };
+
+  function esc(val) {
+    return String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function fmtEpoch(ts) {
+    const n = Number(ts || 0);
+    if (!n || n <= 0) return '—';
+    try {
+      const d = new Date(n * 1000);
+      const pad = (v) => String(v).padStart(2, '0');
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch {
+      return '—';
+    }
+  }
+
+  async function runQueriesWithLimit(tasks, concurrency = 2) {
+    await window.maibot.ready;
+    const errors = [];
+    let idx = 0;
+    async function worker() {
+      while (idx < tasks.length) {
+        const current = tasks[idx++];
+        try {
+          const res = await window.maibot.query(current.name, {});
+          if (res && res.success === false) {
+            throw new Error(res.error || `${current.name} 返回失败`);
+          }
+          current.onSuccess(res);
+        } catch (err) {
+          errors.push(`${current.label}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+    return errors;
+  }
+
+  function renderAdmin() {
+    const d = state.admin;
+    if (!d) return;
+    const ov = d.overview || {};
+
+    document.getElementById('admin-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">插件版本</div>
+        <div class="ml-kpi-value">v${esc(ov.version || '—')}</div>
+        <div class="ml-kpi-sub">社交 ${esc(ov.social_enabled)} · 创作 ${esc(ov.creation_enabled)} · 联网 ${esc(ov.network_enabled)}</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">建档用户 / 主人</div>
+        <div class="ml-kpi-value">${ov.users ?? 0} / ${ov.owners ?? 0}</div>
+        <div class="ml-kpi-sub">待确认日期候选 ${ov.pending_dates ?? 0} 个</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">待决主动事件</div>
+        <div class="ml-kpi-value">${ov.pending_proactive ?? 0}</div>
+        <div class="ml-kpi-sub">Host Planner 异步终审中</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">书柜文档 (私密)</div>
+        <div class="ml-kpi-value">${ov.bookshelf_documents ?? 0} (${ov.private_documents ?? 0})</div>
+        <div class="ml-kpi-sub">含生活随笔与阅读笔记</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">今日 Token (调用数)</div>
+        <div class="ml-kpi-value">${Number(ov.token_total_today || 0).toLocaleString('zh-CN')}</div>
+        <div class="ml-kpi-sub">LLM ${ov.token_calls_today ?? 0} 次 · 搜索 ${ov.search_calls_today ?? 0} 次</div>
+      </div>
+    `;
+
+    // Proactive Candidates & Skips
+    const pro = d.proactive || {};
+    const cands = pro.candidates || [];
+    document.getElementById('proactive-candidates-tbody').innerHTML = cands.length ? cands.map((c) => `
+      <tr>
+        <td style="font-family:var(--ml-font-mono);">${esc(c.user_id)}</td>
+        <td><strong>${esc(c.topic || '—')}</strong></td>
+        <td><span class="ml-badge ${c.status === 'sent' ? 'ml-badge-good' : ''}">${esc(c.status)}</span></td>
+        <td style="font-family:var(--ml-font-mono);font-size:11.5px;color:var(--ml-muted);">${fmtEpoch(c.created_at)} → ${fmtEpoch(c.expires_at)}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="ml-empty">当前无待决或近期主动私聊候选记录</td></tr>';
+
+    const skips = pro.skips || [];
+    const skipsEl = document.getElementById('proactive-skips-bars');
+    if (!skips.length) {
+      skipsEl.innerHTML = '<div class="ml-empty">今日暂无主动巡检跳过统计</div>';
+    } else {
+      const maxSkip = Math.max(1, ...skips.map((s) => Number(s.total || 0)));
+      skipsEl.innerHTML = skips.map((s) => {
+        const pct = Math.max(2, (Number(s.total || 0) / maxSkip) * 100);
+        return `
+          <div class="ml-skip-row">
+            <div class="ml-skip-top">
+              <span><strong>${esc(s.reason)}</strong></span>
+              <span>跳过 <strong>${s.total}</strong> 次 (涉及 ${s.users} 人)</span>
+            </div>
+            <div class="ml-skip-track">
+              <div class="ml-skip-fill" style="width:${pct.toFixed(1)}%;"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Groups Matrix
+    const groups = d.groups || [];
+    document.getElementById('groups-count-badge').textContent = `${groups.length} 个已配置群`;
+    document.getElementById('groups-tbody').innerHTML = groups.length ? groups.map((g) => `
+      <tr>
+        <td style="font-family:var(--ml-font-mono);"><strong>${esc(g.group_id)}</strong></td>
+        <td>${esc(g.group_name || '未备注群名')}</td>
+        <td><span class="ml-badge ${g.enabled === '开' ? 'ml-badge-good' : ''}">${esc(g.enabled)}</span></td>
+        <td><span class="ml-badge ${g.observe_enabled === '开' ? 'ml-badge-good' : ''}">${esc(g.observe_enabled)}</span></td>
+        <td><span class="ml-badge ${g.relay_target_enabled === '开' ? 'ml-badge-good' : ''}">${esc(g.relay_target_enabled)}</span></td>
+        <td><span class="ml-badge ${g.stream_known === '开' ? 'ml-badge-good' : 'ml-badge-warn'}">${esc(g.stream_known)}</span></td>
+      </tr>
+    `).join('') : '<tr><td colspan="6" class="ml-empty">未配置任何 QQ 群档案</td></tr>';
+  }
+
+  function renderConfig() {
+    const cfg = state.config;
+    if (!cfg) return;
+
+    // 1. Render Pitfall & Coupling Diagnostic Callouts
+    const rg = cfg.rest_gate || {};
+    const gp = cfg.group || {};
+    const lk = cfg.linkage || {};
+    const cx = cfg.context || {};
+
+    const isScheduleGate = rg.gate_mode === 'schedule';
+    const drawCoupledWarn = lk.drawpic_enabled === '开启' && cx.enabled !== '开启';
+
+    document.getElementById('diag-callouts').innerHTML = `
+      <div class="ml-diag-card ${isScheduleGate ? 'warn' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-size:13.5px;">休息闸门判据诊断 (gate_mode)</strong>
+          <span class="ml-badge ${isScheduleGate ? 'ml-badge-warn' : 'ml-badge-good'}">私聊: ${esc(rg.gate_mode || '—')} / 群: ${esc(gp.gate_mode || '—')}</span>
+        </div>
+        <div style="font-size:12px;color:var(--ml-muted);line-height:1.5;">
+          ${isScheduleGate
+            ? '当前私聊闸门为 <code>schedule</code> 模式：只要日程段命中休息类型即生效拦截，<strong>配置的夜窗/午休时间窗 (' + esc(rg.night_window) + ') 将被忽略</strong>。'
+            : '当前私聊闸门为 <code>time_window</code> 模式：严格按夜窗 (' + esc(rg.night_window) + ') 与午休窗 (' + esc(rg.nap_window) + ') 判定。'}
+        </div>
+      </div>
+
+      <div class="ml-diag-card ${drawCoupledWarn ? 'warn' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-size:13.5px;">麦麦绘图 (drawpic) 联动耦合自检</strong>
+          <span class="ml-badge ${drawCoupledWarn ? 'ml-badge-warn' : 'ml-badge-good'}">联动: ${esc(lk.drawpic_enabled)} · 探测: ${esc(lk.drawpic_detected)}</span>
+        </div>
+        <div style="font-size:12px;color:var(--ml-muted);line-height:1.5;">
+          ${drawCoupledWarn
+            ? '⚠️ <code>linkage.drawpic_enabled</code> 已开启，但 <code>context.enabled</code> 为关闭！引导注入依赖上下文 payload，当前联动将静默失效。'
+            : '上下文注入状态：<strong>' + esc(cx.enabled) + '</strong>。当私聊出现拍照/生活分享信号且本轮工具含 <code>draw</code> 时自动注入引导。'}
+        </div>
+      </div>
+    `;
+
+    // 2. Render 13 Config Sections with keyword filter（editable 是回写清单，不当配置节渲染）
+    const EDITABLE = cfg.editable || {};
+    const q = state.cfgSearch.trim().toLowerCase();
+    const grid = document.getElementById('cfg-cards-grid');
+    const entries = Object.entries(cfg).filter(([secKey, secObj]) =>
+      secKey !== 'editable' && typeof secObj === 'object' && secObj !== null);
+
+    const cardsHtml = [];
+    for (const [secKey, secObj] of entries) {
+      const meta = SECTION_META[secKey] || { title: secKey, badge: '配置' };
+      const kvPairs = Object.entries(secObj);
+      const matchingPairs = q
+        ? kvPairs.filter(([k, v]) => {
+            const label = KEY_LABELS[k] || '';
+            const hay = `${secKey} ${meta.title} ${k} ${label} ${v}`.toLowerCase();
+            return hay.includes(q);
+          })
+        : kvPairs;
+
+      if (q && !matchingPairs.length) continue;
+
+      cardsHtml.push(`
+        <article class="ml-cfg-card">
+          <h3 class="ml-cfg-sec-title">
+            <span>${esc(meta.title)}</span>
+            <span class="ml-badge">${esc(meta.badge)}</span>
+          </h3>
+          <div>
+            ${matchingPairs.map(([k, v]) => {
+              const label = KEY_LABELS[k] || k;
+              const valStr = String(v ?? '—');
+              const isOn = valStr === '开启' || valStr === '开';
+              const isOff = valStr === '关闭' || valStr === '关';
+              const etype = (EDITABLE[secKey] || {})[k];
+              return `
+                <div class="ml-cfg-kv">
+                  <span class="ml-cfg-k" title="${esc(k)}">${esc(label)} <small style="opacity:0.65;">(${esc(k)})</small></span>
+                  <span class="ml-cfg-v" style="${isOn ? 'color:var(--status-good-ink);' : isOff ? 'color:var(--ml-muted);' : ''}">${esc(valStr)}</span>
+                  ${etype ? `<button type="button" class="ml-cfg-edit" data-sec="${esc(secKey)}" data-key="${esc(k)}" data-type="${esc(etype)}" data-raw="${esc(valStr)}" title="修改 ${esc(secKey)}.${esc(k)}">✎</button>` : ''}
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </article>
+      `);
+    }
+
+    grid.innerHTML = cardsHtml.length
+      ? cardsHtml.join('')
+      : '<div class="ml-empty">没有匹配该搜索词的配置项</div>';
+  }
+
+  // ---- 配置回写编辑器：单格 ✎ → 输入 → 保存（宿主确认弹窗 → webui_config_save 热生效）----
+  let cfgEditing = null; // {sec, key, vSpan, oldHtml}
+
+  function openCfgEditor(btn) {
+    if (cfgEditing) cancelCfgEditor();
+    const sec = btn.dataset.sec, key = btn.dataset.key, type = btn.dataset.type, cur = btn.dataset.raw || '';
+    const vSpan = btn.closest('.ml-cfg-kv').querySelector('.ml-cfg-v');
+    let fieldHtml;
+    if (type === 'bool') {
+      const on = cur === '开启' || cur === '开';
+      fieldHtml = `<select class="ml-cfg-input"><option value="true"${on ? ' selected' : ''}>开启</option><option value="false"${on ? '' : ' selected'}>关闭</option></select>`;
+    } else if (type === 'int' || type === 'float') {
+      const numeric = /^-?\d+(\.\d+)?$/.test(cur) ? cur : '';
+      fieldHtml = `<input type="number"${type === 'int' ? ' step="1"' : ' step="any"'} class="ml-cfg-input" value="${esc(numeric)}" placeholder="${esc(cur)}">`;
+    } else {
+      fieldHtml = `<input type="text" class="ml-cfg-input" value="${esc(cur)}">`;
+    }
+    cfgEditing = { sec, key, vSpan, oldHtml: vSpan.innerHTML };
+    vSpan.innerHTML = `${fieldHtml}<button type="button" class="ml-cfg-act ok">保存</button><button type="button" class="ml-cfg-act cancel">取消</button>`;
+    const input = vSpan.querySelector('.ml-cfg-input');
+    if (input.tagName === 'INPUT') input.select();
+    vSpan.querySelector('.ml-cfg-act.ok').addEventListener('click', submitCfgEdit);
+    vSpan.querySelector('.ml-cfg-act.cancel').addEventListener('click', cancelCfgEditor);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitCfgEdit();
+      if (e.key === 'Escape') cancelCfgEditor();
+    });
+    input.focus();
+  }
+
+  function cancelCfgEditor() {
+    if (!cfgEditing) return;
+    cfgEditing.vSpan.innerHTML = cfgEditing.oldHtml;
+    cfgEditing = null;
+  }
+
+  async function submitCfgEdit() {
+    if (!cfgEditing) return;
+    const input = cfgEditing.vSpan.querySelector('.ml-cfg-input');
+    const { sec, key } = cfgEditing;
+    const okBtn = cfgEditing.vSpan.querySelector('.ml-cfg-act.ok');
+    okBtn.disabled = true;
+    okBtn.textContent = '…';
+    try {
+      const res = await window.maibot.action('save', { section: sec, key, value: input.value });
+      if (res && res.success === false) throw new Error(res.error || '保存失败');
+      if (cfgEditing) {
+        cfgEditing.vSpan.innerHTML = '<span style="color:var(--status-good-ink);font-size:12px;">已保存，刷新中…</span>';
+        cfgEditing = null;
+      }
+      await refreshConfig();
+    } catch (err) {
+      const banner = document.getElementById('error-banner');
+      document.getElementById('error-text').textContent = `配置保存失败：${err?.message || String(err)}`;
+      banner.classList.add('active');
+      if (cfgEditing) {
+        cfgEditing.vSpan.innerHTML = cfgEditing.oldHtml;
+        cfgEditing = null;
+      }
+    }
+  }
+
+  async function refreshConfig() {
+    const errors = await runQueriesWithLimit([
+      { name: 'config', label: '配置摘要', onSuccess: (r) => { state.config = r; renderConfig(); } },
+    ], 2);
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      document.getElementById('error-banner').classList.add('active');
+    }
+  }
+
+  async function loadAll() {
+    if (state.loading) return;
+    state.loading = true;
+    const btn = document.getElementById('btn-refresh');
+    btn.disabled = true;
+    btn.textContent = '同步中…';
+    const banner = document.getElementById('error-banner');
+    banner.classList.remove('active');
+
+    const errors = await runQueriesWithLimit([
+      { name: 'admin', label: '管理摘要', onSuccess: (r) => { state.admin = r; renderAdmin(); } },
+      { name: 'config', label: '配置摘要', onSuccess: (r) => { state.config = r; renderConfig(); } },
+    ], 2);
+
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      banner.classList.add('active');
+    }
+
+    state.loading = false;
+    btn.disabled = false;
+    btn.textContent = '刷新诊断';
+  }
+
+  document.getElementById('cfg-search-input').addEventListener('input', (e) => {
+    state.cfgSearch = e.target.value || '';
+    renderConfig();
+  });
+
+  document.getElementById('cfg-cards-grid').addEventListener('click', (e) => {
+    const edit = e.target.closest('.ml-cfg-edit');
+    if (edit) { openCfgEditor(edit); return; }
+    if (e.target.closest('.ml-cfg-act.ok')) { submitCfgEdit(); return; }
+    if (e.target.closest('.ml-cfg-act.cancel')) cancelCfgEditor();
+  });
+
+  document.getElementById('btn-refresh').addEventListener('click', loadAll);
+  document.getElementById('btn-retry').addEventListener('click', loadAll);
+  document.getElementById('btn-to-overview').addEventListener('click', () => {
+    window.maibot.navigate('overview', {});
+  });
+  document.getElementById('btn-to-life').addEventListener('click', () => {
+    window.maibot.navigate('life', { tab: 'users' });
+  });
+
+  window.maibot.ready.then(() => {
+    loadAll();
+    const targetSec = window.maibot.page?.state?.section;
+    if (targetSec) {
+      const el = document.getElementById(`sec-${targetSec}`);
+      if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth' }), 150);
+    }
+  });
+})();
+</script>

@@ -1,0 +1,1277 @@
+<style>
+  .ml-root {
+    --ml-bg: var(--maibot-background, #f9f9f7);
+    --ml-surface: var(--maibot-surface, #fcfcfb);
+    --ml-fg: var(--maibot-foreground, #0b0b0b);
+    --ml-muted: var(--maibot-muted, #6e6d68);
+    --ml-soft: var(--maibot-soft, #f1f0ec);
+    --ml-border: var(--maibot-border, rgba(11, 11, 11, 0.10));
+    --ml-primary: var(--maibot-primary, #2a78d6);
+    --ml-primary-fg: var(--maibot-primary-foreground, #ffffff);
+    --ml-danger: var(--maibot-danger, #d03b3b);
+    --ml-radius: var(--maibot-radius, 12px);
+    --ml-font-body: var(--maibot-font-body, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif);
+    --ml-font-display: var(--maibot-font-display, var(--ml-font-body));
+    --ml-font-mono: var(--maibot-font-mono, ui-monospace, "JetBrains Mono", Consolas, monospace);
+
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-7: #6250d6;
+    --status-good: #0ca30c;
+    --status-good-ink: #006300;
+    --status-warn: #fab219;
+    --status-serious: #ec835a;
+    --status-crit: #d03b3b;
+
+    font-family: var(--ml-font-body);
+    color: var(--ml-fg);
+    padding: 20px 24px 40px;
+    max-width: 1440px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+
+  :root.dark .ml-root,
+  html.dark .ml-root {
+    --ml-bg: var(--maibot-background, #0d0d0d);
+    --ml-surface: var(--maibot-surface, #1a1a19);
+    --ml-fg: var(--maibot-foreground, #f0efec);
+    --ml-muted: var(--maibot-muted, #9a9890);
+    --ml-soft: var(--maibot-soft, #252523);
+    --ml-border: var(--maibot-border, rgba(255, 255, 255, 0.10));
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-7: #9085e9;
+    --status-good-ink: #0ca30c;
+  }
+
+  .ml-root *, .ml-root *::before, .ml-root *::after {
+    box-sizing: border-box;
+  }
+
+  .ml-topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ml-brand-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--series-7);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 17px;
+  }
+  .ml-brand-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .ml-brand-sub {
+    font-size: 12px;
+    color: var(--ml-muted);
+    margin-top: 2px;
+  }
+  .ml-nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ml-btn {
+    padding: 7px 13px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ml-btn:hover:not(:disabled) {
+    background: var(--ml-soft);
+  }
+  .ml-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .ml-btn-primary {
+    background: var(--ml-primary);
+    color: var(--ml-primary-fg);
+    border-color: var(--ml-primary);
+  }
+
+  /* Main 5-Tab Bar */
+  .ml-tabs-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 5px;
+    background: var(--ml-soft);
+    border: 1px solid var(--ml-border);
+    border-radius: var(--ml-radius);
+    margin-bottom: 18px;
+  }
+  .ml-tab-btn {
+    flex: 1 1 auto;
+    min-width: 135px;
+    padding: 9px 14px;
+    border: none;
+    border-radius: calc(var(--ml-radius) - 4px);
+    background: transparent;
+    color: var(--ml-muted);
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background-color 0.15s, color 0.15s;
+  }
+  .ml-tab-btn.active {
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  }
+  .ml-tab-count {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--ml-soft);
+    border: 1px solid var(--ml-border);
+    color: var(--ml-fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ml-error-banner {
+    display: none;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--status-crit);
+    background: rgba(208, 59, 59, 0.08);
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .ml-error-banner.active {
+    display: flex;
+  }
+
+  .ml-card {
+    background: var(--ml-surface);
+    border: 1px solid var(--ml-border);
+    border-radius: var(--ml-radius);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .ml-card-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-card-title {
+    font-size: 15px;
+    font-weight: 650;
+    margin: 0;
+  }
+
+  .ml-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .ml-kpi-tile {
+    padding: 12px 14px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+  }
+  .ml-kpi-label {
+    font-size: 11.5px;
+    color: var(--ml-muted);
+    margin-bottom: 4px;
+  }
+  .ml-kpi-value {
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  .ml-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 11.5px;
+    font-weight: 500;
+    border-radius: 999px;
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    white-space: nowrap;
+  }
+  .ml-badge-owner {
+    background: rgba(237, 161, 0, 0.16);
+    border-color: rgba(237, 161, 0, 0.55);
+    font-weight: 650;
+  }
+  .ml-badge-good {
+    color: var(--status-good-ink);
+    border-color: rgba(12, 163, 12, 0.35);
+    background: rgba(12, 163, 12, 0.08);
+  }
+  .ml-badge-warn {
+    border-color: rgba(250, 178, 25, 0.55);
+    background: rgba(250, 178, 25, 0.14);
+  }
+
+  /* Users Relationship Cards */
+  .ml-users-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 14px;
+  }
+  .ml-user-card {
+    padding: 14px 16px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .ml-user-card.is-owner {
+    border-color: rgba(237, 161, 0, 0.55);
+    background: var(--ml-surface);
+  }
+  .ml-user-card.is-disabled {
+    opacity: 0.62;
+  }
+  .ml-temp-bar-track {
+    position: relative;
+    height: 8px;
+    background: var(--ml-surface);
+    border-radius: 999px;
+    border: 1px solid var(--ml-border);
+    overflow: hidden;
+  }
+  .ml-temp-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--series-1) 0%, var(--series-3) 50%, var(--series-2) 100%);
+  }
+  .ml-temp-cap-pin {
+    position: absolute;
+    left: 80%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--ml-muted);
+  }
+  .ml-quota-dots {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .ml-quota-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+  }
+  .ml-quota-dot.used {
+    background: var(--series-1);
+    border-color: var(--series-1);
+  }
+
+  /* Reader Split View (Memories & Bookshelf) */
+  .ml-reader-split {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 920px) {
+    .ml-reader-split {
+      grid-template-columns: 1fr;
+    }
+  }
+  .ml-item-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 560px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .ml-item-row {
+    text-align: left;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .ml-item-row.active {
+    background: var(--ml-surface);
+    border-color: var(--ml-primary);
+    box-shadow: 0 0 0 1px var(--ml-primary);
+  }
+  .ml-reader-pane {
+    padding: 18px 22px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    min-height: 360px;
+  }
+  .ml-reader-body {
+    font-size: 14px;
+    line-height: 1.75;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ml-border);
+  }
+
+  /* Tables & Search Input */
+  .ml-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .ml-input {
+    padding: 7px 12px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    font-size: 13px;
+    min-width: 220px;
+  }
+  .ml-seg-group {
+    display: inline-flex;
+    background: var(--ml-soft);
+    padding: 3px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+    gap: 2px;
+  }
+  .ml-seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--ml-muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: calc(var(--ml-radius) - 6px);
+    cursor: pointer;
+  }
+  .ml-seg-btn.active {
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    font-weight: 600;
+  }
+
+  .ml-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .ml-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .ml-table th,
+  .ml-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--ml-border);
+    text-align: left;
+    vertical-align: top;
+  }
+  .ml-table th {
+    color: var(--ml-muted);
+    font-weight: 600;
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .ml-table td.num,
+  .ml-table th.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ml-url-pill {
+    font-family: var(--ml-font-mono);
+    font-size: 11px;
+    color: var(--ml-muted);
+    background: var(--ml-surface);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--ml-border);
+    word-break: break-all;
+    display: inline-block;
+    max-width: 420px;
+  }
+
+  .ml-empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--ml-muted);
+    font-size: 13px;
+  }
+  .ml-hidden {
+    display: none !important;
+  }
+</style>
+
+<div class="maibot-page ml-root">
+  <!-- 顶部导航栏 -->
+  <header class="ml-topbar">
+    <div class="ml-brand">
+      <div class="ml-brand-icon" aria-hidden="true">忆</div>
+      <div>
+        <h1 class="ml-brand-title">记忆与牵挂 · 关系、手账、书柜与见闻</h1>
+        <div class="ml-brand-sub" id="life-subtitle">真实 QQ 号隔离隐私边界 · 主人后台全量透视</div>
+      </div>
+    </div>
+    <div class="ml-nav-actions">
+      <button type="button" class="ml-btn" id="btn-back-overview">← 麦麦此刻</button>
+      <button type="button" class="ml-btn" id="btn-to-system">系统与配置 →</button>
+      <button type="button" class="ml-btn ml-btn-primary" id="btn-refresh">刷新本页</button>
+    </div>
+  </header>
+
+  <div class="ml-error-banner" id="error-banner" role="alert">
+    <div><strong>部分数据拉取失败：</strong><span id="error-text"></span></div>
+    <button type="button" class="ml-btn" id="btn-retry">重试</button>
+  </div>
+
+  <!-- 5-Tab 切换栏 -->
+  <nav class="ml-tabs-bar" role="tablist" aria-label="记忆与牵挂模块切换">
+    <button type="button" class="ml-tab-btn active" data-tab="users">
+      <span>社交关系与温度</span>
+      <span class="ml-tab-count" id="tab-cnt-users">—</span>
+    </button>
+    <button type="button" class="ml-tab-btn" data-tab="dates">
+      <span>重要日期与候选</span>
+      <span class="ml-tab-count" id="tab-cnt-dates">—</span>
+    </button>
+    <button type="button" class="ml-tab-btn" data-tab="memories">
+      <span>日记与梦境手账</span>
+      <span class="ml-tab-count" id="tab-cnt-memories">—</span>
+    </button>
+    <button type="button" class="ml-tab-btn" data-tab="shelf">
+      <span>麦麦书柜与创作</span>
+      <span class="ml-tab-count" id="tab-cnt-shelf">—</span>
+    </button>
+    <button type="button" class="ml-tab-btn" data-tab="digest">
+      <span>联网见闻与搜索</span>
+      <span class="ml-tab-count" id="tab-cnt-digest">—</span>
+    </button>
+  </nav>
+
+  <!-- ==================== TAB 1: 社交关系与温度 ==================== -->
+  <section id="panel-users" class="ml-tab-panel">
+    <div class="ml-kpi-row" id="users-kpi-row"></div>
+    <div class="ml-card">
+      <div class="ml-filter-row">
+        <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn active" data-user-filter="all">全部用户</button>
+          <button type="button" class="ml-seg-btn" data-user-filter="enabled">仅启用</button>
+          <button type="button" class="ml-seg-btn" data-user-filter="owner">主人 (owner)</button>
+          <button type="button" class="ml-seg-btn" data-user-filter="friend">朋友 (friend≤80°)</button>
+        </div>
+        <input type="search" class="ml-input" id="user-search-input" placeholder="按 QQ 号 / 昵称 / 阶段筛选…"/>
+      </div>
+      <div class="ml-users-grid" id="users-cards-grid">
+        <div class="ml-empty">正在加载用户关系档案…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 2: 重要日期与候选 ==================== -->
+  <section id="panel-dates" class="ml-tab-panel ml-hidden">
+    <div class="ml-kpi-row" id="dates-kpi-row"></div>
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">正式重要日期与纪念日倒计时</h2>
+        <span class="ml-badge">按下次发生日期升序</span>
+      </div>
+      <div class="ml-table-wrap">
+        <table class="ml-table">
+          <thead>
+            <tr>
+              <th>倒计时</th>
+              <th>事件名称</th>
+              <th>关联用户 (QQ)</th>
+              <th>原始日期</th>
+              <th>周期</th>
+              <th>下次发生日</th>
+            </tr>
+          </thead>
+          <tbody id="dates-formal-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">待确认日期候选 (聊天自动捕捉)</h2>
+        <span class="ml-badge">规则 + 模型置信度评估</span>
+      </div>
+      <div class="ml-table-wrap">
+        <table class="ml-table">
+          <thead>
+            <tr>
+              <th>关联用户</th>
+              <th>候选事件</th>
+              <th>聊天原句摘录 (date_text)</th>
+              <th>建议日期</th>
+              <th class="num">置信度</th>
+            </tr>
+          </thead>
+          <tbody id="dates-candidates-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: 日记与梦境手账 ==================== -->
+  <section id="panel-memories" class="ml-tab-panel ml-hidden">
+    <div class="ml-kpi-row" id="memories-kpi-row"></div>
+
+    <!-- 日记阅读器 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">麦麦私密日记手账 (Diary Reader)</h2>
+        <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn active" id="btn-diary-split">分篇阅读</button>
+          <button type="button" class="ml-seg-btn" id="btn-diary-full">全量拼接长文</button>
+        </div>
+      </div>
+      <div class="ml-reader-split" id="diary-split-view">
+        <div class="ml-item-list" id="diary-list"></div>
+        <div class="ml-reader-pane" id="diary-reader-pane">
+          <div class="ml-empty">选择左侧任意一篇日记阅读正文</div>
+        </div>
+      </div>
+      <div class="ml-reader-pane ml-hidden" id="diary-full-view">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>全量日记拼接全文（共 20 篇上限）</strong>
+          <button type="button" class="ml-btn" id="btn-copy-diaries" style="padding:4px 10px;font-size:12px;">复制全文</button>
+        </div>
+        <div class="ml-reader-body" id="diary-full-text"></div>
+      </div>
+    </div>
+
+    <!-- 梦境星空面板 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">近期梦境与潜意识碎片 (Dreams &amp; Fragments)</h2>
+        <span class="ml-badge" id="dream-latest-badge">最近梦境</span>
+      </div>
+      <div id="dream-latest-box" style="margin-bottom:16px;"></div>
+      <div class="ml-table-wrap">
+        <table class="ml-table">
+          <thead>
+            <tr>
+              <th>做梦时间</th>
+              <th>梦境叙事正文</th>
+              <th class="num">心情修正 (mood_delta)</th>
+              <th class="num">精力修正 (energy_delta)</th>
+            </tr>
+          </thead>
+          <tbody id="dreams-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: 麦麦书柜与创作 ==================== -->
+  <section id="panel-shelf" class="ml-tab-panel ml-hidden">
+    <div class="ml-kpi-row" id="shelf-kpi-row"></div>
+
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">书柜藏书与创作手稿阅读器</h2>
+        <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn active" id="btn-shelf-split">按册翻阅</button>
+          <button type="button" class="ml-seg-btn" id="btn-shelf-full">全量作品拼接</button>
+        </div>
+      </div>
+      <div class="ml-reader-split" id="shelf-split-view">
+        <div class="ml-item-list" id="shelf-book-list"></div>
+        <div class="ml-reader-pane" id="shelf-reader-pane">
+          <div class="ml-empty">点击左侧任意作品阅读正文</div>
+        </div>
+      </div>
+      <div class="ml-reader-pane ml-hidden" id="shelf-full-view">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>书柜全量作品全文</strong>
+          <button type="button" class="ml-btn" id="btn-copy-shelf" style="padding:4px 10px;font-size:12px;">复制全文</button>
+        </div>
+        <div class="ml-reader-body" id="shelf-full-text"></div>
+      </div>
+    </div>
+
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">创作任务运行流水 (Creation Runs)</h2>
+        <span class="ml-badge" id="shelf-runs-count">0 条记录</span>
+      </div>
+      <div class="ml-table-wrap">
+        <table class="ml-table">
+          <thead>
+            <tr>
+              <th>作品标题</th>
+              <th>文档 ID</th>
+              <th>状态</th>
+              <th>启动时间</th>
+            </tr>
+          </thead>
+          <tbody id="shelf-runs-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 5: 联网见闻与搜索审计 ==================== -->
+  <section id="panel-digest" class="ml-tab-panel ml-hidden">
+    <div class="ml-kpi-row" id="digest-kpi-row"></div>
+
+    <!-- 新闻与探索笔记双栏 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">近期新闻采集 &amp; 自主探索笔记</h2>
+        <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn active" data-digest-sub="news">近期新闻</button>
+          <button type="button" class="ml-seg-btn" data-digest-sub="explorations">探索笔记</button>
+          <button type="button" class="ml-seg-btn" data-digest-sub="raw">全文拼接文本</button>
+        </div>
+      </div>
+      <div id="digest-news-box"></div>
+      <div id="digest-explorations-box" class="ml-hidden"></div>
+      <div id="digest-raw-box" class="ml-hidden">
+        <div class="ml-reader-pane">
+          <strong>新闻全文拼接</strong>
+          <div class="ml-reader-body" id="digest-news-fulltext"></div>
+          <hr style="border:none;border-top:1px solid var(--ml-border);margin:20px 0;"/>
+          <strong>探索笔记全文拼接</strong>
+          <div class="ml-reader-body" id="digest-exp-fulltext"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 搜索历史审计表 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">联网搜索历史与结果摘要审计 (最近 20 次)</h2>
+        <span class="ml-badge">隐私词已清洗后外发</span>
+      </div>
+      <div class="ml-table-wrap">
+        <table class="ml-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>操作类型</th>
+              <th>Provider</th>
+              <th>查询词 (Query)</th>
+              <th>状态 / 错误分类</th>
+              <th class="num">结果数</th>
+              <th class="num">耗时</th>
+              <th>结果摘要</th>
+            </tr>
+          </thead>
+          <tbody id="digest-searches-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const state = {
+    activeTab: 'users',
+    users: null,
+    dates: null,
+    memories: null,
+    shelf: null,
+    digest: null,
+    userFilter: 'all',
+    userSearch: '',
+    selectedDiaryIdx: 0,
+    selectedBookIdx: 0,
+    loading: false,
+  };
+
+  function esc(val) {
+    return String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function fmtEpoch(ts) {
+    const n = Number(ts || 0);
+    if (!n || n <= 0) return '—';
+    try {
+      const d = new Date(n * 1000);
+      const pad = (v) => String(v).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch {
+      return '—';
+    }
+  }
+
+  async function copyText(text, btn) {
+    try {
+      await navigator.clipboard.writeText(text || '');
+      const old = btn.textContent;
+      btn.textContent = '已复制 ✓';
+      setTimeout(() => { btn.textContent = old; }, 1400);
+    } catch {
+      btn.textContent = '复制受限';
+    }
+  }
+
+  async function runQueriesWithLimit(tasks, concurrency = 2) {
+    await window.maibot.ready;
+    const errors = [];
+    let idx = 0;
+    async function worker() {
+      while (idx < tasks.length) {
+        const current = tasks[idx++];
+        try {
+          const res = await window.maibot.query(current.name, {});
+          if (res && res.success === false) {
+            throw new Error(res.error || `${current.name} 返回失败`);
+          }
+          current.onSuccess(res);
+        } catch (err) {
+          errors.push(`${current.label}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+    return errors;
+  }
+
+  function switchTab(tabId) {
+    state.activeTab = tabId;
+    document.querySelectorAll('[data-tab]').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
+    });
+    ['users', 'dates', 'memories', 'shelf', 'digest'].forEach((id) => {
+      const panel = document.getElementById(`panel-${id}`);
+      if (panel) panel.classList.toggle('ml-hidden', id !== tabId);
+    });
+  }
+
+  // ==================== 1. Render Users ====================
+  function renderUsers() {
+    const d = state.users;
+    if (!d) return;
+    const c = d.counts || {};
+    document.getElementById('tab-cnt-users').textContent = `${c.total ?? 0}`;
+    document.getElementById('users-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">用户总数</div><div class="ml-kpi-value">${c.total ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">已启用用户</div><div class="ml-kpi-value">${c.enabled ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">主人 (owner)</div><div class="ml-kpi-value">${c.owners ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">开启主动私聊</div><div class="ml-kpi-value">${c.proactive_enabled ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">已禁用档案</div><div class="ml-kpi-value">${c.disabled ?? 0}</div></div>
+    `;
+
+    const allUsers = d.users || [];
+    const q = state.userSearch.trim().toLowerCase();
+    const filtered = allUsers.filter((u) => {
+      if (state.userFilter === 'enabled' && !u.enabled) return false;
+      if (state.userFilter === 'owner' && u.role !== 'owner') return false;
+      if (state.userFilter === 'friend' && u.role === 'owner') return false;
+      if (q) {
+        const hay = `${u.user_id} ${u.display_name} ${u.stage} ${u.role}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const grid = document.getElementById('users-cards-grid');
+    if (!filtered.length) {
+      grid.innerHTML = '<div class="ml-empty">没有符合当前筛选条件的用户关系记录</div>';
+      return;
+    }
+
+    grid.innerHTML = filtered.map((u) => {
+      const isOwner = u.role === 'owner';
+      const temp = Math.max(0, Math.min(100, Number(u.temperature || 0)));
+      const maxPro = Math.max(0, Number(u.daily_proactive_max || 0));
+      const usedPro = Math.max(0, Number(u.proactive_count || 0));
+      const dotCount = Math.min(10, maxPro);
+      let dotsHtml = '';
+      for (let i = 0; i < dotCount; i++) {
+        dotsHtml += `<span class="ml-quota-dot ${i < usedPro ? 'used' : ''}"></span>`;
+      }
+
+      return `
+        <article class="ml-user-card ${isOwner ? 'is-owner' : ''} ${u.enabled ? '' : 'is-disabled'}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div>
+              <div style="font-size:15px;font-weight:700;">${esc(u.display_name || '未读取昵称')}</div>
+              <div style="font-family:var(--ml-font-mono);font-size:11.5px;color:var(--ml-muted);">QQ: ${esc(u.user_id)}</div>
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;">
+              <span class="ml-badge ${isOwner ? 'ml-badge-owner' : ''}">${isOwner ? '★ 主人 owner' : '朋友 friend'}</span>
+              <span class="ml-badge ${u.enabled ? 'ml-badge-good' : ''}">${u.enabled ? '已启用' : '已禁用'}</span>
+            </div>
+          </div>
+
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+              <span>关系阶段：<strong>${esc(u.stage || '未知')}</strong></span>
+              <span style="font-variant-numeric:tabular-nums;">温度 <strong>${temp.toFixed(1)}°</strong> ${!isOwner ? '<small style="color:var(--ml-muted)">(上限 80°)</small>' : ''}</span>
+            </div>
+            <div class="ml-temp-bar-track" title="关系温度 ${temp.toFixed(1)} / 100">
+              <div class="ml-temp-bar-fill" style="width:${temp.toFixed(1)}%;"></div>
+              ${!isOwner ? '<div class="ml-temp-cap-pin" title="朋友关系温度封顶线 (80)"></div>' : ''}
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--ml-muted);">
+            <span>今日主动额度 (${u.proactive_enabled ? '开启' : '关闭'})</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;">
+              ${dotsHtml}
+              <strong style="color:var(--ml-fg);font-variant-numeric:tabular-nums;">${usedPro}/${maxPro}</strong>
+            </span>
+          </div>
+
+          <div style="font-size:11.5px;color:var(--ml-muted);display:flex;justify-content:space-between;">
+            <span>最近发言：${esc(u.last_message_age || '未知')}</span>
+            <span>最近主动：${esc(u.last_proactive_age || '未知')}</span>
+          </div>
+
+          ${u.recent ? `<div style="font-size:12px;padding:6px 8px;background:var(--ml-surface);border-radius:6px;border:1px solid var(--ml-border);color:var(--ml-fg);">最近互动：「${esc(u.recent)}」</div>` : ''}
+        </article>
+      `;
+    }).join('');
+  }
+
+  // ==================== 2. Render Dates ====================
+  function renderDates() {
+    const d = state.dates;
+    if (!d) return;
+    const c = d.counts || {};
+    document.getElementById('tab-cnt-dates').textContent = `${c.dates ?? 0}`;
+    document.getElementById('dates-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">正式重要日期</div><div class="ml-kpi-value">${c.dates ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">30 天内即将到来</div><div class="ml-kpi-value" style="color:var(--series-2)">${c.within_30d ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">待确认候选日期</div><div class="ml-kpi-value">${c.candidates ?? 0}</div></div>
+    `;
+
+    const rows = d.dates || [];
+    document.getElementById('dates-formal-tbody').innerHTML = rows.length ? rows.map((r) => {
+      const soon = r.days_left >= 0 && r.days_left <= 30;
+      return `
+        <tr>
+          <td><span class="ml-badge ${soon ? 'ml-badge-warn' : ''}">${esc(r.countdown)}</span></td>
+          <td><strong>${esc(r.event_name)}</strong></td>
+          <td>${esc(r.user_name)} <span style="font-family:var(--ml-font-mono);color:var(--ml-muted);">(${esc(r.user_id)})</span></td>
+          <td style="font-family:var(--ml-font-mono);">${esc(r.event_date)}</td>
+          <td>${r.recurrence === 'annual' ? '每年循环' : esc(r.recurrence || '单次')}</td>
+          <td style="font-family:var(--ml-font-mono);">${esc(r.occurrence || '—')}</td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="6" class="ml-empty">暂无已登记的重要日期</td></tr>';
+
+    const cands = d.candidates || [];
+    document.getElementById('dates-candidates-tbody').innerHTML = cands.length ? cands.map((cd) => {
+      const confPct = Math.round(Number(cd.confidence || 0) * 100);
+      return `
+        <tr>
+          <td>${esc(cd.user_name)} <span style="font-family:var(--ml-font-mono);color:var(--ml-muted);">(${esc(cd.user_id)})</span></td>
+          <td><strong>${esc(cd.event_name)}</strong></td>
+          <td style="color:var(--ml-muted);">「${esc(cd.date_text)}」</td>
+          <td style="font-family:var(--ml-font-mono);">${esc(cd.suggested_date || '—')}</td>
+          <td class="num"><strong>${confPct}%</strong></td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="5" class="ml-empty">暂无待确认的日期候选</td></tr>';
+  }
+
+  // ==================== 3. Render Memories (Diaries & Dreams) ====================
+  function renderMemories() {
+    const d = state.memories;
+    if (!d) return;
+    document.getElementById('tab-cnt-memories').textContent = `${(d.diary_count ?? 0) + (d.dream_count ?? 0)}`;
+    document.getElementById('memories-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">近期日记篇数</div><div class="ml-kpi-value">${d.diary_count ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">最新日记所属日</div><div class="ml-kpi-value">${esc(d.last_diary_day || '暂无')}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">近 30 天梦境次数</div><div class="ml-kpi-value">${d.dream_count ?? 0}</div></div>
+    `;
+
+    const diaries = d.diaries || [];
+    const listEl = document.getElementById('diary-list');
+    const readerEl = document.getElementById('diary-reader-pane');
+    document.getElementById('diary-full-text').textContent = d.diaries_full_text || '（暂无日记）';
+
+    if (!diaries.length) {
+      listEl.innerHTML = '<div class="ml-empty">暂无日记条目</div>';
+      readerEl.innerHTML = '<div class="ml-empty">麦麦还没有写下日记</div>';
+    } else {
+      if (state.selectedDiaryIdx >= diaries.length) state.selectedDiaryIdx = 0;
+      listEl.innerHTML = diaries.map((item, idx) => `
+        <button type="button" class="ml-item-row ${idx === state.selectedDiaryIdx ? 'active' : ''}" data-diary-idx="${idx}">
+          <div style="display:flex;justify-content:space-between;width:100%;font-size:11.5px;color:var(--ml-muted);">
+            <span style="font-family:var(--ml-font-mono);">${esc(item.day)}</span>
+            <span>${esc(item.mood_summary || '平静')}</span>
+          </div>
+          <div style="font-weight:650;font-size:13.5px;">${esc(item.title || '无题日记')}</div>
+        </button>
+      `).join('');
+
+      const cur = diaries[state.selectedDiaryIdx];
+      readerEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;font-size:18px;">${esc(cur.title || '无题日记')}</h3>
+          <span class="ml-badge">${esc(cur.day)} · 心情：${esc(cur.mood_summary || '—')}</span>
+        </div>
+        <div class="ml-reader-body">${esc(cur.content || '（无正文）')}</div>
+      `;
+
+      listEl.querySelectorAll('[data-diary-idx]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.selectedDiaryIdx = Number(btn.getAttribute('data-diary-idx') || 0);
+          renderMemories();
+        });
+      });
+    }
+
+    // Latest Dream & Dream table
+    const ld = d.latest_dream || {};
+    const latestBox = document.getElementById('dream-latest-box');
+    if (ld.content) {
+      const frags = (ld.fragments || []).map((f) => `<span class="ml-badge">${esc(f)}</span>`).join(' ');
+      latestBox.innerHTML = `
+        <div style="padding:14px 16px;border-radius:var(--ml-radius);background:var(--ml-soft);border:1px solid var(--ml-border);">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <strong>最新梦境记录 (${fmtEpoch(ld.created_at)})</strong>
+            <div style="display:flex;gap:6px;">
+              <span class="ml-badge">心情修正 ${ld.mood_delta >= 0 ? '+' : ''}${Number(ld.mood_delta || 0).toFixed(2)}</span>
+              <span class="ml-badge">精力修正 ${ld.energy_delta >= 0 ? '+' : ''}${Number(ld.energy_delta || 0).toFixed(2)}</span>
+            </div>
+          </div>
+          <div style="font-size:13.5px;line-height:1.65;white-space:pre-wrap;">${esc(ld.content)}</div>
+          ${frags ? `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span style="font-size:11.5px;color:var(--ml-muted);">潜意识碎片：</span>${frags}</div>` : ''}
+        </div>
+      `;
+    } else {
+      latestBox.innerHTML = '';
+    }
+
+    const dreams = (d.dreams || []).slice().reverse();
+    document.getElementById('dreams-tbody').innerHTML = dreams.length ? dreams.map((dr) => `
+      <tr>
+        <td style="font-family:var(--ml-font-mono);white-space:nowrap;">${fmtEpoch(dr.created_at)}</td>
+        <td style="white-space:pre-wrap;line-height:1.55;">${esc(dr.content)}</td>
+        <td class="num">${dr.mood_delta >= 0 ? '+' : ''}${Number(dr.mood_delta || 0).toFixed(2)}</td>
+        <td class="num">${dr.energy_delta >= 0 ? '+' : ''}${Number(dr.energy_delta || 0).toFixed(2)}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="ml-empty">近 30 天暂无梦境记录</td></tr>';
+  }
+
+  // ==================== 4. Render Bookshelf ====================
+  function renderShelf() {
+    const d = state.shelf;
+    if (!d) return;
+    const c = d.counts || {};
+    const cr = d.creation || {};
+    document.getElementById('tab-cnt-shelf').textContent = `${c.documents ?? 0}`;
+    document.getElementById('shelf-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">书柜总文档</div><div class="ml-kpi-value">${c.documents ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">私密作品数</div><div class="ml-kpi-value">${c.private_documents ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">今日归档 / 上限</div><div class="ml-kpi-value">${cr.archived_today ?? 0} / ${cr.daily_max ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">待消化灵感池</div><div class="ml-kpi-value">${cr.pending_inspirations ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">创作开关状态</div><div class="ml-kpi-value">${cr.enabled ? '已开启' : '已关闭'}</div></div>
+    `;
+
+    const books = d.books || [];
+    const listEl = document.getElementById('shelf-book-list');
+    const readerEl = document.getElementById('shelf-reader-pane');
+    document.getElementById('shelf-full-text').textContent = d.books_full_text || '（书柜暂无作品）';
+
+    if (!books.length) {
+      listEl.innerHTML = '<div class="ml-empty">书柜暂无文档</div>';
+      readerEl.innerHTML = '<div class="ml-empty">暂无可阅读的作品正文</div>';
+    } else {
+      if (state.selectedBookIdx >= books.length) state.selectedBookIdx = 0;
+      listEl.innerHTML = books.map((b, idx) => `
+        <button type="button" class="ml-item-row ${idx === state.selectedBookIdx ? 'active' : ''}" data-book-idx="${idx}">
+          <div style="display:flex;justify-content:space-between;width:100%;font-size:11.5px;color:var(--ml-muted);">
+            <span>${esc(b.doc_type || '文档')} · ${esc(b.privacy || '—')}</span>
+            <span>${esc(b.updated_age || '')}</span>
+          </div>
+          <div style="font-weight:650;font-size:13.5px;">${esc(b.title || '未命名作品')}</div>
+        </button>
+      `).join('');
+
+      const cur = books[state.selectedBookIdx];
+      readerEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;font-size:18px;">${esc(cur.title || '未命名作品')}</h3>
+          <div style="display:flex;gap:6px;">
+            <span class="ml-badge">${esc(cur.doc_type || 'work')}</span>
+            <span class="ml-badge">${esc(cur.privacy || '—')}</span>
+            <span class="ml-badge">${esc(cur.status || '—')}</span>
+          </div>
+        </div>
+        ${cur.summary ? `<div style="margin-top:10px;padding:8px 12px;background:var(--ml-surface);border-radius:6px;font-size:12.5px;color:var(--ml-muted);">摘要：${esc(cur.summary)}</div>` : ''}
+        <div class="ml-reader-body">${esc(cur.content || '（无正文）')}</div>
+      `;
+
+      listEl.querySelectorAll('[data-book-idx]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.selectedBookIdx = Number(btn.getAttribute('data-book-idx') || 0);
+          renderShelf();
+        });
+      });
+    }
+
+    const runs = d.runs || [];
+    document.getElementById('shelf-runs-count').textContent = `${runs.length} 条记录`;
+    document.getElementById('shelf-runs-tbody').innerHTML = runs.length ? runs.map((r) => `
+      <tr>
+        <td><strong>${esc(r.title || '—')}</strong></td>
+        <td style="font-family:var(--ml-font-mono);">${esc(r.document_id)}</td>
+        <td><span class="ml-badge">${esc(r.status)}</span></td>
+        <td style="font-family:var(--ml-font-mono);">${fmtEpoch(r.started_at)}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="ml-empty">暂无创作运行流水</td></tr>';
+  }
+
+  // ==================== 5. Render Information Digest ====================
+  function renderDigest() {
+    const d = state.digest;
+    if (!d) return;
+    const st = d.status || {};
+    document.getElementById('tab-cnt-digest').textContent = `${(st.recent_news ?? 0) + (st.recent_explorations ?? 0)}`;
+    document.getElementById('digest-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">联网总开关</div><div class="ml-kpi-value">${esc(st.information_enabled || '—')}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">新闻源数量 (${esc(st.news_enabled || '—')})</div><div class="ml-kpi-value">${st.sources ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">近期新闻缓存</div><div class="ml-kpi-value">${st.recent_news ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">自主探索笔记</div><div class="ml-kpi-value">${st.recent_explorations ?? 0}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">搜索历史 (${esc(st.search_enabled || '—')})</div><div class="ml-kpi-value">${st.recent_search_history ?? 0}</div></div>
+    `;
+
+    document.getElementById('digest-news-fulltext').textContent = d.news_full_text || '（暂无新闻）';
+    document.getElementById('digest-exp-fulltext').textContent = d.explorations_full_text || '（暂无探索笔记）';
+
+    const news = d.news || [];
+    const newsBox = document.getElementById('digest-news-box');
+    newsBox.innerHTML = news.length ? news.map((n, idx) => `
+      <article style="padding:12px 14px;border-radius:8px;background:var(--ml-soft);border:1px solid var(--ml-border);margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <strong style="font-size:14px;">${esc(n.title || '无标题新闻')}</strong>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="ml-badge">${esc(n.age)}</span>
+            <span class="ml-badge">关联分 ${Number(n.score || 0).toFixed(2)}</span>
+          </div>
+        </div>
+        ${n.url ? `
+          <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="ml-url-pill">${esc(n.url)}</span>
+            <button type="button" class="ml-btn" data-copy-url="${idx}" style="padding:2px 8px;font-size:11px;">复制链接</button>
+          </div>
+        ` : ''}
+        <div style="margin-top:8px;font-size:13px;line-height:1.6;white-space:pre-wrap;">${esc(n.content || n.summary || '（无正文）')}</div>
+      </article>
+    `).join('') : '<div class="ml-empty">暂无近期采集的新闻</div>';
+
+    newsBox.querySelectorAll('[data-copy-url]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-copy-url') || 0);
+        copyText(news[idx]?.url || '', btn);
+      });
+    });
+
+    const exps = d.explorations || [];
+    const expBox = document.getElementById('digest-explorations-box');
+    expBox.innerHTML = exps.length ? exps.map((ex) => `
+      <article style="padding:12px 14px;border-radius:8px;background:var(--ml-soft);border:1px solid var(--ml-border);margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <strong style="font-size:14px;">${esc(ex.topic || '探索主题')}</strong>
+          <div style="display:flex;gap:6px;">
+            <span class="ml-badge">查询词：${esc(ex.query)}</span>
+            <span class="ml-badge">${esc(ex.age)} · 关联分 ${Number(ex.score || 0).toFixed(2)}</span>
+          </div>
+        </div>
+        ${ex.sources_text ? `<div style="margin-top:6px;font-size:11.5px;color:var(--ml-muted);word-break:break-all;">来源：${esc(ex.sources_text)}</div>` : ''}
+        <div style="margin-top:8px;font-size:13px;line-height:1.65;white-space:pre-wrap;">${esc(ex.summary || '（无笔记）')}</div>
+      </article>
+    `).join('') : '<div class="ml-empty">暂无近期探索笔记</div>';
+
+    const searches = d.search_history || [];
+    document.getElementById('digest-searches-tbody').innerHTML = searches.length ? searches.map((s) => `
+      <tr>
+        <td style="font-family:var(--ml-font-mono);white-space:nowrap;">${esc(s.time)}</td>
+        <td><span class="ml-badge">${esc(s.operation)}</span></td>
+        <td>${esc(s.provider_type || '—')}</td>
+        <td><strong>${esc(s.query)}</strong></td>
+        <td>
+          <span class="ml-badge ${s.success ? 'ml-badge-good' : 'ml-badge-warn'}">${s.success ? '成功' : ('失败: ' + esc(s.error_class || '未知'))}</span>
+        </td>
+        <td class="num">${s.result_count ?? 0}</td>
+        <td class="num">${Number(s.duration_ms || 0).toFixed(0)} ms</td>
+        <td style="max-width:340px;white-space:pre-wrap;font-size:11.5px;color:var(--ml-muted);">${esc(s.results_digest || '—')}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="8" class="ml-empty">暂无联网搜索记录</td></tr>';
+  }
+
+  async function loadAll() {
+    if (state.loading) return;
+    state.loading = true;
+    const btn = document.getElementById('btn-refresh');
+    btn.disabled = true;
+    btn.textContent = '同步中…';
+    const banner = document.getElementById('error-banner');
+    banner.classList.remove('active');
+
+    const errors = await runQueriesWithLimit([
+      { name: 'users', label: '用户关系', onSuccess: (r) => { state.users = r; renderUsers(); } },
+      { name: 'dates', label: '重要日期', onSuccess: (r) => { state.dates = r; renderDates(); } },
+      { name: 'memories', label: '日记梦境', onSuccess: (r) => { state.memories = r; renderMemories(); } },
+      { name: 'shelf', label: '麦麦书柜', onSuccess: (r) => { state.shelf = r; renderShelf(); } },
+      { name: 'digest', label: '联网见闻', onSuccess: (r) => { state.digest = r; renderDigest(); } },
+    ], 2);
+
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      banner.classList.add('active');
+    }
+
+    state.loading = false;
+    btn.disabled = false;
+    btn.textContent = '刷新本页';
+  }
+
+  // Tab bindings
+  document.querySelectorAll('[data-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+  });
+
+  // User filter bindings
+  document.querySelectorAll('[data-user-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-user-filter]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.userFilter = btn.getAttribute('data-user-filter');
+      renderUsers();
+    });
+  });
+  document.getElementById('user-search-input').addEventListener('input', (e) => {
+    state.userSearch = e.target.value || '';
+    renderUsers();
+  });
+
+  // Diary & Shelf view mode toggles
+  document.getElementById('btn-diary-split').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-diary-full').classList.remove('active');
+    document.getElementById('diary-split-view').classList.remove('ml-hidden');
+    document.getElementById('diary-full-view').classList.add('ml-hidden');
+  });
+  document.getElementById('btn-diary-full').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-diary-split').classList.remove('active');
+    document.getElementById('diary-split-view').classList.add('ml-hidden');
+    document.getElementById('diary-full-view').classList.remove('ml-hidden');
+  });
+  document.getElementById('btn-copy-diaries').addEventListener('click', (e) => {
+    copyText(state.memories?.diaries_full_text || '', e.currentTarget);
+  });
+
+  document.getElementById('btn-shelf-split').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-shelf-full').classList.remove('active');
+    document.getElementById('shelf-split-view').classList.remove('ml-hidden');
+    document.getElementById('shelf-full-view').classList.add('ml-hidden');
+  });
+  document.getElementById('btn-shelf-full').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-shelf-split').classList.remove('active');
+    document.getElementById('shelf-split-view').classList.add('ml-hidden');
+    document.getElementById('shelf-full-view').classList.remove('ml-hidden');
+  });
+  document.getElementById('btn-copy-shelf').addEventListener('click', (e) => {
+    copyText(state.shelf?.books_full_text || '', e.currentTarget);
+  });
+
+  // Digest sub-view toggles
+  document.querySelectorAll('[data-digest-sub]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-digest-sub]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const sub = btn.getAttribute('data-digest-sub');
+      document.getElementById('digest-news-box').classList.toggle('ml-hidden', sub !== 'news');
+      document.getElementById('digest-explorations-box').classList.toggle('ml-hidden', sub !== 'explorations');
+      document.getElementById('digest-raw-box').classList.toggle('ml-hidden', sub !== 'raw');
+    });
+  });
+
+  document.getElementById('btn-refresh').addEventListener('click', loadAll);
+  document.getElementById('btn-retry').addEventListener('click', loadAll);
+  document.getElementById('btn-back-overview').addEventListener('click', () => {
+    window.maibot.navigate('overview', {});
+  });
+  document.getElementById('btn-to-system').addEventListener('click', () => {
+    window.maibot.navigate('system', {});
+  });
+
+  window.maibot.ready.then(() => {
+    const initialTab = window.maibot.page?.state?.tab;
+    if (initialTab && ['users', 'dates', 'memories', 'shelf', 'digest'].includes(initialTab)) {
+      switchTab(initialTab);
+    }
+    loadAll();
+  });
+})();
+</script>

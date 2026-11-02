@@ -1,0 +1,1688 @@
+<style>
+  .ml-root {
+    --ml-bg: var(--maibot-background, #f9f9f7);
+    --ml-surface: var(--maibot-surface, #fcfcfb);
+    --ml-fg: var(--maibot-foreground, #0b0b0b);
+    --ml-muted: var(--maibot-muted, #6e6d68);
+    --ml-soft: var(--maibot-soft, #f1f0ec);
+    --ml-border: var(--maibot-border, rgba(11, 11, 11, 0.10));
+    --ml-primary: var(--maibot-primary, #2a78d6);
+    --ml-primary-fg: var(--maibot-primary-foreground, #ffffff);
+    --ml-danger: var(--maibot-danger, #d03b3b);
+    --ml-radius: var(--maibot-radius, 12px);
+    --ml-font-body: var(--maibot-font-body, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif);
+    --ml-font-display: var(--maibot-font-display, var(--ml-font-body));
+    --ml-font-mono: var(--maibot-font-mono, ui-monospace, "JetBrains Mono", Consolas, monospace);
+
+    /* Validated dataviz categorical & status tokens (light) */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #6250d6;
+    --series-8: #e34948;
+    --status-good: #0ca30c;
+    --status-good-ink: #006300;
+    --status-warn: #fab219;
+    --status-serious: #ec835a;
+    --status-crit: #d03b3b;
+    --chart-grid: #e1e0d9;
+    --chart-axis: #c3c2b7;
+    --sleep-band: rgba(98, 80, 214, 0.10);
+    --sleep-band-deep: rgba(42, 120, 214, 0.16);
+
+    font-family: var(--ml-font-body);
+    color: var(--ml-fg);
+    padding: 20px 24px 40px;
+    max-width: 1440px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+
+  :root.dark .ml-root,
+  html.dark .ml-root {
+    --ml-bg: var(--maibot-background, #0d0d0d);
+    --ml-surface: var(--maibot-surface, #1a1a19);
+    --ml-fg: var(--maibot-foreground, #f0efec);
+    --ml-muted: var(--maibot-muted, #9a9890);
+    --ml-soft: var(--maibot-soft, #252523);
+    --ml-border: var(--maibot-border, rgba(255, 255, 255, 0.10));
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --status-good-ink: #0ca30c;
+    --chart-grid: #2c2c2a;
+    --chart-axis: #383835;
+    --sleep-band: rgba(144, 133, 233, 0.14);
+    --sleep-band-deep: rgba(57, 135, 229, 0.22);
+  }
+
+  .ml-root *, .ml-root *::before, .ml-root *::after {
+    box-sizing: border-box;
+  }
+
+  /* Top Navigation & Header */
+  .ml-topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ml-brand-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--ml-primary);
+    color: var(--ml-primary-fg);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 18px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+  .ml-brand-title {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .ml-brand-sub {
+    font-size: 12px;
+    color: var(--ml-muted);
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ml-nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ml-btn {
+    padding: 7px 13px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: opacity 0.15s, background-color 0.15s, border-color 0.15s;
+  }
+  .ml-btn:hover:not(:disabled) {
+    background: var(--ml-soft);
+  }
+  .ml-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .ml-btn-primary {
+    background: var(--ml-primary);
+    color: var(--ml-primary-fg);
+    border-color: var(--ml-primary);
+  }
+  .ml-btn-primary:hover:not(:disabled) {
+    background: var(--ml-primary);
+    filter: brightness(0.95);
+  }
+
+  /* Alert / Error Banner */
+  .ml-error-banner {
+    display: none;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-radius: var(--ml-radius);
+    border: 1px solid var(--status-crit);
+    background: rgba(208, 59, 59, 0.08);
+    color: var(--ml-fg);
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .ml-error-banner.active {
+    display: flex;
+  }
+
+  /* Hero Pod */
+  .ml-hero {
+    display: grid;
+    grid-template-columns: 1.35fr 1fr;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  @media (max-width: 960px) {
+    .ml-hero {
+      grid-template-columns: 1fr;
+    }
+  }
+  .ml-card {
+    background: var(--ml-surface);
+    border: 1px solid var(--ml-border);
+    border-radius: var(--ml-radius);
+    padding: 18px 20px;
+    position: relative;
+  }
+  .ml-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-card-title {
+    font-size: 15px;
+    font-weight: 650;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ml-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 999px;
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    color: var(--ml-fg);
+    white-space: nowrap;
+  }
+  .ml-badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .ml-badge-good {
+    color: var(--status-good-ink);
+    border-color: rgba(12, 163, 12, 0.35);
+    background: rgba(12, 163, 12, 0.08);
+  }
+  .ml-badge-warn {
+    color: var(--ml-fg);
+    border-color: rgba(250, 178, 25, 0.55);
+    background: rgba(250, 178, 25, 0.14);
+  }
+  .ml-badge-crit {
+    color: var(--status-crit);
+    border-color: rgba(208, 59, 59, 0.45);
+    background: rgba(208, 59, 59, 0.10);
+  }
+
+  .ml-hero-main {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 14px;
+  }
+  .ml-hero-status-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .ml-hero-botname {
+    font-size: 24px;
+    font-weight: 750;
+    letter-spacing: -0.01em;
+  }
+  .ml-hero-activity {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ml-primary);
+  }
+  .ml-hero-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .ml-meta-box {
+    background: var(--ml-soft);
+    border-radius: calc(var(--ml-radius) - 4px);
+    padding: 10px 12px;
+    border: 1px solid var(--ml-border);
+  }
+  .ml-meta-label {
+    font-size: 11px;
+    color: var(--ml-muted);
+    margin-bottom: 4px;
+  }
+  .ml-meta-val {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  /* Scene Notebook Card */
+  .ml-scene-box {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: linear-gradient(135deg, var(--ml-surface) 0%, var(--ml-soft) 100%);
+  }
+  .ml-scene-quote {
+    font-size: 14px;
+    line-height: 1.65;
+    padding: 12px 14px;
+    border-left: 3px solid var(--ml-primary);
+    background: var(--ml-surface);
+    border-radius: 0 8px 8px 0;
+    margin: 4px 0 12px;
+    min-height: 68px;
+    white-space: pre-wrap;
+  }
+  .ml-scene-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--ml-muted);
+  }
+
+  /* 3-Column Vitals / Compass / Sleep Grid */
+  .ml-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  @media (max-width: 1120px) {
+    .ml-grid-3 {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Gauges */
+  .ml-gauges-wrap {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: center;
+  }
+  .ml-gauge-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 8px 6px;
+    background: var(--ml-soft);
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+  }
+  .ml-gauge-label {
+    font-size: 12px;
+    color: var(--ml-muted);
+    margin-top: 4px;
+  }
+  .ml-gauge-sub {
+    font-size: 11px;
+    color: var(--ml-muted);
+    margin-top: 2px;
+  }
+
+  /* Mood Compass */
+  .ml-compass-layout {
+    display: grid;
+    grid-template-columns: 168px 1fr;
+    gap: 14px;
+    align-items: center;
+  }
+  @media (max-width: 480px) {
+    .ml-compass-layout {
+      grid-template-columns: 1fr;
+      justify-items: center;
+    }
+  }
+  .ml-compass-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ml-kv-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--ml-border);
+  }
+  .ml-kv-row:last-child {
+    border-bottom: none;
+  }
+  .ml-kv-key {
+    color: var(--ml-muted);
+    font-size: 12px;
+  }
+  .ml-kv-val {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Chart Controls & Legend */
+  .ml-Section-gap {
+    margin-bottom: 18px;
+  }
+  .ml-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .ml-seg-group {
+    display: inline-flex;
+    background: var(--ml-soft);
+    padding: 3px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    border: 1px solid var(--ml-border);
+    gap: 2px;
+  }
+  .ml-seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--ml-muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: calc(var(--ml-radius) - 6px);
+    cursor: pointer;
+  }
+  .ml-seg-btn.active {
+    background: var(--ml-surface);
+    color: var(--ml-fg);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  }
+  .ml-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--ml-fg);
+  }
+  .ml-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ml-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+  .ml-chart-readout {
+    min-height: 34px;
+    padding: 7px 12px;
+    margin-bottom: 10px;
+    border-radius: calc(var(--ml-radius) - 4px);
+    background: var(--ml-soft);
+    border: 1px solid var(--ml-border);
+    font-size: 12.5px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ml-svg-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .ml-svg-chart {
+    width: 100%;
+    height: auto;
+    display: block;
+    user-select: none;
+  }
+
+  /* 24h Schedule Gantt & Timeline */
+  .ml-gantt-track {
+    position: relative;
+    height: 30px;
+    width: 100%;
+    background: var(--ml-soft);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    border: 1px solid var(--ml-border);
+    margin-bottom: 6px;
+  }
+  .ml-gantt-seg {
+    height: 100%;
+    border-right: 2px solid var(--ml-surface);
+    position: relative;
+    transition: filter 0.15s;
+  }
+  .ml-gantt-seg:hover {
+    filter: brightness(1.08);
+  }
+  .ml-gantt-now {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--status-crit);
+    z-index: 3;
+    pointer-events: none;
+  }
+  .ml-gantt-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--ml-muted);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 14px;
+  }
+  .ml-timeline-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+  .ml-node-card {
+    padding: 12px 14px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ml-node-card.is-current {
+    border-color: var(--ml-primary);
+    background: var(--ml-surface);
+    box-shadow: 0 0 0 1px var(--ml-primary);
+  }
+  .ml-node-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .ml-node-time {
+    font-family: var(--ml-font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .ml-node-summary {
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+  .ml-node-scene {
+    font-size: 12px;
+    color: var(--ml-muted);
+    line-height: 1.5;
+    border-left: 2px solid var(--ml-border);
+    padding-left: 8px;
+    margin-top: 2px;
+  }
+  .ml-node-metrics {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: auto;
+    padding-top: 6px;
+    font-size: 11px;
+    color: var(--ml-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Usage & Services */
+  .ml-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .ml-kpi-tile {
+    padding: 12px 14px;
+    border-radius: calc(var(--ml-radius) - 2px);
+    border: 1px solid var(--ml-border);
+    background: var(--ml-soft);
+  }
+  .ml-kpi-label {
+    font-size: 12px;
+    color: var(--ml-muted);
+    margin-bottom: 4px;
+  }
+  .ml-kpi-value {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .ml-kpi-sub {
+    font-size: 11px;
+    color: var(--ml-muted);
+    margin-top: 4px;
+  }
+
+  .ml-usage-split {
+    display: grid;
+    grid-template-columns: 1.05fr 1.25fr;
+    gap: 16px;
+  }
+  @media (max-width: 980px) {
+    .ml-usage-split {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .ml-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .ml-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .ml-table th,
+  .ml-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ml-border);
+    text-align: left;
+  }
+  .ml-table th {
+    color: var(--ml-muted);
+    font-weight: 600;
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .ml-table td.num,
+  .ml-table th.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ml-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--ml-muted);
+    font-size: 13px;
+  }
+  .ml-hidden {
+    display: none !important;
+  }
+</style>
+
+<div class="maibot-page ml-root" id="ml-overview-root">
+  <!-- 顶部导航与操作栏 -->
+  <header class="ml-topbar">
+    <div class="ml-brand">
+      <div class="ml-brand-icon" aria-hidden="true">麦</div>
+      <div>
+        <h1 class="ml-brand-title" id="hdr-title">麦麦此刻 · 生活总览</h1>
+        <div class="ml-brand-sub">
+          <span id="hdr-version">版本加载中…</span>
+          <span>·</span>
+          <span id="hdr-generated">等待同步</span>
+          <span>·</span>
+          <span id="hdr-theme-pill">自适应皮肤</span>
+        </div>
+      </div>
+    </div>
+    <div class="ml-nav-actions">
+      <button type="button" class="ml-btn" id="btn-nav-life">记忆与牵挂 →</button>
+      <button type="button" class="ml-btn" id="btn-nav-system">系统与配置 →</button>
+      <button type="button" class="ml-btn ml-btn-primary" id="btn-refresh">刷新实况</button>
+    </div>
+  </header>
+
+  <!-- 错误横幅（仅在 query 失败或 not_ready 时显示，不造假数据） -->
+  <div class="ml-error-banner" id="error-banner" role="alert">
+    <div>
+      <strong>数据拉取异常：</strong>
+      <span id="error-text"></span>
+    </div>
+    <button type="button" class="ml-btn" id="btn-retry">立即重试</button>
+  </div>
+
+  <!-- 第一区：Hero 生命实况舱 + 临场微场景手账 -->
+  <section class="ml-hero">
+    <div class="ml-card ml-hero-main">
+      <div>
+        <div class="ml-card-header">
+          <h2 class="ml-card-title">生命实况舱 (Live Status Pod)</h2>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;" id="hero-badges">
+            <span class="ml-badge">加载中…</span>
+          </div>
+        </div>
+        <div class="ml-hero-status-line">
+          <span class="ml-hero-botname" id="hero-botname">—</span>
+          <span class="ml-hero-activity" id="hero-activity">正在同步当前状态…</span>
+        </div>
+      </div>
+
+      <div class="ml-hero-meta-grid">
+        <div class="ml-meta-box">
+          <div class="ml-meta-label">当前位置</div>
+          <div class="ml-meta-val" id="hero-location">—</div>
+        </div>
+        <div class="ml-meta-box">
+          <div class="ml-meta-label">天气与历法</div>
+          <div class="ml-meta-val" id="hero-weather">—</div>
+        </div>
+        <div class="ml-meta-box">
+          <div class="ml-meta-label">当前日程段</div>
+          <div class="ml-meta-val" id="hero-cur-node">—</div>
+        </div>
+        <div class="ml-meta-box">
+          <div class="ml-meta-label">下一日程预告</div>
+          <div class="ml-meta-val" id="hero-next-node">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ml-card ml-scene-box">
+      <div>
+        <div class="ml-card-header">
+          <h2 class="ml-card-title">临场微场景手账 (Scene Narrative)</h2>
+          <span class="ml-badge" id="scene-applied-badge">等待读取</span>
+        </div>
+        <div class="ml-scene-quote" id="scene-text">正在从日程引擎读取当前细化场景…</div>
+      </div>
+      <div class="ml-scene-footer">
+        <span id="scene-narrative-note">规则层定界 · LLM 叙事细化</span>
+        <button type="button" class="ml-btn" id="btn-jump-memories" style="padding:4px 10px;font-size:12px;">翻看近期日记 →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 第二区：三维体征仪表 + 二维情绪罗盘 + 睡眠与休息闸门 -->
+  <section class="ml-grid-3">
+    <!-- 体征仪表 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">生理体征 (Vitals 0–100)</h2>
+        <span class="ml-badge" id="health-badge">体征正常</span>
+      </div>
+      <div class="ml-gauges-wrap">
+        <div class="ml-gauge-item">
+          <div id="gauge-energy-svg"></div>
+          <div class="ml-gauge-label">当前精力 (Energy)</div>
+          <div class="ml-gauge-sub" id="gauge-energy-sub">阈值 &lt;30 疲惫</div>
+        </div>
+        <div class="ml-gauge-item">
+          <div id="gauge-hunger-svg"></div>
+          <div class="ml-gauge-label">饥饿程度 (Hunger)</div>
+          <div class="ml-gauge-sub" id="gauge-hunger-sub">阈值 &gt;75 饥肠辘辘</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:12.5px;color:var(--ml-muted);" id="health-note-text">
+        健康注记：—
+      </div>
+    </div>
+
+    <!-- 情绪象限罗盘 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">二维情绪罗盘 (Valence × Arousal)</h2>
+        <span class="ml-badge" id="mood-label-badge">—</span>
+      </div>
+      <div class="ml-compass-layout">
+        <div id="mood-compass-svg"></div>
+        <div class="ml-compass-stats">
+          <div class="ml-kv-row">
+            <span class="ml-kv-key">情绪档位</span>
+            <span class="ml-kv-val" id="mood-stat-label">—</span>
+          </div>
+          <div class="ml-kv-row">
+            <span class="ml-kv-key">效价 Valence (-1~+1)</span>
+            <span class="ml-kv-val" id="mood-stat-valence">—</span>
+          </div>
+          <div class="ml-kv-row">
+            <span class="ml-kv-key">唤醒度 Arousal (0~1)</span>
+            <span class="ml-kv-val" id="mood-stat-arousal">—</span>
+          </div>
+          <div class="ml-kv-row">
+            <span class="ml-kv-key">情绪象限解读</span>
+            <span class="ml-kv-val" id="mood-stat-quadrant">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 睡眠与休息闸门 -->
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">睡眠与休息闸门运行时</h2>
+        <span class="ml-badge" id="sleep-phase-badge">—</span>
+      </div>
+      <div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">休息类型判定</span>
+          <span class="ml-kv-val" id="sleep-kind">—</span>
+        </div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">本轮入睡时刻</span>
+          <span class="ml-kv-val" id="sleep-started">—</span>
+        </div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">被叫醒宽限至 (Grace)</span>
+          <span class="ml-kv-val" id="sleep-grace">—</span>
+        </div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">入睡推迟至 (Defer)</span>
+          <span class="ml-kv-val" id="sleep-defer">—</span>
+        </div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">本轮被吵醒次数</span>
+          <span class="ml-kv-val" id="sleep-woken-count">—</span>
+        </div>
+        <div class="ml-kv-row">
+          <span class="ml-kv-key">最近状态转换事件</span>
+          <span class="ml-kv-val" id="sleep-last-event">—</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 第三区：72 小时状态轨迹（分轴双图 + 睡眠色带 + 十字准星 + 无障碍表格） -->
+  <section class="ml-card ml-Section-gap">
+    <div class="ml-card-header">
+      <div>
+        <h2 class="ml-card-title">最近 72 小时生活状态轨迹 (2h 均匀网格重采样)</h2>
+      </div>
+      <div class="ml-seg-group" role="tablist" aria-label="72小时轨迹视图切换">
+        <button type="button" class="ml-seg-btn active" data-hist-mode="both">双图同屏</button>
+        <button type="button" class="ml-seg-btn" data-hist-mode="vitals">仅生理 (0–100)</button>
+        <button type="button" class="ml-seg-btn" data-hist-mode="mood">仅情绪 (-1~+1)</button>
+        <button type="button" class="ml-seg-btn" data-hist-mode="table">数据表格</button>
+      </div>
+    </div>
+
+    <div class="ml-toolbar">
+      <div class="ml-legend">
+        <span class="ml-legend-item"><i class="ml-legend-swatch" style="background:var(--series-1)"></i>精力 Energy (0–100)</span>
+        <span class="ml-legend-item"><i class="ml-legend-swatch" style="background:var(--series-2)"></i>饥饿 Hunger (0–100)</span>
+        <span class="ml-legend-item"><i class="ml-legend-swatch" style="background:var(--series-3)"></i>心情效价 Valence (-1~+1)</span>
+        <span class="ml-legend-item"><i class="ml-legend-swatch" style="background:var(--series-4)"></i>情绪唤醒 Arousal (0~1)</span>
+        <span class="ml-legend-item"><i class="ml-legend-swatch" style="background:var(--sleep-band-deep);border:1px solid var(--series-7)"></i>睡眠/休息相位色带</span>
+      </div>
+      <span style="font-size:12px;color:var(--ml-muted);" id="history-count-label">共 0 个采样点</span>
+    </div>
+
+    <div class="ml-chart-readout" id="history-readout">
+      <span>移动鼠标或聚焦图表查看任意时刻体征与情绪快照</span>
+    </div>
+
+    <div id="history-charts-container">
+      <div class="ml-svg-wrap" id="history-vitals-wrap"></div>
+      <div class="ml-svg-wrap" id="history-mood-wrap" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="ml-table-wrap ml-hidden" id="history-table-wrap">
+      <table class="ml-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>睡眠相位</th>
+            <th class="num">精力 (0–100)</th>
+            <th class="num">饥饿 (0–100)</th>
+            <th class="num">效价 (-1~+1)</th>
+            <th class="num">唤醒度 (0~1)</th>
+          </tr>
+        </thead>
+        <tbody id="history-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 第四区：今日/明日日程 24h 甘特条与时间线 -->
+  <section class="ml-card ml-Section-gap">
+    <div class="ml-card-header">
+      <div>
+        <h2 class="ml-card-title" id="sched-title">今日生活框架与微场景时间线</h2>
+      </div>
+      <div class="ml-seg-group">
+        <button type="button" class="ml-seg-btn active" id="btn-sched-today">今日日程</button>
+        <button type="button" class="ml-seg-btn" id="btn-sched-tomorrow">明日预览</button>
+      </div>
+    </div>
+
+    <!-- 24h 甘特条 -->
+    <div class="ml-gantt-track" id="sched-gantt-track" title="00:00 - 24:00 全天日程分布"></div>
+    <div class="ml-gantt-ticks">
+      <span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>24:00</span>
+    </div>
+
+    <div class="ml-timeline-grid" id="sched-nodes-grid">
+      <div class="ml-empty">正在加载日程时间线…</div>
+    </div>
+  </section>
+
+  <!-- 第五区：服务运行态 & Token / 搜索用量监控 -->
+  <section class="ml-card">
+    <div class="ml-card-header">
+      <h2 class="ml-card-title">服务运行态与 Token / 联网用量审计</h2>
+      <span class="ml-badge" id="usage-day-badge">—</span>
+    </div>
+
+    <!-- KPI Row -->
+    <div class="ml-kpi-row">
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">今日 Token 总量</div>
+        <div class="ml-kpi-value" id="kpi-tokens-today">—</div>
+        <div class="ml-kpi-sub" id="kpi-calls-today">今日调用 — 次</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">近 7 日累计 Token</div>
+        <div class="ml-kpi-value" id="kpi-tokens-7d">—</div>
+        <div class="ml-kpi-sub" id="kpi-calls-7d">7 日调用 — 次</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">今日搜索 API 调用</div>
+        <div class="ml-kpi-value" id="kpi-search-today">—</div>
+        <div class="ml-kpi-sub" id="kpi-search-fail">最近失败：—</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">JSON 解析失败告警</div>
+        <div class="ml-kpi-value" id="kpi-parse-fail">—</div>
+        <div class="ml-kpi-sub" id="kpi-llm-health">模型健康：—</div>
+      </div>
+      <div class="ml-kpi-tile">
+        <div class="ml-kpi-label">麦麦绘图联动 &amp; 群观察</div>
+        <div class="ml-kpi-value" id="kpi-drawpic">—</div>
+        <div class="ml-kpi-sub" id="kpi-groups-obs">活跃群 — · 观察记录 —</div>
+      </div>
+    </div>
+
+    <div class="ml-usage-split">
+      <!-- 左侧：近 7 日趋势柱状图（单轴切换 Token / 调用次数 + 表格视图） -->
+      <div class="ml-meta-box" style="background:var(--ml-surface);padding:14px;">
+        <div class="ml-toolbar" style="margin-bottom:8px;">
+          <strong style="font-size:13.5px;">近 7 日消耗趋势</strong>
+          <div class="ml-seg-group">
+            <button type="button" class="ml-seg-btn active" data-usage-metric="tokens">Token 量</button>
+            <button type="button" class="ml-seg-btn" data-usage-metric="calls">调用次数</button>
+            <button type="button" class="ml-seg-btn" data-usage-metric="table">表格</button>
+          </div>
+        </div>
+        <div id="usage-7d-chart-wrap"></div>
+        <div class="ml-table-wrap ml-hidden" id="usage-7d-table-wrap">
+          <table class="ml-table">
+            <thead>
+              <tr><th>日期</th><th class="num">Token 消耗</th><th class="num">调用次数</th></tr>
+            </thead>
+            <tbody id="usage-7d-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 右侧：今日各任务模型明细 + 搜索源统计 -->
+      <div class="ml-meta-box" style="background:var(--ml-surface);padding:14px;">
+        <div class="ml-toolbar" style="margin-bottom:8px;">
+          <strong style="font-size:13.5px;">今日按任务 Token 明细 &amp; 搜索源统计</strong>
+          <span style="font-size:11.5px;color:var(--ml-muted);" id="avail-tasks-text">可用任务：—</span>
+        </div>
+        <div class="ml-table-wrap">
+          <table class="ml-table">
+            <thead>
+              <tr>
+                <th>来源 / 任务</th>
+                <th class="num">调用 (成功)</th>
+                <th class="num">Prompt</th>
+                <th class="num">Completion</th>
+                <th class="num">总 Token</th>
+                <th class="num">平均耗时</th>
+              </tr>
+            </thead>
+            <tbody id="usage-tokens-tbody"></tbody>
+          </table>
+        </div>
+        <div class="ml-table-wrap" style="margin-top:12px;">
+          <table class="ml-table">
+            <thead>
+              <tr>
+                <th>搜索 Provider</th>
+                <th class="num">调用 (成功)</th>
+                <th class="num">命中结果数</th>
+                <th class="num">平均耗时</th>
+              </tr>
+            </thead>
+            <tbody id="usage-search-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const state = {
+    status: null,
+    history: null,
+    schedule: null,
+    usage: null,
+    histMode: 'both',
+    schedTab: 'today',
+    usageMetric: 'tokens',
+    loading: false,
+    hoverIndex: -1,
+  };
+
+  const SLEEP_ZH = {
+    awake: '清醒',
+    woken: '被叫醒',
+    falling_asleep: '入睡中',
+    light_sleep: '浅睡',
+    deep_sleep: '深睡',
+  };
+
+  const KIND_COLORS = {
+    用餐: 'var(--series-2)',
+    工作: 'var(--series-1)',
+    学习: 'var(--series-7)',
+    出行: 'var(--series-4)',
+    闲暇: 'var(--series-3)',
+    睡眠: 'var(--series-5)',
+    午休: 'var(--series-5)',
+    休息: 'var(--series-6)',
+  };
+
+  function esc(val) {
+    return String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function fmtInt(n) {
+    const v = Number(n || 0);
+    return Number.isFinite(v) ? v.toLocaleString('zh-CN') : '0';
+  }
+
+  function parseHHMM(str) {
+    if (!str || typeof str !== 'string' || !str.includes(':')) return null;
+    const [h, m] = str.split(':').map(Number);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+    return h * 60 + m;
+  }
+
+  // Concurrency-guarded query runner: strictly <= 2 in-flight requests to respect host bridge limit
+  async function runQueriesWithLimit(tasks, concurrency = 2) {
+    await window.maibot.ready;
+    const errors = [];
+    let idx = 0;
+    async function worker() {
+      while (idx < tasks.length) {
+        const current = tasks[idx++];
+        try {
+          const res = await window.maibot.query(current.name, {});
+          if (res && res.success === false) {
+            throw new Error(res.error || `${current.name} 返回失败`);
+          }
+          current.onSuccess(res);
+        } catch (err) {
+          errors.push(`${current.label}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+    const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker());
+    await Promise.all(workers);
+    return errors;
+  }
+
+  function updateThemePill(ctx) {
+    const pill = document.getElementById('hdr-theme-pill');
+    if (!pill || !ctx) return;
+    const mode = ctx.theme === 'dark' ? '暗色' : '亮色';
+    const style = ctx.dashboardStyle || 'modern';
+    pill.textContent = `${mode} · ${style}`;
+  }
+
+  // Render Arc Gauge SVG (0-100)
+  function buildGaugeSVG(value, colorVar, warnCondition) {
+    const pct = Math.max(0, Math.min(100, Number(value || 0)));
+    const r = 42;
+    const cx = 56;
+    const cy = 54;
+    const startAngle = Math.PI * 0.8;
+    const endAngle = Math.PI * 2.2;
+    const totalArc = endAngle - startAngle;
+    const valAngle = startAngle + (pct / 100) * totalArc;
+
+    function polar(angle) {
+      return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+    }
+    const [sx, sy] = polar(startAngle);
+    const [ex, ey] = polar(endAngle);
+    const [vx, vy] = polar(valAngle);
+    const largeTrack = totalArc > Math.PI ? 1 : 0;
+    const largeVal = (valAngle - startAngle) > Math.PI ? 1 : 0;
+    const strokeColor = warnCondition ? 'var(--status-serious)' : colorVar;
+
+    return `
+      <svg width="112" height="86" viewBox="0 0 112 86" role="img" aria-label="数值 ${pct.toFixed(1)}">
+        <path d="M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 ${largeTrack} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}"
+              fill="none" stroke="var(--chart-grid)" stroke-width="8" stroke-linecap="round"/>
+        ${pct > 0.5 ? `<path d="M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 ${largeVal} 1 ${vx.toFixed(2)} ${vy.toFixed(2)}"
+              fill="none" stroke="${strokeColor}" stroke-width="8" stroke-linecap="round"/>` : ''}
+        <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="var(--ml-fg)" font-size="20" font-weight="700">${pct.toFixed(1)}</text>
+      </svg>
+    `;
+  }
+
+  // Render 2D Mood Compass SVG (Valence -1..1 on X, Arousal 0..1 on Y)
+  function buildCompassSVG(valence, arousal) {
+    const v = Math.max(-1, Math.min(1, Number(valence || 0)));
+    const a = Math.max(0, Math.min(1, Number(arousal || 0)));
+    const size = 160;
+    const pad = 20;
+    const inner = size - pad * 2;
+    const cx = pad + inner / 2;
+    const cy = pad + inner / 2;
+    const px = pad + ((v + 1) / 2) * inner;
+    const py = pad + (1 - a) * inner;
+
+    return `
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="情绪效价 ${v.toFixed(2)}, 唤醒度 ${a.toFixed(2)}">
+        <rect x="${pad}" y="${pad}" width="${inner}" height="${inner}" rx="10" fill="var(--ml-soft)" stroke="var(--chart-axis)" stroke-width="1"/>
+        <line x1="${cx}" y1="${pad}" x2="${cx}" y2="${pad + inner}" stroke="var(--chart-grid)" stroke-width="1"/>
+        <line x1="${pad}" y1="${cy}" x2="${pad + inner}" y2="${cy}" stroke="var(--chart-grid)" stroke-width="1"/>
+        <circle cx="${cx}" cy="${cy}" r="${inner * 0.32}" fill="none" stroke="var(--chart-grid)" stroke-width="1"/>
+        <text x="${pad + 6}" y="${pad + 13}" fill="var(--ml-muted)" font-size="9.5">紧绷</text>
+        <text x="${pad + inner - 6}" y="${pad + 13}" text-anchor="end" fill="var(--ml-muted)" font-size="9.5">愉悦活力</text>
+        <text x="${pad + 6}" y="${pad + inner - 6}" fill="var(--ml-muted)" font-size="9.5">低落疲惫</text>
+        <text x="${pad + inner - 6}" y="${pad + inner - 6}" text-anchor="end" fill="var(--ml-muted)" font-size="9.5">平静舒缓</text>
+        <line x1="${cx}" y1="${cy}" x2="${px.toFixed(1)}" y2="${py.toFixed(1)}" stroke="var(--series-1)" stroke-width="1.5" opacity="0.55"/>
+        <circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="9" fill="var(--series-1)" opacity="0.22"/>
+        <circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="5" fill="var(--series-1)" stroke="var(--ml-surface)" stroke-width="2"/>
+      </svg>
+    `;
+  }
+
+  function interpretQuadrant(v, a) {
+    if (v >= 0.15 && a >= 0.5) return '高唤醒愉悦（元气活跃）';
+    if (v >= 0.15 && a < 0.5) return '低唤醒愉悦（惬意放松）';
+    if (v < -0.15 && a >= 0.5) return '高唤醒负向（烦躁/紧绷）';
+    if (v < -0.15 && a < 0.5) return '低唤醒负向（倦怠/低落）';
+    return '中心平稳区（情绪均衡）';
+  }
+
+  function renderStatus() {
+    const d = state.status;
+    if (!d) return;
+
+    const st = d.state || {};
+    const sl = d.sleep || {};
+    const sc = d.schedule || {};
+    const sv = d.services || {};
+    const lk = d.linkage || {};
+
+    document.getElementById('hdr-version').textContent = `v${d.version || '—'}`;
+    document.getElementById('hdr-generated').textContent = `采样于 ${(d.generated_at || '').replace('T', ' ')}`;
+    document.getElementById('hero-botname').textContent = d.bot_name || '麦麦';
+    document.getElementById('hero-activity').textContent = st.current_activity ? `正在：${st.current_activity}` : '当前无特定活动';
+    document.getElementById('hero-location').textContent = st.current_location || '未标记地点';
+
+    const weatherParts = [d.weather || '天气未知', d.day_type || '', d.upcoming_festival ? `临近${d.upcoming_festival}` : ''].filter(Boolean);
+    document.getElementById('hero-weather').textContent = weatherParts.join(' · ');
+
+    const curNode = sc.current || {};
+    document.getElementById('hero-cur-node').textContent = curNode.summary
+      ? `[${curNode.kind_zh || '日程'}] ${curNode.summary} (${curNode.window || ''})`
+      : '当前无匹配框架节点';
+
+    const nxtNode = sc.next || {};
+    document.getElementById('hero-next-node').textContent = nxtNode.summary
+      ? `${nxtNode.start || ''} [${nxtNode.kind_zh || ''}] ${nxtNode.summary}`
+      : '今日后续无节点';
+
+    // Top Hero Badges
+    const badgesEl = document.getElementById('hero-badges');
+    const isAwake = st.sleep_phase_zh === '清醒';
+    badgesEl.innerHTML = `
+      <span class="ml-badge ${isAwake ? 'ml-badge-good' : 'ml-badge-warn'}">
+        <span class="ml-badge-dot"></span>${esc(st.sleep_phase_zh || '未知')}
+      </span>
+      <span class="ml-badge">心情：${esc(st.mood_label || '—')}</span>
+      <span class="ml-badge">${esc(sv.users_summary || '用户未配置')}</span>
+    `;
+
+    // Scene Card
+    const sceneObj = sc.scene || {};
+    const sceneBadge = document.getElementById('scene-applied-badge');
+    sceneBadge.textContent = sceneObj.applied ? '已注入上下文' : '框架待命';
+    sceneBadge.className = `ml-badge ${sceneObj.applied ? 'ml-badge-good' : ''}`;
+    document.getElementById('scene-text').textContent = sceneObj.scene || st.current_activity || '（当前时段暂无细化微场景描述）';
+
+    const narEl = document.getElementById('scene-narrative-note');
+    if (sv.narrative_note) {
+      narEl.textContent = `⚠️ ${sv.narrative_note}`;
+      narEl.style.color = 'var(--status-serious)';
+    } else {
+      narEl.textContent = `最新日记日期：${sv.diary_last_day || '暂无'} · 后台协程 ${sv.background_tasks ?? 0} 个`;
+      narEl.style.color = 'var(--ml-muted)';
+    }
+
+    // Gauges
+    const energy = Number(st.energy || 0);
+    const hunger = Number(st.hunger || 0);
+    document.getElementById('gauge-energy-svg').innerHTML = buildGaugeSVG(energy, 'var(--series-1)', energy < 30);
+    document.getElementById('gauge-hunger-svg').innerHTML = buildGaugeSVG(hunger, 'var(--series-2)', hunger > 75);
+
+    const healthBadge = document.getElementById('health-badge');
+    if (energy < 25 || hunger > 85 || st.health_note) {
+      healthBadge.textContent = st.health_note || '需关注体征';
+      healthBadge.className = 'ml-badge ml-badge-warn';
+    } else {
+      healthBadge.textContent = '体征平稳';
+      healthBadge.className = 'ml-badge ml-badge-good';
+    }
+    document.getElementById('health-note-text').textContent = `健康注记：${st.health_note || '无异常症状'}`;
+
+    // Compass
+    const valence = Number(st.mood_valence || 0);
+    const arousal = Number(st.mood_arousal || 0);
+    document.getElementById('mood-compass-svg').innerHTML = buildCompassSVG(valence, arousal);
+    document.getElementById('mood-label-badge').textContent = st.mood_label || '平静';
+    document.getElementById('mood-stat-label').textContent = st.mood_label || '—';
+    document.getElementById('mood-stat-valence').textContent = (valence >= 0 ? '+' : '') + valence.toFixed(2);
+    document.getElementById('mood-stat-arousal').textContent = arousal.toFixed(2);
+    document.getElementById('mood-stat-quadrant').textContent = interpretQuadrant(valence, arousal);
+
+    // Sleep Runtime
+    document.getElementById('sleep-phase-badge').textContent = sl.phase_zh || '未知';
+    document.getElementById('sleep-kind').textContent = sl.kind_zh || '未处于休息段';
+    document.getElementById('sleep-started').textContent = sl.started_at || '—';
+    document.getElementById('sleep-grace').textContent = sl.grace_until || '无宽限窗';
+    document.getElementById('sleep-defer').textContent = sl.defer_until || '未推迟';
+    document.getElementById('sleep-woken-count').textContent = `${sl.woken_count ?? 0} 次`;
+    document.getElementById('sleep-last-event').textContent = sl.last_event || '无';
+
+    // Service KPIs in section 5
+    document.getElementById('kpi-search-fail').textContent = `最近搜索失败分类：${sv.last_failure || '无'}`;
+    const llmOk = sv.llm_health === '正常';
+    document.getElementById('kpi-llm-health').textContent = `LLM 状态：${sv.llm_health || '未知'}`;
+    document.getElementById('kpi-llm-health').style.color = llmOk ? 'var(--ml-muted)' : 'var(--status-crit)';
+    document.getElementById('avail-tasks-text').textContent = `可用模型任务：${sv.available_tasks || '无'}`;
+
+    const drawStatus = lk.drawpic_enabled
+      ? (lk.drawpic_detected ? '已启用·已连接' : '已启用·未探测到插件')
+      : '已关闭';
+    document.getElementById('kpi-drawpic').textContent = drawStatus;
+    document.getElementById('kpi-groups-obs').textContent =
+      `活跃群 ${sv.active_groups ?? 0} · 群观察 ${sv.group_observations ?? 0} · 待写灵感 ${sv.pending_inspirations ?? 0}`;
+  }
+
+  // Render 72h Status History (Two separate single-axis SVG plots + sleep bands + crosshair + table)
+  function renderHistory() {
+    const pts = state.history?.points || [];
+    document.getElementById('history-count-label').textContent = `共 ${pts.length} 个采样点 (2h 步进)`;
+
+    const vitalsWrap = document.getElementById('history-vitals-wrap');
+    const moodWrap = document.getElementById('history-mood-wrap');
+    const chartsContainer = document.getElementById('history-charts-container');
+    const tableWrap = document.getElementById('history-table-wrap');
+    const tbody = document.getElementById('history-table-body');
+
+    // Always populate WCAG table view
+    if (!pts.length) {
+      vitalsWrap.innerHTML = '<div class="ml-empty">暂无历史状态快照（插件运行后自动按小时采样）</div>';
+      moodWrap.innerHTML = '';
+      tbody.innerHTML = '<tr><td colspan="6" class="ml-empty">暂无历史轨迹数据</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = pts.slice().reverse().map((p) => `
+      <tr>
+        <td>${esc(p.time)}</td>
+        <td>${esc(SLEEP_ZH[p.sleep_phase] || p.sleep_phase || '—')}</td>
+        <td class="num">${Number(p.energy || 0).toFixed(1)}</td>
+        <td class="num">${Number(p.hunger || 0).toFixed(1)}</td>
+        <td class="num">${Number(p.mood_valence || 0).toFixed(2)}</td>
+        <td class="num">${Number(p.mood_arousal || 0).toFixed(2)}</td>
+      </tr>
+    `).join('');
+
+    if (state.histMode === 'table') {
+      chartsContainer.classList.add('ml-hidden');
+      tableWrap.classList.remove('ml-hidden');
+      return;
+    }
+    chartsContainer.classList.remove('ml-hidden');
+    tableWrap.classList.add('ml-hidden');
+
+    vitalsWrap.classList.toggle('ml-hidden', state.histMode === 'mood');
+    moodWrap.classList.toggle('ml-hidden', state.histMode === 'vitals');
+
+    const W = 960;
+    const padL = 46;
+    const padR = 54;
+    const plotW = W - padL - padR;
+    const stepX = pts.length > 1 ? plotW / (pts.length - 1) : plotW;
+    const xAt = (i) => padL + (pts.length > 1 ? i * stepX : plotW / 2);
+
+    // Sleep background bands
+    function buildSleepBands(padT, plotH) {
+      let bands = '';
+      for (let i = 0; i < pts.length; i++) {
+        const ph = pts[i].sleep_phase;
+        if (ph && ph !== 'awake') {
+          const x0 = Math.max(padL, xAt(i) - stepX / 2);
+          const x1 = Math.min(padL + plotW, xAt(i) + stepX / 2);
+          const fill = ph === 'deep_sleep' ? 'var(--sleep-band-deep)' : 'var(--sleep-band)';
+          bands += `<rect x="${x0.toFixed(1)}" y="${padT}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="${plotH}" fill="${fill}"/>`;
+        }
+      }
+      return bands;
+    }
+
+    function buildXAxisLabels(yPos) {
+      const stride = Math.max(1, Math.ceil(pts.length / 8));
+      let out = '';
+      for (let i = 0; i < pts.length; i += stride) {
+        out += `<text x="${xAt(i).toFixed(1)}" y="${yPos}" text-anchor="middle" fill="var(--ml-muted)" font-size="10.5">${esc(pts[i].time)}</text>`;
+      }
+      return out;
+    }
+
+    // 1. Vitals Plot (0..100)
+    const H1 = 195;
+    const padT1 = 18;
+    const plotH1 = 142;
+    const yVitals = (val) => padT1 + (1 - Math.max(0, Math.min(100, Number(val || 0))) / 100) * plotH1;
+    const energyPts = pts.map((p, i) => `${xAt(i).toFixed(1)},${yVitals(p.energy).toFixed(1)}`).join(' ');
+    const hungerPts = pts.map((p, i) => `${xAt(i).toFixed(1)},${yVitals(p.hunger).toFixed(1)}`).join(' ');
+    const lastPt = pts[pts.length - 1];
+
+    vitalsWrap.innerHTML = `
+      <svg class="ml-svg-chart" viewBox="0 0 ${W} ${H1}" data-chart="vitals">
+        ${buildSleepBands(padT1, plotH1)}
+        ${[0, 25, 50, 75, 100].map((tick) => {
+          const y = yVitals(tick).toFixed(1);
+          return `
+            <line x1="${padL}" y1="${y}" x2="${padL + plotW}" y2="${y}" stroke="${tick === 0 ? 'var(--chart-axis)' : 'var(--chart-grid)'}" stroke-width="1"/>
+            <text x="${padL - 8}" y="${Number(y) + 3.5}" text-anchor="end" fill="var(--ml-muted)" font-size="10.5">${tick}</text>
+          `;
+        }).join('')}
+        <polyline fill="none" stroke="var(--series-1)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" points="${energyPts}"/>
+        <polyline fill="none" stroke="var(--series-2)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" points="${hungerPts}"/>
+        <circle cx="${xAt(pts.length - 1).toFixed(1)}" cy="${yVitals(lastPt.energy).toFixed(1)}" r="4" fill="var(--series-1)" stroke="var(--ml-surface)" stroke-width="2"/>
+        <circle cx="${xAt(pts.length - 1).toFixed(1)}" cy="${yVitals(lastPt.hunger).toFixed(1)}" r="4" fill="var(--series-2)" stroke="var(--ml-surface)" stroke-width="2"/>
+        <text x="${padL + plotW + 6}" y="${yVitals(lastPt.energy) + 4}" fill="var(--ml-fg)" font-size="11" font-weight="600">精力 ${Number(lastPt.energy).toFixed(0)}</text>
+        <text x="${padL + plotW + 6}" y="${yVitals(lastPt.hunger) + 4}" fill="var(--ml-fg)" font-size="11" font-weight="600">饥饿 ${Number(lastPt.hunger).toFixed(0)}</text>
+        <line id="xhair-vitals" x1="0" y1="${padT1}" x2="0" y2="${padT1 + plotH1}" stroke="var(--ml-fg)" stroke-width="1" opacity="0"/>
+        ${buildXAxisLabels(H1 - 8)}
+      </svg>
+    `;
+
+    // 2. Mood Plot (-1.0 .. +1.0)
+    const H2 = 175;
+    const padT2 = 16;
+    const plotH2 = 124;
+    const yMood = (val) => padT2 + (1 - (Math.max(-1, Math.min(1, Number(val || 0))) + 1) / 2) * plotH2;
+    const valPts = pts.map((p, i) => `${xAt(i).toFixed(1)},${yMood(p.mood_valence).toFixed(1)}`).join(' ');
+    const aroPts = pts.map((p, i) => `${xAt(i).toFixed(1)},${yMood(p.mood_arousal).toFixed(1)}`).join(' ');
+
+    moodWrap.innerHTML = `
+      <svg class="ml-svg-chart" viewBox="0 0 ${W} ${H2}" data-chart="mood">
+        ${buildSleepBands(padT2, plotH2)}
+        ${[-1, -0.5, 0, 0.5, 1].map((tick) => {
+          const y = yMood(tick).toFixed(1);
+          return `
+            <line x1="${padL}" y1="${y}" x2="${padL + plotW}" y2="${y}" stroke="${tick === 0 ? 'var(--chart-axis)' : 'var(--chart-grid)'}" stroke-width="${tick === 0 ? '1.3' : '1'}"/>
+            <text x="${padL - 8}" y="${Number(y) + 3.5}" text-anchor="end" fill="var(--ml-muted)" font-size="10.5">${tick > 0 ? '+' + tick.toFixed(1) : tick.toFixed(1)}</text>
+          `;
+        }).join('')}
+        <polyline fill="none" stroke="var(--series-3)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" points="${valPts}"/>
+        <polyline fill="none" stroke="var(--series-4)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" points="${aroPts}"/>
+        <circle cx="${xAt(pts.length - 1).toFixed(1)}" cy="${yMood(lastPt.mood_valence).toFixed(1)}" r="4" fill="var(--series-3)" stroke="var(--ml-surface)" stroke-width="2"/>
+        <circle cx="${xAt(pts.length - 1).toFixed(1)}" cy="${yMood(lastPt.mood_arousal).toFixed(1)}" r="4" fill="var(--series-4)" stroke="var(--ml-surface)" stroke-width="2"/>
+        <text x="${padL + plotW + 6}" y="${yMood(lastPt.mood_valence) + 4}" fill="var(--ml-fg)" font-size="11" font-weight="600">效价 ${Number(lastPt.mood_valence).toFixed(2)}</text>
+        <text x="${padL + plotW + 6}" y="${yMood(lastPt.mood_arousal) + 4}" fill="var(--ml-fg)" font-size="11" font-weight="600">唤醒 ${Number(lastPt.mood_arousal).toFixed(2)}</text>
+        <line id="xhair-mood" x1="0" y1="${padT2}" x2="0" y2="${padT2 + plotH2}" stroke="var(--ml-fg)" stroke-width="1" opacity="0"/>
+        ${buildXAxisLabels(H2 - 8)}
+      </svg>
+    `;
+
+    // Bind synchronized hover crosshair across both SVG plots
+    function bindHover(svgEl) {
+      if (!svgEl) return;
+      svgEl.addEventListener('mousemove', (ev) => {
+        const rect = svgEl.getBoundingClientRect();
+        const relX = ((ev.clientX - rect.left) / rect.width) * W;
+        const idx = Math.max(0, Math.min(pts.length - 1, Math.round((relX - padL) / stepX)));
+        const cx = xAt(idx).toFixed(1);
+        const x1 = document.getElementById('xhair-vitals');
+        const x2 = document.getElementById('xhair-mood');
+        if (x1) { x1.setAttribute('x1', cx); x1.setAttribute('x2', cx); x1.setAttribute('opacity', '0.65'); }
+        if (x2) { x2.setAttribute('x1', cx); x2.setAttribute('x2', cx); x2.setAttribute('opacity', '0.65'); }
+        const p = pts[idx];
+        document.getElementById('history-readout').innerHTML = `
+          <span><strong>时刻：${esc(p.time)}</strong> · 相位：${esc(SLEEP_ZH[p.sleep_phase] || p.sleep_phase || '未知')}</span>
+          <span>精力 <strong>${Number(p.energy).toFixed(1)}</strong> · 饥饿 <strong>${Number(p.hunger).toFixed(1)}</strong> · 心情效价 <strong>${Number(p.mood_valence).toFixed(2)}</strong> · 唤醒度 <strong>${Number(p.mood_arousal).toFixed(2)}</strong></span>
+        `;
+      });
+      svgEl.addEventListener('mouseleave', () => {
+        const x1 = document.getElementById('xhair-vitals');
+        const x2 = document.getElementById('xhair-mood');
+        if (x1) x1.setAttribute('opacity', '0');
+        if (x2) x2.setAttribute('opacity', '0');
+      });
+    }
+
+    bindHover(vitalsWrap.querySelector('svg'));
+    bindHover(moodWrap.querySelector('svg'));
+  }
+
+  // Render 24h Schedule Gantt & Timeline Cards
+  function renderSchedule() {
+    const sc = state.schedule;
+    if (!sc) return;
+
+    const isToday = state.schedTab === 'today';
+    const dayStr = isToday ? sc.day : (sc.tomorrow?.day || '明日');
+    const nodes = isToday ? (sc.nodes || []) : (sc.tomorrow?.nodes || []);
+    const curStart = sc.current?.start || '';
+    const curEnd = sc.current?.end || '';
+
+    document.getElementById('sched-title').textContent =
+      `${isToday ? '今日生活框架与微场景时间线' : '明日生活框架预览'} (${dayStr || '—'})`;
+
+    const ganttEl = document.getElementById('sched-gantt-track');
+    const gridEl = document.getElementById('sched-nodes-grid');
+
+    if (!nodes.length) {
+      ganttEl.innerHTML = '';
+      gridEl.innerHTML = `<div class="ml-empty">${isToday ? '今日暂无日程节点' : '明日日程尚未生成（通常在凌晨自动生成）'}</div>`;
+      return;
+    }
+
+    // Build 24h Gantt segments
+    let ganttHtml = '';
+    nodes.forEach((n) => {
+      const sMin = parseHHMM(n.start) ?? 0;
+      let eMin = parseHHMM(n.end) ?? sMin + 60;
+      if (eMin <= sMin) eMin = 1440;
+      const widthPct = Math.max(0.8, ((eMin - sMin) / 1440) * 100);
+      const color = KIND_COLORS[n.kind_zh] || 'var(--series-1)';
+      ganttHtml += `<div class="ml-gantt-seg" style="width:${widthPct.toFixed(2)}%;background:${color};" title="${esc(n.start)}-${esc(n.end)} [${esc(n.kind_zh)}] ${esc(n.summary)}"></div>`;
+    });
+
+    if (isToday && sc.generated_at && sc.generated_at.includes('T')) {
+      const timePart = sc.generated_at.split('T')[1]?.slice(0, 5);
+      const nowMin = parseHHMM(timePart);
+      if (nowMin !== null) {
+        const leftPct = Math.max(0, Math.min(100, (nowMin / 1440) * 100));
+        ganttHtml += `<div class="ml-gantt-now" style="left:${leftPct.toFixed(2)}%;" title="当前时间 ${esc(timePart)}"></div>`;
+      }
+    }
+    ganttEl.innerHTML = ganttHtml;
+
+    // Build Timeline Node Cards
+    gridEl.innerHTML = nodes.map((n) => {
+      const isCur = isToday && curStart && n.start === curStart && n.end === curEnd;
+      const color = KIND_COLORS[n.kind_zh] || 'var(--series-1)';
+      const hasMetrics = typeof n.energy_load === 'number' || typeof n.shareability === 'number';
+      return `
+        <article class="ml-node-card ${isCur ? 'is-current' : ''}">
+          <div class="ml-node-top">
+            <span class="ml-node-time">${esc(n.start)} – ${esc(n.end)}</span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              ${isCur ? '<span class="ml-badge ml-badge-good">进行中</span>' : ''}
+              <span class="ml-badge" style="border-left:3px solid ${color};">${esc(n.kind_zh || '日程')}</span>
+            </div>
+          </div>
+          <div class="ml-node-summary">${esc(n.summary || '未命名活动')}</div>
+          <div style="font-size:12px;color:var(--ml-muted);">地点：${esc(n.location || '未指定')}</div>
+          ${n.scene ? `<div class="ml-node-scene">${esc(n.scene)}</div>` : ''}
+          ${hasMetrics ? `
+            <div class="ml-node-metrics">
+              <span>精力负荷 <strong>${Number(n.energy_load || 0).toFixed(1)}</strong></span>
+              <span>·</span>
+              <span>可分享度 <strong>${Math.round(Number(n.shareability || 0) * 100)}%</strong></span>
+            </div>
+          ` : ''}
+        </article>
+      `;
+    }).join('');
+  }
+
+  // Render Usage KPIs, 7-day Single-Axis Bar Chart & Tables
+  function renderUsage() {
+    const u = state.usage;
+    if (!u) return;
+
+    const tot = u.totals || {};
+    document.getElementById('usage-day-badge').textContent = `统计日：${u.day || '—'}`;
+    document.getElementById('kpi-tokens-today').textContent = fmtInt(tot.tokens_today);
+    document.getElementById('kpi-calls-today').textContent = `今日 LLM 调用 ${fmtInt(tot.calls_today)} 次`;
+    document.getElementById('kpi-tokens-7d').textContent = fmtInt(tot.tokens_7d);
+    document.getElementById('kpi-calls-7d').textContent = `近 7 日调用 ${fmtInt(tot.calls_7d)} 次`;
+    document.getElementById('kpi-search-today').textContent = fmtInt(tot.search_calls_today);
+
+    const pf = Number(tot.parse_failures_today || 0);
+    const pfEl = document.getElementById('kpi-parse-fail');
+    pfEl.textContent = fmtInt(pf);
+    pfEl.style.color = pf > 0 ? 'var(--status-crit)' : 'var(--ml-fg)';
+
+    const daily = u.daily || [];
+    const chartWrap = document.getElementById('usage-7d-chart-wrap');
+    const tableWrap = document.getElementById('usage-7d-table-wrap');
+    const tableBody = document.getElementById('usage-7d-table-body');
+
+    tableBody.innerHTML = daily.map((r) => `
+      <tr>
+        <td>${esc(r.day)}</td>
+        <td class="num">${fmtInt(r.tokens)}</td>
+        <td class="num">${fmtInt(r.calls)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="3" class="ml-empty">暂无 7 日数据</td></tr>';
+
+    if (state.usageMetric === 'table') {
+      chartWrap.classList.add('ml-hidden');
+      tableWrap.classList.remove('ml-hidden');
+    } else {
+      chartWrap.classList.remove('ml-hidden');
+      tableWrap.classList.add('ml-hidden');
+      const isTokens = state.usageMetric === 'tokens';
+      const field = isTokens ? 'tokens' : 'calls';
+      const barColor = isTokens ? 'var(--series-1)' : 'var(--series-2)';
+      const maxVal = Math.max(1, ...daily.map((d) => Number(d[field] || 0)));
+      const W = 440;
+      const H = 190;
+      const padL = 48;
+      const padR = 14;
+      const padT = 22;
+      const plotH = 132;
+      const plotW = W - padL - padR;
+      const slotW = daily.length ? plotW / daily.length : plotW;
+      const barW = Math.min(34, Math.max(12, slotW * 0.56));
+
+      chartWrap.innerHTML = `
+        <svg class="ml-svg-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="近7日${isTokens ? 'Token' : '调用'}柱状图">
+          ${[0, 0.5, 1].map((ratio) => {
+            const y = (padT + (1 - ratio) * plotH).toFixed(1);
+            const val = Math.round(maxVal * ratio);
+            return `
+              <line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${ratio === 0 ? 'var(--chart-axis)' : 'var(--chart-grid)'}" stroke-width="1"/>
+              <text x="${padL - 6}" y="${Number(y) + 3.5}" text-anchor="end" fill="var(--ml-muted)" font-size="10">${val >= 1000 ? (val / 1000).toFixed(1) + 'k' : val}</text>
+            `;
+          }).join('')}
+          ${daily.map((d, i) => {
+            const val = Number(d[field] || 0);
+            const bh = Math.max(val > 0 ? 3 : 0, (val / maxVal) * plotH);
+            const x = padL + i * slotW + (slotW - barW) / 2;
+            const y = padT + plotH - bh;
+            const shortDay = String(d.day || '').slice(5);
+            return `
+              <g>
+                <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${barColor}">
+                  <title>${esc(d.day)}: ${fmtInt(val)}</title>
+                </rect>
+                ${val > 0 ? `<text x="${(x + barW / 2).toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" fill="var(--ml-fg)" font-size="9.5">${val >= 1000 ? (val / 1000).toFixed(1) + 'k' : val}</text>` : ''}
+                <text x="${(x + barW / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" fill="var(--ml-muted)" font-size="10">${esc(shortDay)}</text>
+              </g>
+            `;
+          }).join('')}
+        </svg>
+      `;
+    }
+
+    // Tokens Table
+    const tokensTbody = document.getElementById('usage-tokens-tbody');
+    const tokenRows = u.tokens || [];
+    tokensTbody.innerHTML = tokenRows.length ? tokenRows.map((r) => `
+      <tr>
+        <td><strong>${esc(r.label || `${r.source}/${r.task_name}`)}</strong></td>
+        <td class="num">${fmtInt(r.calls)} (${fmtInt(r.successes)})</td>
+        <td class="num">${fmtInt(r.prompt_tokens)}</td>
+        <td class="num">${fmtInt(r.completion_tokens)}</td>
+        <td class="num"><strong>${fmtInt(r.total_tokens)}</strong></td>
+        <td class="num">${Number(r.avg_latency_ms || 0).toFixed(0)} ms</td>
+      </tr>
+    `).join('') : '<tr><td colspan="6" class="ml-empty">今日暂无 LLM 调用记录</td></tr>';
+
+    // Searches Table
+    const searchTbody = document.getElementById('usage-search-tbody');
+    const searchRows = u.searches || [];
+    searchTbody.innerHTML = searchRows.length ? searchRows.map((r) => `
+      <tr>
+        <td><strong>${esc(r.provider_type || '默认')}</strong></td>
+        <td class="num">${fmtInt(r.calls)} (${fmtInt(r.successes)})</td>
+        <td class="num">${fmtInt(r.results)}</td>
+        <td class="num">${Number(r.average_latency_ms || 0).toFixed(0)} ms</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4" class="ml-empty">今日暂无联网搜索 API 调用</td></tr>';
+  }
+
+  async function loadAll() {
+    if (state.loading) return;
+    state.loading = true;
+    const refreshBtn = document.getElementById('btn-refresh');
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '同步中…';
+    const banner = document.getElementById('error-banner');
+    banner.classList.remove('active');
+
+    const errors = await runQueriesWithLimit([
+      {
+        name: 'status',
+        label: '生活状态',
+        onSuccess: (res) => { state.status = res; renderStatus(); },
+      },
+      {
+        name: 'schedule',
+        label: '今日日程',
+        onSuccess: (res) => { state.schedule = res; renderSchedule(); },
+      },
+      {
+        name: 'history',
+        label: '72h轨迹',
+        onSuccess: (res) => { state.history = res; renderHistory(); },
+      },
+      {
+        name: 'usage',
+        label: 'Token统计',
+        onSuccess: (res) => { state.usage = res; renderUsage(); },
+      },
+    ], 2);
+
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      banner.classList.add('active');
+    }
+
+    state.loading = false;
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '刷新实况';
+  }
+
+  // Bind UI interactions
+  document.getElementById('btn-refresh').addEventListener('click', loadAll);
+  document.getElementById('btn-retry').addEventListener('click', loadAll);
+  document.getElementById('btn-nav-life').addEventListener('click', () => {
+    window.maibot.navigate('life', { tab: 'users' });
+  });
+  document.getElementById('btn-nav-system').addEventListener('click', () => {
+    window.maibot.navigate('system', { section: 'admin' });
+  });
+  document.getElementById('btn-jump-memories').addEventListener('click', () => {
+    window.maibot.navigate('life', { tab: 'memories' });
+  });
+
+  // 72h History mode buttons
+  document.querySelectorAll('[data-hist-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-hist-mode]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.histMode = btn.getAttribute('data-hist-mode');
+      renderHistory();
+    });
+  });
+
+  // Schedule Today / Tomorrow toggle
+  document.getElementById('btn-sched-today').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-sched-tomorrow').classList.remove('active');
+    state.schedTab = 'today';
+    renderSchedule();
+  });
+  document.getElementById('btn-sched-tomorrow').addEventListener('click', (e) => {
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-sched-today').classList.remove('active');
+    state.schedTab = 'tomorrow';
+    renderSchedule();
+  });
+
+  // Usage 7d metric toggle
+  document.querySelectorAll('[data-usage-metric]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-usage-metric]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.usageMetric = btn.getAttribute('data-usage-metric');
+      renderUsage();
+    });
+  });
+
+  window.addEventListener('maibot:context', (ev) => {
+    updateThemePill(ev.detail);
+  });
+
+  // Initial boot
+  window.maibot.ready.then((ctx) => {
+    updateThemePill(ctx);
+    loadAll();
+  });
+})();
+</script>

@@ -1,22 +1,25 @@
-"""Mai_life v1.24.8 插件入口。"""
+"""Mai_life v1.24.9 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
 
 from maibot_sdk import API,Command,HomeCard,HookHandler,MaiBotPlugin,Tool
 from maibot_sdk.types import HookMode,HookOrder,ToolParameterInfo,ToolParamType
-from typing import Any,ClassVar,Iterable,Optional
+from typing import Any,ClassVar,get_args,get_origin,Iterable,Literal,Optional
 
 import asyncio
 import hashlib
+import json
+import math
 import os
 import re
 import shutil
 import time
+import tomllib
 import uuid
 from zoneinfo import ZoneInfo
 
-from .config import MaiLifeSettings,PLUGIN_VERSION
+from .config import MaiLifeSettings,PluginConfigBase,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
 from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
@@ -102,6 +105,63 @@ def _relative_age(created_at:float,now:float)->str:
 def _switch(value:Any)->str:
     """配置摘要把布尔统一翻成中文开关词，避免网页出现裸 True/False。"""
     return "开启" if value else "关闭"
+
+
+def _config_scalar_type(annotation:Any)->str:
+    """配置字段标量类型标签（bool/int/float/str，Literal 收敛为 str）；非标量返回空串即不可编辑。"""
+    if get_origin(annotation) is Literal:
+        args=get_args(annotation)
+        return "str" if all(isinstance(item,str) for item in args) else ""
+    if annotation is bool:return "bool"
+    if annotation is int:return "int"
+    if annotation is float:return "float"
+    if annotation is str:return "str"
+    return ""
+
+
+def _coerce_config_value(annotation:Any,raw:str)->tuple[bool,Any]:
+    """把 WebUI 输入的字符串按字段类型强转；(False, 错误信息) 表示拒绝本次修改。"""
+    kind=_config_scalar_type(annotation)
+    text=str(raw).strip()
+    if not kind:return False,"不支持的配置类型"
+    if kind=="bool":
+        lowered=text.lower()
+        if lowered in {"true","1","on","yes","开","开启"}:return True,True
+        if lowered in {"false","0","off","no","关","关闭"}:return True,False
+        return False,f"布尔值只接受 开启/关闭 或 true/false，收到 {text!r}"
+    if kind=="int":
+        try:return True,int(text)
+        except ValueError:return False,f"需要整数，收到 {text!r}"
+    if kind=="float":
+        try:value=float(text)
+        except ValueError:return False,f"需要数字，收到 {text!r}"
+        if not math.isfinite(value):return False,"数字必须有限"
+        return True,value
+    choices=get_args(annotation) if get_origin(annotation) is Literal else ()
+    if choices and text not in choices:
+        return False,f"取值只能是 {'/'.join(str(item) for item in choices)}，收到 {text!r}"
+    return True,text
+
+
+def _toml_value(value:Any)->str:
+    if isinstance(value,bool):return "true" if value else "false"
+    if isinstance(value,(int,float)):return repr(value)
+    if isinstance(value,str):return json.dumps(value,ensure_ascii=False)
+    if isinstance(value,list):return "["+", ".join(_toml_value(item) for item in value)+"]"
+    return json.dumps(str(value),ensure_ascii=False)
+
+
+def _toml_dump(data:dict[str,Any])->str:
+    """最小 TOML 序列化，仅作 tomlkit 缺席时的退化路径（丢弃注释，只写标量与标量列表）。"""
+    lines:list[str]=[]
+    for sec_name,sec_data in data.items():
+        if not isinstance(sec_data,dict):continue
+        lines.append(f"\n[{sec_name}]")
+        for key_name,key_value in sec_data.items():
+            if isinstance(key_value,dict):continue
+            if isinstance(key_value,list) and any(isinstance(item,(dict,list)) for item in key_value):continue
+            lines.append(f"{key_name} = {_toml_value(key_value)}")
+    return "\n".join(lines)+"\n"
 
 
 def _onoff(value:Any)->str:
@@ -220,6 +280,16 @@ class MaiLifePlugin(MaiBotPlugin):
 
     config_model=MaiLifeSettings
     config_reload_subscriptions:ClassVar[Iterable[str]]=("bot","model")
+    # WebUI 不可编辑的汇总键（计数/派生串/列表字段），其余与配置模型字段同名的标量键都可回写。
+    _EDITABLE_DERIVED:ClassVar[dict[str,frozenset[str]]]={
+        "plugin":frozenset({"version"}),
+        "users":frozenset({"configured","enabled"}),
+        "linkage":frozenset({"drawpic_detected"}),
+        "rest_gate":frozenset({"night_window","nap_window","silence_minutes"}),
+        "group":frozenset({"profiles","night_window","nap_window","gate_segment_types"}),
+        "memory":frozenset({"date_reminder_lead_days"}),
+        "creation":frozenset({"continuation_work_types"}),
+    }
 
     def __init__(self)->None:
         super().__init__()
@@ -234,6 +304,9 @@ class MaiLifePlugin(MaiBotPlugin):
         # 麦麦绘图联动运行态：检测结果是内存态（None=未检测），频控/判定记录重启丢失可接受。
         # 慢变背景块缓存（P4）：TTL 由 context.background_cache_minutes 控制，0=禁用。
         self._payload_cache=_PayloadCache(0.0)
+        self._config_save_lock=asyncio.Lock()
+        # WebUI 配置保存的落盘路径；空串=插件目录下 config.toml，测试指向临时文件。
+        self._config_toml_path:str=""
         self._drawpic_loaded:bool|None=None; self._drawpic_check_warned=False
         self._moment_hints:dict[str,dict[str,Any]]={}; self._moment_judges:dict[str,list[float]]={}
         self._continuity:Optional[ContinuityService]=None
@@ -1315,6 +1388,7 @@ class MaiLifePlugin(MaiBotPlugin):
                         and self._reply_confirmations.get((session,anchor)) is pending_confirmation)
         if confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
+            self._get_logger().info(f"[MaiLife] 发送前拦截 reason=confirmation_cancelled session={session} anchor={anchor}")
             return {"action":"abort"}
         # 群防抖轮次不借用同 session 下的私聊/主动任务归因。
         active=(None if pending_confirmation and str(pending_confirmation.get("turn_scope") or "").startswith("group:")
@@ -1337,19 +1411,26 @@ class MaiLifePlugin(MaiBotPlugin):
             elif disabled and status=="pending":
                 await self._store.set_proactive_event_status(str(proactive_task["id"]),"cancelled")
                 await self._store.release_opportunity(str(proactive_task["opportunity_id"]))
-            if expired or disabled or status in {"failed","expired","cancelled"}:return {"action":"abort"}
+            if expired or disabled or status in {"failed","expired","cancelled"}:
+                self._get_logger().info(f"[MaiLife] 发送前拦截 reason=proactive_status status={status} expired={expired} disabled={disabled} session={session} task={proactive_task.get('id')}")
+                return {"action":"abort"}
         relay_task=await self._relay_for_session(session,task_id) if task_id else {}
         if anchor.startswith(HOST_TASK_PREFIX) and not proactive_task and not relay_task:
+            self._get_logger().info(f"[MaiLife] 发送前拦截 reason=unattributed_host_task session={session} anchor={anchor}")
             return {"action":"abort"}
         if relay_task and bool(kwargs.get("set_reply")) and (anchor==task_id or anchor.startswith(HOST_TASK_PREFIX)):
             kwargs["set_reply"]=False; modified=True
         if relay_task and (self._stopping or not self.config.plugin.enabled or not self.config.group.relay_enabled):
             if str(relay_task.get("status") or "") in {"pending","sending"} and self._store:
                 await self._store.set_relay_status(str(relay_task["id"]),"cancelled",time.time(),"plugin_disabled")
+            self._get_logger().info(f"[MaiLife] 发送前拦截 reason=relay_disabled session={session} task={relay_task.get('id')}")
             return {"action":"abort"}
         if active:
             # 关联 ID 与真实引用 ID 分离：任务状态按 task_id 结算，QQ 引用仍保留 Planner 选择的数字消息号。
             if not await self._active_tasks.reserve_send(session,active.task_id,anchor,time.time()):
+                self._get_logger().info(
+                    f"[MaiLife] 发送前拦截 reason=send_reserve_failed session={session} task={active.task_id} "
+                    f"anchor={anchor} reserved_at={active.reply_anchor or '-'} sent={active.sent}")
                 return {"action":"abort"}
             additional=self._message_additional(message)
             additional["mai_life_active_task_id"]=active.task_id
@@ -1358,6 +1439,7 @@ class MaiLifePlugin(MaiBotPlugin):
         # 上面的数据库查询存在 await；新入站可能在此期间取消旧轮次，交给适配器前复核一次。
         if confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
+            self._get_logger().info(f"[MaiLife] 发送前拦截 reason=confirmation_cancelled session={session} anchor={anchor}")
             return {"action":"abort"}
         if not self._relay or not self.config.plugin.enabled or not self.config.group.relay_enabled:
             return {"action":"continue","modified_kwargs":kwargs} if modified else {"action":"continue"}
@@ -1369,6 +1451,7 @@ class MaiLifePlugin(MaiBotPlugin):
         mutated,reserved=await self._relay.mutate_before_send(message,task_id,allow_expired=relay_late)
         if confirmation_cancelled():
             self._reply_confirmations.pop((session,anchor),None)
+            self._get_logger().info(f"[MaiLife] 发送前拦截 reason=confirmation_cancelled session={session} anchor={anchor}")
             return {"action":"abort"}
         if not reserved:
             return {"action":"continue","modified_kwargs":kwargs} if modified else {"action":"continue"}
@@ -2338,7 +2421,7 @@ class MaiLifePlugin(MaiBotPlugin):
         try:
             if not self._ready:return {"success":False,"error":"not_ready"}
             cfg=self.config; profiles=cfg.users.profiles; gate=cfg.rest_gate
-            return {"plugin":{"enabled":_switch(cfg.plugin.enabled),"version":PLUGIN_VERSION},
+            summary:dict[str,Any]={"plugin":{"enabled":_switch(cfg.plugin.enabled),"version":PLUGIN_VERSION},
                     "users":{"configured":len(profiles),"enabled":sum(1 for item in profiles if item.enabled)},
                     "models":{"fast_task":str(cfg.models.fast_task),"reasoning_task":str(cfg.models.reasoning_task),
                                    "max_output_tokens":(str(int(cfg.models.max_output_tokens)) if int(cfg.models.max_output_tokens)>0 else "不限制")},
@@ -2433,6 +2516,84 @@ class MaiLifePlugin(MaiBotPlugin):
                                  "minimum_energy":int(cfg.proactive.minimum_energy),
                                  "score_threshold":round(float(cfg.proactive.score_threshold),2)},
                     "usage":{"enabled":_switch(cfg.usage.enabled),"retention_days":int(cfg.usage.retention_days)}}
+            # editable:各节可经 webui_config_save 回写的字段与类型（非标量与派生键天然缺席）。
+            editable:dict[str,dict[str,str]]={}
+            for sec_name,sec_obj in summary.items():
+                if not isinstance(sec_obj,dict):continue
+                section_model=self._config_section_model(sec_name)
+                fields:dict[str,str]={}
+                for key_name in sec_obj:
+                    if key_name in self._EDITABLE_DERIVED.get(sec_name,frozenset()):continue
+                    if section_model is None or key_name not in section_model.model_fields:continue
+                    kind=_config_scalar_type(section_model.model_fields[key_name].annotation)
+                    if kind:fields[key_name]=kind
+                if fields:editable[sec_name]=fields
+            summary["editable"]=editable
+            return summary
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @staticmethod
+    def _config_section_model(section:str)->Optional[type]:
+        """汇总节名 → 配置子模型类；非嵌套模型节返回 None。"""
+        info=MaiLifeSettings.model_fields.get(str(section))
+        annotation=getattr(info,"annotation",None)
+        return annotation if isinstance(annotation,type) and issubclass(annotation,PluginConfigBase) else None
+
+    def _persist_config_toml(self,section:str,new_cfg:MaiLifeSettings)->None:
+        """把修改后的配置写回插件 config.toml；优先 tomlkit 保留注释，缺库时退化重写。
+
+        只重写被修改的节，且跳过结构化值（profiles 等列表套表不经 WebUI 改写）；
+        节内文件里原本缺席的标量键会被补齐（与宿主配置页保存语义一致）。
+        """
+        path=self._config_toml_path or os.path.join(os.path.dirname(os.path.abspath(__file__)),"config.toml")
+        section_data=new_cfg.model_dump(mode="python").get(section) or {}
+        scalars={key:value for key,value in section_data.items()
+                 if not isinstance(value,dict)
+                 and not (isinstance(value,list) and any(isinstance(item,(dict,list)) for item in value))}
+        try:
+            import tomlkit
+        except ImportError:
+            with open(path,"w",encoding="utf-8",newline="") as handle:
+                handle.write(_toml_dump(new_cfg.model_dump(mode="python")))
+            return
+        document=tomlkit.parse(open(path,"r",encoding="utf-8").read()) if os.path.exists(path) else tomlkit.document()
+        table=document.get(section)
+        if not isinstance(table,tomlkit.items.Table):
+            table=tomlkit.table(); document[section]=table
+        for key_name,key_value in scalars.items():
+            table[key_name]=key_value
+        with open(path,"w",encoding="utf-8",newline="") as handle:
+            handle.write(tomlkit.dumps(document))
+
+    @API(name="webui_config_save",description="WebUI 配置修改：按节与键回写单个配置项，落盘 config.toml 并立即热生效",version="1",public=False)
+    async def webui_config_save(self,section:str,key:str,value:str,**kwargs:Any)->dict[str,Any]:
+        """单键配置回写：字符串强转 → 全模型校验 → 落盘 → set_plugin_config + self 热更新。"""
+        try:
+            if not self._ready or self._stopping or self._reloading:
+                return {"success":False,"error":"not_ready"}
+            section=str(section).strip(); key=str(key).strip()
+            if key in self._EDITABLE_DERIVED.get(section,frozenset()):
+                return {"success":False,"error":f"不可修改的配置项: {section}.{key}"}
+            section_model=self._config_section_model(section)
+            if section_model is None or key not in section_model.model_fields:
+                return {"success":False,"error":f"未知或不可编辑的配置项: {section}.{key}"}
+            field_info=section_model.model_fields[key]
+            if not _config_scalar_type(field_info.annotation):
+                return {"success":False,"error":f"不支持的配置类型: {section}.{key}"}
+            ok,coerced=_coerce_config_value(field_info.annotation,str(value))
+            if not ok:return {"success":False,"error":f"{section}.{key}: {coerced}"}
+            draft=self.config.model_dump(mode="python")
+            draft[section][key]=coerced
+            try:new_cfg=MaiLifeSettings.model_validate(draft)
+            except Exception as exc:return {"success":False,"error":f"配置校验未通过: {str(exc)[:160]}"}
+            async with self._config_save_lock:
+                self._persist_config_toml(section,new_cfg)
+                self.set_plugin_config(new_cfg.model_dump(mode="python"))
+            # 与宿主保存路径同语义：先换配置实例，再走 self 作用域热更新刷新全部服务。
+            await self.on_config_update("self",self._plugin_config_data or {},str(new_cfg.plugin.config_version))
+            self.ctx.logger.info(f"[MaiLife] WebUI 配置修改 {section}.{key} -> {coerced!r}")
+            return {"success":True,"applied":{"section":section,"key":key,"value":coerced}}
         except Exception as exc:
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 

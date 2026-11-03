@@ -542,6 +542,28 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         # 饥饿偏高时两餐 LLM 结果被拒，回退到内置三餐骨架。
         self.assertGreaterEqual(sum(node["kind"]=="meal" for node in nodes),3)
 
+    async def test_detailed_schedule_switch_toggles_prompt(self):
+        # v1.24.10：日程细化描写开关（默认关）——开启后生成提示词追加 location 具体位置与
+        # 休闲段点名具体游戏/作品的硬要求（Issue 调研 L1）。
+        class CapturingLLM:
+            def __init__(self):self.prompt=""
+            def task_available(self,kind):return kind=="schedule"
+            def task_for(self,kind):return "planner"
+            async def generate_json(self,prompt,system,fallback,**kwargs):
+                self.prompt=prompt; return fallback
+        now=datetime(2026,9,19,3,0,tzinfo=timezone(timedelta(hours=8)))
+        llm_off=CapturingLLM()
+        service_off=ScheduleService(self.store,self.config,llm_off,str(Path(__file__).parents[1]),DummyLogger())
+        await service_off.ensure_day(now,"人格","晴",force=True)
+        self.assertNotIn("细化模式",llm_off.prompt)
+        self.config.schedule.detailed_schedule=True
+        llm_on=CapturingLLM()
+        service_on=ScheduleService(self.store,self.config,llm_on,str(Path(__file__).parents[1]),DummyLogger())
+        await service_on.ensure_day(now,"人格","晴",force=True)
+        self.assertIn("细化模式",llm_on.prompt)
+        self.assertIn("场所+具体位置",llm_on.prompt)
+        self.assertIn("点名具体的游戏/作品",llm_on.prompt)
+
     async def test_offline_timeline_crosses_sleep_and_meal_boundaries(self):
         start=datetime(2026,7,9,22,0,tzinfo=timezone(timedelta(hours=8)))
         now=datetime(2026,7,10,10,0,tzinfo=start.tzinfo)

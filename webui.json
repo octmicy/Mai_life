@@ -63,6 +63,37 @@
           "api": "webui_information_digest",
           "version": "1"
         }
+      },
+      "actions": {
+        "date_write": {
+          "api": "webui_date_write",
+          "version": "1",
+          "parameters": {
+            "event_name": {"type": "string", "required": true, "max_length": 120},
+            "user_id": {"type": "string", "required": true, "max_length": 64},
+            "calendar": {"type": "string", "required": true, "choices": ["solar", "lunar"]},
+            "recurrence": {"type": "string", "required": true, "choices": ["none", "annual"]},
+            "date": {"type": "string", "required": true, "max_length": 10}
+          },
+          "confirmation": "确认写入这条重要日期？公历存 YYYY-MM-DD，农历按平月存 月-日。"
+        },
+        "date_delete": {
+          "api": "webui_date_delete",
+          "version": "1",
+          "parameters": {
+            "date_id": {"type": "integer", "required": true, "minimum": 1}
+          },
+          "confirmation": "确认删除这条重要日期？删除后不再提醒。"
+        },
+        "candidate_set": {
+          "api": "webui_date_candidate_set",
+          "version": "1",
+          "parameters": {
+            "candidate_id": {"type": "integer", "required": true, "minimum": 1},
+            "approve": {"type": "boolean", "required": true}
+          },
+          "confirmation": "确认处理这条日期候选？确认将按建议日期写入正式日期，驳回将标记忽略。"
+        }
       }
     },
     {

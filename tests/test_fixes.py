@@ -36,7 +36,7 @@ from Mai_life.creation.creation_service import CreationService
 from Mai_life.information.http_client import HttpClient, HttpRequestError
 from Mai_life.life.bedtime import BEDTIME_SILENCE_MINUTES, BedtimeManager
 from Mai_life.life.life_state import LifeStateEngine
-from Mai_life.life.memory_service import MemoryService
+from Mai_life.life.memory_service import LUNAR_AVAILABLE,MemoryService
 from Mai_life.life.rest_gate import BLOCK_REASON, RestGate
 from Mai_life.life.schedule_service import ScheduleService
 from Mai_life.management.admin_service import AdminService
@@ -3327,6 +3327,23 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("【生活分享时刻】",
                       plugin._moment_guide_note(session, self._payload(), None, False, mixed))
 
+    async def test_edit_image_guidance_follows_tool_visibility(self):
+        # Issue #11 L1：photo 信号 + edit_image 本轮可见才提图生图引导；
+        # 工具不可见时引导里不得出现（避免指向不可调用的工具）。
+        plugin = await self._plugin()
+        session = self._armed(plugin, "photo")
+        both = {"tool_definitions": [{"type": "function", "function": {"name": "draw"}},
+                                     {"type": "function", "function": {"name": "edit_image"}}]}
+        note = plugin._moment_guide_note(session, self._payload(), None, False, both)
+        self.assertIn("edit_image", note)
+        self.assertIn("图生图", note)
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        draw_only = {"tool_definitions": [{"type": "function", "function": {"name": "draw"}}]}
+        self._armed(plugin, "photo")
+        note2 = plugin._moment_guide_note(session, self._payload(), None, False, draw_only)
+        self.assertIn("【生活分享时刻】", note2)
+        self.assertNotIn("edit_image", note2)
+
     async def test_conversation_note_keywords_and_one_shot_consumption(self):
         plugin = await self._plugin()
         session = self._armed(plugin, "life")
@@ -4351,13 +4368,14 @@ class V11412WebuiDatesTests(unittest.IsolatedAsyncioTestCase):
         plugin = await self._plugin()
         await self._seed()
         data = await plugin.webui_dates()
-        self.assertEqual(set(data), {"counts", "dates", "candidates"})
+        self.assertEqual(set(data), {"counts", "dates", "candidates", "lunar_available"})
+        self.assertEqual(data["lunar_available"], LUNAR_AVAILABLE)
         self.assertEqual(set(data["counts"]), {"dates", "candidates", "within_30d"})
         self.assertEqual(data["counts"], {"dates": 4, "candidates": 1, "within_30d": 1})
         self.assertEqual(len(data["dates"]), 4)
         for item in data["dates"]:
             self.assertEqual(set(item), {"id", "user_id", "user_name", "event_name", "event_date",
-                                         "recurrence", "occurrence", "countdown", "days_left"},
+                                         "calendar", "recurrence", "occurrence", "countdown", "days_left"},
                              f"date 字段超出契约: {sorted(item)}")
         # 按下次发生升序：7 天后的生日排最前，已过的沉底。
         self.assertEqual([item["event_name"] for item in data["dates"]],
@@ -4407,6 +4425,115 @@ class V11412WebuiDatesTests(unittest.IsolatedAsyncioTestCase):
                                             "chat", self.now.timestamp())
         data = await plugin.webui_dates()
         self.assertEqual(data["dates"][0]["user_name"], "未读取昵称")
+
+
+class V12410DateWriteTests(unittest.IsolatedAsyncioTestCase):
+    """v1.24.10：webui_date_write/delete/candidate_set——公历直写、农历网关拒绝（缺 lunar_python）、
+    幂等冲突、未知用户拒绝、候选确认落正式日期与驳回。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.now = datetime(2026, 10, 8, 9, 0, tzinfo=TZ)
+        self.plugin = await build_plugin(self.store, self.config, llm=DummyLLM(), now=self.now,
+                                         users=[UserProfile(user_id="30001", role="owner", enabled=True)])
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_write_solar_roundtrip_and_preview(self):
+        result = await self.plugin.webui_date_write(
+            event_name="与主人的相遇纪念日", user_id="30001", calendar="solar",
+            recurrence="annual", date="2024-06-01")
+        self.assertTrue(result.get("success"), result)
+        applied = result["applied"]
+        self.assertEqual(applied["event_date"], "2024-06-01")
+        # 冻结 now=2026-10-08：2026-06-01 已过，年度周期推到下一次发生 2027-06-01。
+        self.assertEqual(applied["next_occurrence"], "2027-06-01")
+        rows = await self.store.list_important_dates("30001")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["calendar"], "solar")
+        self.assertEqual(rows[0]["source"], "webui")
+
+    async def test_write_lunar_gated_by_lunar_python(self):
+        # 主人决策：宿主没装 lunar_python 时网关直接拒绝农历写入，不允许半可用状态。
+        result = await self.plugin.webui_date_write(
+            event_name="农历生日", user_id="30001", calendar="lunar",
+            recurrence="annual", date="08-15")
+        if LUNAR_AVAILABLE:
+            self.assertTrue(result.get("success"), result)
+            rows = await self.store.list_important_dates("30001")
+            self.assertEqual(rows[0]["calendar"], "lunar")
+            self.assertEqual(rows[0]["event_date"], "08-15")
+        else:
+            self.assertFalse(result.get("success"))
+            self.assertIn("lunar_python", str(result.get("error")))
+            self.assertEqual(await self.store.list_important_dates("30001"), [])
+
+    async def test_write_rejects_unknown_user_and_bad_input(self):
+        cases = [
+            ({"event_name": "生日", "user_id": "99999", "calendar": "solar",
+              "recurrence": "annual", "date": "2024-06-01"}, "归属用户"),
+            ({"event_name": "生日", "user_id": "30001", "calendar": "lunarx",
+              "recurrence": "annual", "date": "2024-06-01"}, "calendar"),
+            ({"event_name": "生日", "user_id": "30001", "calendar": "solar",
+              "recurrence": "forever", "date": "2024-06-01"}, "recurrence"),
+            ({"event_name": "生日", "user_id": "30001", "calendar": "solar",
+              "recurrence": "annual", "date": "6月1日"}, "公历日期格式"),
+            ({"event_name": "", "user_id": "30001", "calendar": "solar",
+              "recurrence": "annual", "date": "2024-06-01"}, "事件名"),
+        ]
+        for kwargs, needle in cases:
+            with self.subTest(needle=needle):
+                result = await self.plugin.webui_date_write(**kwargs)
+                self.assertFalse(result.get("success"), result)
+                self.assertIn(needle, str(result.get("error")))
+        self.assertEqual(await self.store.list_important_dates("30001"), [])
+
+    async def test_write_dedupes_same_event(self):
+        first = await self.plugin.webui_date_write(
+            event_name="跨年约定", user_id="30001", calendar="solar",
+            recurrence="none", date="2026-12-31")
+        self.assertTrue(first.get("success"), first)
+        second = await self.plugin.webui_date_write(
+            event_name="跨年约定", user_id="30001", calendar="solar",
+            recurrence="none", date="2026-12-31")
+        self.assertFalse(second.get("success"))
+        self.assertIn("已存在", str(second.get("error")))
+        self.assertEqual(len(await self.store.list_important_dates("30001")), 1)
+
+    async def test_delete_removes_row(self):
+        seed = await self.plugin.webui_date_write(
+            event_name="可删除的日期", user_id="30001", calendar="solar",
+            recurrence="none", date="2026-11-11")
+        date_id = seed["applied"]["date_id"]
+        removed = await self.plugin.webui_date_delete(date_id=date_id)
+        self.assertTrue(removed.get("success"), removed)
+        missing = await self.plugin.webui_date_delete(date_id=date_id)
+        self.assertFalse(missing.get("success"))
+
+    async def test_candidate_confirm_and_reject(self):
+        now_ts = self.now.timestamp()
+        await self.store.sync_users([UserProfile(user_id="1", role="owner")])
+        approved_id = await self.store.add_date_candidate("1", "妈妈生日（待确认）", "下周三左右",
+                                                          "2026-10-14", 0.62, "原话", now_ts)
+        ok = await self.plugin.webui_date_candidate_set(candidate_id=approved_id, approve=True)
+        self.assertTrue(ok.get("success"), ok)
+        self.assertEqual(ok["applied"]["status"], "confirmed")
+        rows = await self.store.list_important_dates("1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event_name"], "妈妈生日（待确认）")
+        self.assertEqual(rows[0]["event_date"], "2026-10-14")
+        self.assertEqual(rows[0]["source"], "confirmed_candidate")
+        rejected_id = await self.store.add_date_candidate("1", "开会提醒", "明天", "2026-10-09",
+                                                          0.4, "原话", now_ts)
+        rejected = await self.plugin.webui_date_candidate_set(candidate_id=rejected_id, approve=False)
+        self.assertTrue(rejected.get("success"), rejected)
+        candidates = await self.store.list_date_candidates("1", status="pending")
+        self.assertEqual(candidates, [])
+        missing = await self.plugin.webui_date_candidate_set(candidate_id=99999, approve=False)
+        self.assertFalse(missing.get("success"))
 
 
 class V11412WebuiUsageTests(unittest.IsolatedAsyncioTestCase):
@@ -4620,7 +4747,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["creation"]["continuation_context_chapters"], 3)
         self.assertEqual(data["creation"]["continuation_chapter_tail_chars"], 400)
         self.assertEqual(set(data["schedule"]), {"generate_hour", "detail_lead_minutes",
-                                                 "template_file"})
+                                                 "template_file", "detailed_schedule"})
         self.assertEqual(set(data["proactive"]), {"enabled", "patrol_interval_minutes",
                                                   "min_interval_minutes",
                                                   "recent_user_silence_minutes",
@@ -4968,10 +5095,13 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 self.assertIn(binding.get("api"), registered,
                               f"查询 {alias} 绑定未注册 API: {binding.get('api')}")
                 bound.add(str(binding.get("api")))
-            # v1.24.9 起仅 system 页可写：save 动作回写单键配置，其余页保持零 actions。
+            # v1.24.9/1.24.10 写通道白名单：system 页配置回写、life 页日期写入/删除/候选处理，其余页零 actions。
             actions = page.get("actions") or {}
-            if str(page.get("id")) == "system":
-                self.assertEqual(set(actions), {"save"}, f"{page['id']} 只允许 save 动作")
+            expected_apis = {"system": ("webui_config_save", {"section", "key", "value"}),
+                             "life": ("webui_date_write", {"event_name", "user_id", "calendar", "recurrence", "date"})}
+            page_id = str(page.get("id"))
+            if page_id == "system":
+                self.assertEqual(set(actions), {"save"}, f"{page_id} 只允许 save 动作")
                 save = actions["save"]
                 self.assertEqual(save.get("api"), "webui_config_save")
                 self.assertEqual(save.get("version"), "1")
@@ -4980,8 +5110,18 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 for param in (save.get("parameters") or {}).values():
                     self.assertEqual(param.get("type"), "string")
                     self.assertTrue(param.get("required"))
+            elif page_id == "life":
+                self.assertEqual(set(actions), {"date_write", "date_delete", "candidate_set"},
+                                 f"{page_id} 只允许日期写入/删除/候选处理动作")
+                self.assertEqual(actions["date_write"].get("api"), expected_apis["life"][0])
+                self.assertEqual(actions["date_delete"].get("api"), "webui_date_delete")
+                self.assertEqual(actions["candidate_set"].get("api"), "webui_date_candidate_set")
+                for name, binding in actions.items():
+                    self.assertTrue(str(binding.get("confirmation") or ""), f"{page_id}.{name} 必须声明确认文案")
+                    for param in (binding.get("parameters") or {}).values():
+                        self.assertIn(param.get("type"), {"string", "integer", "boolean"})
             else:
-                self.assertEqual(actions, {}, f"{page['id']} 不得声明 actions")
+                self.assertEqual(actions, {}, f"{page_id} 不得声明 actions")
         # 11 个 WebUI 只读 API 必须全部被页面消费，也不许多绑其他 API。
         self.assertEqual(bound, set(WEBUI_API_NAMES))
 
@@ -5145,7 +5285,7 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
         "schedule": {"day", "generated_at", "current", "next", "scene", "nodes", "tomorrow"},
         "usage": {"day", "generated_at", "totals", "tokens", "searches", "daily", "parse_failures"},
         "users": {"counts", "users"},
-        "dates": {"counts", "dates", "candidates"},
+        "dates": {"counts", "dates", "candidates", "lunar_available"},
         "memories": {"generated_at", "last_diary_day", "diary_count", "dream_count", "diaries", "diaries_full_text", "latest_dream", "dreams"},
         "shelf": {"counts", "creation", "books", "books_full_text", "runs"},
         "digest": {"status", "news", "news_full_text", "explorations", "explorations_full_text", "search_history"},

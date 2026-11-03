@@ -534,6 +534,44 @@
     <div class="ml-kpi-row" id="dates-kpi-row"></div>
     <div class="ml-card">
       <div class="ml-card-header">
+        <h2 class="ml-card-title">写入重要日期 / 纪念日</h2>
+        <span class="ml-badge" id="dates-lunar-badge">农历支持检测中…</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+          事件名称
+          <input type="text" id="date-form-name" class="ml-input" style="min-width:180px;" placeholder="例如：与主人的相遇纪念日" maxlength="120">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+          归属用户
+          <select id="date-form-user" class="ml-input" style="min-width:170px;"></select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+          历法
+          <select id="date-form-calendar" class="ml-input" style="min-width:110px;">
+            <option value="solar">公历</option>
+            <option value="lunar">农历</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+          日期 <small id="date-form-date-hint">（YYYY-MM-DD）</small>
+          <input type="text" id="date-form-date" class="ml-input" style="min-width:150px;" placeholder="YYYY-MM-DD" maxlength="10">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+          周期
+          <select id="date-form-recurrence" class="ml-input" style="min-width:110px;">
+            <option value="annual">每年循环</option>
+            <option value="none">单次</option>
+          </select>
+        </label>
+        <button type="button" class="ml-btn ml-btn-primary" id="btn-date-write">写入日期</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--ml-muted);margin-top:8px;line-height:1.5;">
+        农历按平月换算（闰月暂按对应平月处理）；写入前宿主会弹确认框。用户未安装 lunar_python 时农历选项不可用，只能写公历。
+      </div>
+    </div>
+    <div class="ml-card">
+      <div class="ml-card-header">
         <h2 class="ml-card-title">正式重要日期与纪念日倒计时</h2>
         <span class="ml-badge">按下次发生日期升序</span>
       </div>
@@ -547,6 +585,7 @@
               <th>原始日期</th>
               <th>周期</th>
               <th>下次发生日</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="dates-formal-tbody"></tbody>
@@ -568,6 +607,7 @@
               <th>聊天原句摘录 (date_text)</th>
               <th>建议日期</th>
               <th class="num">置信度</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="dates-candidates-tbody"></tbody>
@@ -908,24 +948,45 @@
       <div class="ml-kpi-tile"><div class="ml-kpi-label">待确认候选日期</div><div class="ml-kpi-value">${c.candidates ?? 0}</div></div>
     `;
 
+    // 农历写入前置校验（主人决策）：宿主没装 lunar_python 时直接禁用农历选项。
+    const lunarOk = d.lunar_available === true;
+    const lunarBadge = document.getElementById('dates-lunar-badge');
+    const calSelect = document.getElementById('date-form-calendar');
+    lunarBadge.textContent = lunarOk ? '农历支持：可用（lunar_python）' : '农历支持：未安装 lunar_python，仅公历';
+    lunarBadge.className = `ml-badge ${lunarOk ? '' : 'ml-badge-warn'}`;
+    calSelect.querySelector('option[value="lunar"]').disabled = !lunarOk;
+    if (!lunarOk) calSelect.value = 'solar';
+
+    // 归属用户下拉：来自 users 查询（启用用户），保留当前选择。
+    const userSelect = document.getElementById('date-form-user');
+    const prevUser = userSelect.value;
+    const people = ((state.users || {}).users || []).filter((u) => u.enabled === true);
+    userSelect.innerHTML = people.length
+      ? people.map((u) => `<option value="${esc(u.user_id)}">${esc(u.display_name || u.user_id)}（${esc(u.user_id)}）</option>`).join('')
+      : '<option value="">（暂无启用用户）</option>';
+    if (prevUser && people.some((u) => u.user_id === prevUser)) userSelect.value = prevUser;
+
     const rows = d.dates || [];
     document.getElementById('dates-formal-tbody').innerHTML = rows.length ? rows.map((r) => {
       const soon = r.days_left >= 0 && r.days_left <= 30;
+      const calTag = r.calendar === 'lunar' ? '<span class="ml-badge">农历</span> ' : '';
       return `
         <tr>
           <td><span class="ml-badge ${soon ? 'ml-badge-warn' : ''}">${esc(r.countdown)}</span></td>
           <td><strong>${esc(r.event_name)}</strong></td>
           <td>${esc(r.user_name)} <span style="font-family:var(--ml-font-mono);color:var(--ml-muted);">(${esc(r.user_id)})</span></td>
-          <td style="font-family:var(--ml-font-mono);">${esc(r.event_date)}</td>
+          <td style="font-family:var(--ml-font-mono);">${calTag}${esc(r.event_date)}</td>
           <td>${r.recurrence === 'annual' ? '每年循环' : esc(r.recurrence || '单次')}</td>
           <td style="font-family:var(--ml-font-mono);">${esc(r.occurrence || '—')}</td>
+          <td><button type="button" class="ml-btn" style="padding:3px 10px;font-size:12px;" data-date-del="${esc(r.id)}">删除</button></td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="6" class="ml-empty">暂无已登记的重要日期</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="ml-empty">暂无已登记的重要日期</td></tr>';
 
     const cands = d.candidates || [];
     document.getElementById('dates-candidates-tbody').innerHTML = cands.length ? cands.map((cd) => {
       const confPct = Math.round(Number(cd.confidence || 0) * 100);
+      const actionable = Boolean(cd.suggested_date);
       return `
         <tr>
           <td>${esc(cd.user_name)} <span style="font-family:var(--ml-font-mono);color:var(--ml-muted);">(${esc(cd.user_id)})</span></td>
@@ -933,9 +994,13 @@
           <td style="color:var(--ml-muted);">「${esc(cd.date_text)}」</td>
           <td style="font-family:var(--ml-font-mono);">${esc(cd.suggested_date || '—')}</td>
           <td class="num"><strong>${confPct}%</strong></td>
+          <td>
+            <button type="button" class="ml-btn ml-btn-primary" style="padding:3px 10px;font-size:12px;" data-cand-approve="${esc(cd.id)}" ${actionable ? '' : 'disabled title="无建议日期，请驳回"'}>确认</button>
+            <button type="button" class="ml-btn" style="padding:3px 10px;font-size:12px;" data-cand-reject="${esc(cd.id)}">驳回</button>
+          </td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="5" class="ml-empty">暂无待确认的日期候选</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="ml-empty">暂无待确认的日期候选</td></tr>';
   }
 
   // ==================== 3. Render Memories (Diaries & Dreams) ====================
@@ -1259,6 +1324,89 @@
 
   document.getElementById('btn-refresh').addEventListener('click', loadAll);
   document.getElementById('btn-retry').addEventListener('click', loadAll);
+
+  // ---- 重要日期写入 / 删除 / 候选处理（Issue 决策：农历需宿主装有 lunar_python，否则网关直接拒绝）----
+  async function refreshDates() {
+    const errors = await runQueriesWithLimit([
+      { name: 'users', label: '用户关系', onSuccess: (r) => { state.users = r; renderUsers(); } },
+      { name: 'dates', label: '重要日期', onSuccess: (r) => { state.dates = r; renderDates(); } },
+    ], 2);
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      document.getElementById('error-banner').classList.add('active');
+    }
+  }
+
+  function showDatesError(text) {
+    document.getElementById('error-text').textContent = text;
+    document.getElementById('error-banner').classList.add('active');
+  }
+
+  document.getElementById('date-form-calendar').addEventListener('change', (e) => {
+    const lunar = e.target.value === 'lunar';
+    document.getElementById('date-form-date').placeholder = lunar ? '月-日（例如 08-15）' : 'YYYY-MM-DD';
+    document.getElementById('date-form-date-hint').textContent = lunar ? '（农历 月-日，闰月按平月）' : '（YYYY-MM-DD）';
+  });
+
+  document.getElementById('btn-date-write').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const payload = {
+      event_name: document.getElementById('date-form-name').value.trim(),
+      user_id: document.getElementById('date-form-user').value,
+      calendar: document.getElementById('date-form-calendar').value,
+      recurrence: document.getElementById('date-form-recurrence').value,
+      date: document.getElementById('date-form-date').value.trim(),
+    };
+    if (!payload.event_name) { showDatesError('事件名称不能为空'); return; }
+    if (!payload.user_id) { showDatesError('没有可用的归属用户，请先在用户档案中启用'); return; }
+    if (!payload.date) { showDatesError('日期不能为空'); return; }
+    btn.disabled = true; btn.textContent = '写入中…';
+    try {
+      const res = await window.maibot.action('date_write', payload);
+      if (res && res.success === false) throw new Error(res.error || '写入失败');
+      const next = res?.applied?.next_occurrence;
+      document.getElementById('error-banner').classList.remove('active');
+      document.getElementById('date-form-name').value = '';
+      document.getElementById('date-form-date').value = '';
+      btn.textContent = next ? `已写入，下次发生 ${next}` : '已写入';
+      await refreshDates();
+    } catch (err) {
+      showDatesError(`日期写入失败：${err?.message || String(err)}`);
+    } finally {
+      setTimeout(() => { btn.disabled = false; btn.textContent = '写入日期'; }, 1200);
+    }
+  });
+
+  document.getElementById('dates-formal-tbody').addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-date-del]');
+    if (!del) return;
+    del.disabled = true;
+    try {
+      const res = await window.maibot.action('date_delete', { date_id: Number(del.dataset.dateDel) });
+      if (res && res.success === false) throw new Error(res.error || '删除失败');
+      await refreshDates();
+    } catch (err) {
+      del.disabled = false;
+      showDatesError(`日期删除失败：${err?.message || String(err)}`);
+    }
+  });
+
+  document.getElementById('dates-candidates-tbody').addEventListener('click', async (e) => {
+    const approveBtn = e.target.closest('[data-cand-approve]');
+    const rejectBtn = e.target.closest('[data-cand-reject]');
+    const btn = approveBtn || rejectBtn;
+    if (!btn) return;
+    const candidateId = Number(approveBtn ? approveBtn.dataset.candApprove : rejectBtn.dataset.candReject);
+    btn.disabled = true;
+    try {
+      const res = await window.maibot.action('candidate_set', { candidate_id: candidateId, approve: Boolean(approveBtn) });
+      if (res && res.success === false) throw new Error(res.error || '处理失败');
+      await refreshDates();
+    } catch (err) {
+      btn.disabled = false;
+      showDatesError(`候选处理失败：${err?.message || String(err)}`);
+    }
+  });
   document.getElementById('btn-back-overview').addEventListener('click', () => {
     window.maibot.navigate('overview', {});
   });

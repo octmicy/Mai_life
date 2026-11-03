@@ -13,6 +13,13 @@ from typing import Any
 _BACKFILL_SCAN_DAYS=14
 _BACKFILL_MAX_DAYS=7
 
+try:
+    from lunar_python import Lunar as _LunarCalendar
+except Exception:  # Windows/Linux 均允许无历法依赖运行；农历日期写入与推算在网关处拒绝。
+    _LunarCalendar=None
+# 农历支持开关：WebUI 农历日期写入前置校验用（未安装 lunar_python 直接拒绝写入农历）。
+LUNAR_AVAILABLE=_LunarCalendar is not None
+
 
 # v1.24.6（Issue #6）收紧：旧正则把「2.2s」「1.5倍」「3/4」等时长/倍率/比例全判成月日。
 # 现只接受两种形态：①「X年X月X日」全写（点/斜杠/连字符分隔需年份锚定）；
@@ -55,6 +62,8 @@ class MemoryService:
 
     @staticmethod
     def occurrence(item:dict[str,Any],today:date)->date|None:
+        if str(item.get("calendar") or "solar")=="lunar":
+            return MemoryService._lunar_annual_occurrence(str(item.get("event_date") or ""),today)
         base=MemoryService._parse_date(str(item.get("event_date") or ""))
         if not base:return None
         if str(item.get("recurrence") or "none")!="annual":return base
@@ -64,6 +73,32 @@ class MemoryService:
             try:current=current.replace(year=today.year+1)
             except ValueError:current=date(today.year+1,2,28)
         return current
+
+    @staticmethod
+    def _lunar_annual_occurrence(event_date:str,today:date)->date|None:
+        """农历月日（MM-DD）的下一次公历发生日；按农历年逐步换算，缺 lunar_python 返回 None。
+
+        闰月一律按对应平月处理（lunar_python 的 fromYmd 走平月语义）；
+        农历年从公历年取起：农历新年落在公历 1~2 月，最多两次即可找到下一次发生。
+        """
+        if _LunarCalendar is None:return None
+        match=re.match(r"^(\d{1,2})-(\d{1,2})$",str(event_date or "").strip())
+        if not match:return None
+        month,day=int(match.group(1)),int(match.group(2))
+        if not (1<=month<=12 and 1<=day<=30):return None
+        for offset in (0,1,2):
+            try:
+                solar=_LunarCalendar.fromYmd(today.year+offset,month,day).getSolar()
+                occurrence=date(solar.getYear(),solar.getMonth(),solar.getDay())
+            except Exception:
+                return None
+            if occurrence>=today:return occurrence
+        return None
+
+    @staticmethod
+    def lunar_solar_preview(event_date:str)->date|None:
+        """农历 MM-DD 的下一次公历发生（供写入前预览）；无效或缺依赖返回 None。"""
+        return MemoryService._lunar_annual_occurrence(event_date,date.today())
 
     async def observe_message(self,user_id:str,text:str,now:datetime,source_message_id:str="")->None:
         """按“明确日期、本地模糊日期、可选模型”顺序提取当前 QQ 用户的重要日期。"""

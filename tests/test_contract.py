@@ -29,7 +29,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.24.9")
+        self.assertEqual(manifest["version"],"1.24.10")
         # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
         self.assertIn("web.search",manifest["capabilities"])
         self.assertIn("web.fetch",manifest["capabilities"])
@@ -40,10 +40,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.24.9")
+        self.assertEqual(PLUGIN_VERSION,"1.24.10")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.24.9，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.24.10，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -468,10 +468,10 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         await self.store.add_important_date("10001","考试","2026-10-09","none","local_rule",self.now.timestamp())
         await self.store.add_date_candidate("10001","见面","下周","",0.45,"提到见面",self.now.timestamp())
         data=await self.plugin.webui_dates()
-        self.assertEqual(set(data),{"counts","dates","candidates"})
+        self.assertEqual(set(data),{"counts","dates","candidates","lunar_available"})
         self.assertEqual(set(data["counts"]),{"dates","candidates","within_30d"})
         self.assertEqual(set(data["dates"][0]),{"id","user_id","user_name","event_name","event_date",
-                                                "recurrence","occurrence","countdown","days_left"})
+                                                "calendar","recurrence","occurrence","countdown","days_left"})
         self.assertEqual(set(data["candidates"][0]),{"id","user_id","user_name","event_name","date_text",
                                                      "suggested_date","confidence","created_at"})
         # 2026-10-09 在 2026-10-07 之后两天，排在最前；生日年度推算到 2026-10-10。

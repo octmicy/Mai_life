@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.24.9"
+PLUGIN_VERSION = "1.24.10"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -993,6 +993,14 @@ class ScheduleSettings(PluginConfigBase):
         json_schema_extra=_ui(
             "日程模板文件", "相对于插件目录。LLM 失败或返回非法日程时使用该模板降级。", 2,
             label_en="Schedule Template File", hint_en="Path relative to the plugin directory, used as generation fallback.", placeholder="mai_template.json",
+        ),
+    )
+    detailed_schedule: bool = Field(
+        default=False,
+        description="日程细化描写：开启后日程生成要求地点具体到位置、休闲段点名具体游戏或作品；默认关闭（输出更短更稳）。",
+        json_schema_extra=_ui(
+            "日程细化描写", "开启后：地点必须落到「场所+具体位置」（如图书馆三楼自习区），休闲段必须点名具体游戏/作品；输出更长、生成耗时略增。默认关闭。", 3,
+            label_en="Detailed Schedule Descriptions", hint_en="Require precise locations and named games/works in generated schedules. Off by default.",
         ),
     )
 

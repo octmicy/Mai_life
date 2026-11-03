@@ -290,7 +290,11 @@ class ScheduleService:
                 "4) 日程应符合普通人的时间、精力和生活常识，不安排突兀的高强度事项，时间不重叠，包含夜间睡眠和至少两顿饭；\n"
                 "5) energy_load 是该节点对全天精力的影响合计值：工作/学习 -2~-6，睡眠 +4~+8，餐饮 -1，休闲 -1~-3，"
                 "出行 -2~-4；全天 energy_load 合计应与当天精力消耗相抵（接近 0），睡眠增益不要重复计算白天消耗。\n"
-                "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
+                + ("6) 细化模式：location 必须落到「场所+具体位置」（例如'图书馆三楼靠窗的自习区''家附近便利店的"
+                   "靠窗吧台'，不要只写'图书馆''便利店'）；休闲段 summary 必须点名具体的游戏/作品/事情"
+                   "（例如'开两把星铁的每日''把《三体》看到黑暗森林篇'），禁止只写'玩游戏''看书'这类泛称。\n"
+                   if self.config.schedule.detailed_schedule else "")
+                + "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         nodes=[]
         if self.llm.task_available("schedule"):

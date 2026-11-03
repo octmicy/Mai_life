@@ -464,6 +464,7 @@ class LifeStore:
         self._ensure_column("interaction_events", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("rest_backlogs", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("important_dates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("important_dates", "calendar", "TEXT NOT NULL DEFAULT 'solar'")
         self._ensure_column("date_candidates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("group_observations", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("recall_events", "summary_expires_at", "REAL NOT NULL DEFAULT 0")
@@ -1939,23 +1940,31 @@ class LifeStore:
 
     async def add_important_date(self, user_id: str, event_name: str, event_date: str,
                                  recurrence: str, source: str, now: float,
-                                 source_message_id: str="") -> int:
-        """按用户、名称、日期和周期幂等保存明确的重要日期。"""
+                                 source_message_id: str="", calendar: str="solar") -> int:
+        """按用户、名称、日期和周期幂等保存明确的重要日期；calendar 区分公历/农历（农历存 MM-DD）。"""
         clean_recurrence=recurrence if recurrence in {"none","annual"} else "none"
+        clean_calendar=calendar if calendar in {"solar","lunar"} else "solar"
         async with self._lock:
             with self._tx() as conn:
                 conn.execute(
                     """INSERT OR IGNORE INTO important_dates
-                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at,source_message_id)
-                    VALUES(?,?,?,?,?,?,?,?)""",
-                    (user_id,event_name[:120],event_date,clean_recurrence,source[:40],now,now,source_message_id[:240]),
+                    (user_id,event_name,event_date,recurrence,source,created_at,updated_at,source_message_id,calendar)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (user_id,event_name[:120],event_date,clean_recurrence,source[:40],now,now,source_message_id[:240],clean_calendar),
                 )
                 row=conn.execute(
                     """SELECT id FROM important_dates
-                    WHERE user_id=? AND event_name=? AND event_date=? AND recurrence=?""",
-                    (user_id,event_name[:120],event_date,clean_recurrence),
+                    WHERE user_id=? AND event_name=? AND event_date=? AND recurrence=? AND calendar=?""",
+                    (user_id,event_name[:120],event_date,clean_recurrence,clean_calendar),
                 ).fetchone()
                 return int(row[0]) if row else 0
+
+    async def delete_important_date(self, date_id: int) -> bool:
+        """按 id 删除一条重要日期；返回是否真的删了。"""
+        async with self._lock:
+            with self._tx() as conn:
+                cursor=conn.execute("DELETE FROM important_dates WHERE id=?",(int(date_id),))
+                return cursor.rowcount>0
 
     async def list_important_dates(self, user_id: str="") -> list[dict[str, Any]]:
         async with self._lock:
@@ -2034,6 +2043,20 @@ class LifeStore:
                 ).fetchone()
                 conn.execute("UPDATE date_candidates SET status='confirmed' WHERE id=?",(candidate_id,))
                 return int(saved[0]) if saved else 0
+
+    async def get_date_candidate(self, candidate_id: int) -> dict[str, Any]:
+        """读取单条日期候选（不限状态），供 WebUI 确认/驳回前校验。"""
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM date_candidates WHERE id=?",(int(candidate_id),)).fetchone()
+            return dict(row) if row else {}
+
+    async def set_date_candidate_status(self, candidate_id: int, status: str) -> bool:
+        """更新候选状态（confirmed 由 confirm_date_candidate 负责，这里用于驳回）。"""
+        if status not in {"pending","rejected","confirmed"}:return False
+        async with self._lock:
+            with self._tx() as conn:
+                cursor=conn.execute("UPDATE date_candidates SET status=? WHERE id=?",(status,int(candidate_id)))
+                return cursor.rowcount>0
 
     async def memory_runtime(self) -> dict[str, Any]:
         async with self._lock:

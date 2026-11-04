@@ -6,6 +6,7 @@ import json
 import random
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 # 离线补日记：向前寻找最早有框架日最多查 14 天，补算窗口上限 7 天。
@@ -233,7 +234,13 @@ class MemoryService:
         for day in days:
             if await self.store.get_diary(day.isoformat()):continue
             framework=await self.store.get_framework(day.isoformat())
-            if not framework:continue  # 当日未运行：没有框架也就没有日记节点，不写
+            if not framework:
+                # 离线日没有落库框架：先用内置骨架补框架（P2-7 生活连续性），骨架自带日记节点。
+                from .schedule_service import ScheduleService
+                schedule=ScheduleService(self.store,self.config,self.llm,
+                                         str(Path(__file__).resolve().parents[1]),self.logger)
+                framework=schedule._fallback(day.isoformat(),day.weekday()>=5)
+                await self.store.replace_framework(day.isoformat(),framework)
             if not any("日记" in str(node.get("summary") or "") for node in framework):continue
             await self._generate_diary(now,day)
 

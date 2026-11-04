@@ -29,7 +29,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.24.10")
+        self.assertEqual(manifest["version"],"1.25.0")
         # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
         self.assertIn("web.search",manifest["capabilities"])
         self.assertIn("web.fetch",manifest["capabilities"])
@@ -40,10 +40,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.24.10")
+        self.assertEqual(PLUGIN_VERSION,"1.25.0")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.24.10，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.25.0，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -522,7 +522,8 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
                                              "relay_enabled","observation_wait_seconds","max_buffer_messages",
                                              "interesting_threshold","summary_retention_hours","relay_pending_seconds",
                                              "owner_group_to_private_enabled","inactivity_hours",
-                                             "group_share_daily_max","group_share_min_interval_minutes"})
+                                             "group_share_daily_max","group_share_min_interval_minutes",
+                                             "catchup_enabled","catchup_reply_enabled"})
         self.assertEqual(set(data["network"]),{"enabled","tool_enabled","max_results","max_attempts",
                                                "history_enabled","history_retention_days",
                                                "association_enabled","association_threshold",
@@ -530,7 +531,8 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
                                                "news_enabled","news_daily_max","search_enabled","search_daily_max"})
         # 布尔一律翻成「开启/关闭」，不出现裸布尔；数值型参数与 version 不参与该检查。
         switch_fields={"linkage":{"drawpic_enabled","drawpic_detected"},
-                       "group":{"gate_enabled","turn_enabled","relay_enabled","owner_group_to_private_enabled"},
+                       "group":{"gate_enabled","turn_enabled","relay_enabled","owner_group_to_private_enabled",
+                        "catchup_enabled","catchup_reply_enabled"},
                        "context":{"enabled","continuity_enabled","outbound_turn_guard"},
                        "memory":{"enabled","dream_fragments_enabled","diary_enabled",
                                  "important_dates_enabled","date_model_analysis_enabled"},

@@ -23,6 +23,7 @@ import re
 import sqlite3
 import tempfile
 import time
+from types import SimpleNamespace
 import tomllib
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -805,10 +806,8 @@ class DiaryFallbackTests(unittest.IsolatedAsyncioTestCase):
         titles = set()
         for offset in range(10):
             day = (now - timedelta(days=offset + 1)).date()
-            nodes=sched._fallback(day.isoformat(), False)
-            nodes.append({"start": "22:00", "end": "22:30", "kind": "rest", "summary": "写今天的日记",
-                          "location": "书桌前", "energy_load": 0, "shareability": 0.05})
-            await self.store.replace_framework(day.isoformat(), nodes)
+            await self.store.replace_framework(day.isoformat(),
+                                               sched._fallback(day.isoformat(), False))
             await service.ensure_daily(now - timedelta(days=offset))
             entry = await self.store.get_diary(day.isoformat())
             if entry:
@@ -4795,7 +4794,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
                                               "max_buffer_messages", "interesting_threshold",
                                               "summary_retention_hours", "relay_pending_seconds",
                                               "owner_group_to_private_enabled", "inactivity_hours",
-                                              "group_share_daily_max", "group_share_min_interval_minutes"})
+                                              "group_share_daily_max", "group_share_min_interval_minutes",
+                                              "catchup_enabled", "catchup_reply_enabled"})
         self.assertEqual(data["rest_gate"]["night_window"], "23:00-07:30")
         self.assertEqual(data["rest_gate"]["nap_window"], "12:00-14:30")
         self.assertEqual(data["group"]["night_window"], "22:30-08:00")
@@ -4846,7 +4846,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["creation"]["continuation_context_chapters"], 3)
         self.assertEqual(data["creation"]["continuation_chapter_tail_chars"], 400)
         self.assertEqual(set(data["schedule"]), {"generate_hour", "detail_lead_minutes",
-                                                 "template_file", "detailed_schedule"})
+                                                 "template_file", "detailed_schedule",
+                                                 "template_status"})
         self.assertEqual(set(data["proactive"]), {"enabled", "patrol_interval_minutes",
                                                   "min_interval_minutes",
                                                   "recent_user_silence_minutes",
@@ -4892,6 +4893,113 @@ class V1250MaintenanceParallelTests(unittest.IsolatedAsyncioTestCase):
         # 主链走完：逐小时状态快照已落库（INSERT OR IGNORE 每小时一条）。
         row = self.store.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0]
         self.assertGreaterEqual(row, 1)
+
+
+def _async_triggered(triggers: list):
+    async def _trigger(stream_id: str, intent: str, reason: str = ""):
+        triggers.append((stream_id, intent))
+        return {"success": True}
+    return _trigger
+
+
+class V1250GroupCatchupTests(unittest.IsolatedAsyncioTestCase):
+    """v1.25.0：睡醒补读群消息——静默期留痕（环形 120）、晨间补读摘要、点名触发事后回复、
+    一次性知晓注入；知晓与回复双开关默认关。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = make_group_config(group_gate=True)
+        self.config.group.catchup_enabled = True
+        self.now = NIGHT
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _plugin(self, *, reply_enabled: bool = False):
+        self.config.group.catchup_reply_enabled = reply_enabled
+        plugin = await build_plugin(self.store, self.config, llm=DummyLLM(), now=self.now)
+        triggers: list[tuple[str, str]] = []
+        plugin.ctx.maisaka = SimpleNamespace(proactive=SimpleNamespace(
+            trigger=_async_triggered(triggers)))
+        return plugin, triggers
+
+    async def test_ring_buffer_keeps_latest_120(self):
+        for index in range(125):
+            await self.store.add_group_catchup("100", "group-stream-100", f"m{index}",
+                                               f"u{index}", f"成员{index}", f"消息{index}",
+                                               self.now.timestamp() + index)
+        total = self.store.conn.execute(
+            "SELECT COUNT(*) FROM group_catchup_messages WHERE group_id='100'").fetchone()[0]
+        rows = await self.store.list_group_catchup("100", limit=200)
+        self.assertEqual(total, 120)                           # 环形上限
+        self.assertEqual(len(rows), 120)
+        self.assertEqual(rows[0]["message_id"], "m5")          # 最旧的 5 条被挤掉
+        self.assertEqual(rows[-1]["message_id"], "m124")
+
+    async def test_gate_block_records_only_when_enabled(self):
+        plugin, _ = await self._plugin()
+        result = await plugin._process_group_message(
+            {"message": group_message("g1", "深夜水群")}, group_message("g1", "深夜水群"),
+            "30001", "group-stream-100", "g1")
+        self.assertEqual(result.get("action"), "abort")
+        rows = await self.store.list_group_catchup("100")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["content"], "深夜水群")
+        # 主开关关闭：不写留痕（开关直接改插件实例的已校验配置）。
+        plugin.config.group.catchup_enabled = False
+        await plugin._process_group_message(
+            {"message": group_message("g2", "还在水")}, group_message("g2", "还在水"),
+            "30002", "group-stream-100", "g2")
+        self.assertEqual(len(await self.store.list_group_catchup("100")), 1)
+
+    async def test_catchup_after_wake_builds_digest_and_replies_on_mention(self):
+        plugin, triggers = await self._plugin(reply_enabled=True)
+        for index in range(3):
+            text = f"大家晚上好呀 {index}" + (" 麦麦在吗？" if index == 2 else "")
+            await self.store.add_group_catchup("100", "group-stream-100", f"m{index}",
+                                               "u1", "小明", text, self.now.timestamp() + index)
+        await plugin._catchup_after_wake(self.now)
+        digest = plugin._group_catchup_digest.get("group-stream-100")
+        self.assertIsNotNone(digest)
+        self.assertTrue(digest["text"])                        # 观察器本地降级摘要或原文拼接
+        self.assertEqual(len(triggers), 1)                     # 夜间消息点名了麦麦 → 事后回复
+        self.assertEqual(triggers[0][0], "group-stream-100")
+        # 每群每天一次：同日再触发不再出摘要/回复。
+        await plugin._catchup_after_wake(self.now)
+        self.assertEqual(len(triggers), 1)
+
+    async def test_no_mention_means_no_reply_even_with_reply_switch(self):
+        plugin, triggers = await self._plugin(reply_enabled=True)
+        await self.store.add_group_catchup("100", "group-stream-100", "m1",
+                                           "u1", "小明", "纯闲聊，谁都没叫", self.now.timestamp())
+        await plugin._catchup_after_wake(self.now)
+        self.assertIn("group-stream-100", plugin._group_catchup_digest)  # 知晓照常
+        self.assertEqual(triggers, [])                                   # 未点名 → 不回复
+
+    async def test_reply_switch_off_means_no_reply(self):
+        plugin, triggers = await self._plugin(reply_enabled=False)
+        await self.store.add_group_catchup("100", "group-stream-100", "m1",
+                                           "u1", "小明", "麦麦在吗？", self.now.timestamp())
+        await plugin._catchup_after_wake(self.now)
+        self.assertIn("group-stream-100", plugin._group_catchup_digest)  # 知晓照常
+        self.assertEqual(triggers, [])                                   # 点名开关关 → 不回复
+
+    async def test_catchup_injection_is_one_shot_and_day_scoped(self):
+        plugin, _ = await self._plugin()
+        today = self.now.date().isoformat()
+        plugin._group_catchup_digest["group-stream-100"] = {"day": today, "text": "昨晚群里聊了新游戏"}
+        first = plugin._consume_group_catchup("group-stream-100")
+        self.assertIn("【睡醒补读】", first)
+        self.assertIn("昨晚群里聊了新游戏", first)
+        self.assertEqual(plugin._consume_group_catchup("group-stream-100"), "")  # 一次性
+        plugin._group_catchup_digest["group-stream-100"] = {"day": "2020-01-01", "text": "过期"}
+        self.assertEqual(plugin._consume_group_catchup("group-stream-100"), "")  # 非当日不注入
+
+    async def test_switches_default_off(self):
+        config = MaiLifeSettings()
+        self.assertFalse(config.group.catchup_enabled)
+        self.assertFalse(config.group.catchup_reply_enabled)
 
 
 class V1249ConfigSaveTests(unittest.IsolatedAsyncioTestCase):

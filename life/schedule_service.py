@@ -160,8 +160,10 @@ class ScheduleService:
             {"start":"13:00","end":"13:40","kind":"nap","summary":"短暂午休","location":"卧室","energy_load":3,"shareability":0.05},
             {"start":"13:40","end":"18:00","kind":"study","summary":"整理这周的读书笔记和课程作业","location":"书桌前","energy_load":-5,"shareability":0.25},
             {"start":"18:00","end":"19:00","kind":"meal","summary":"做晚饭","location":"厨房","energy_load":-1,"shareability":0.55},
-            {"start":"19:00","end":"23:30","kind":"leisure","summary":"拼完上次没拼完的拼图","location":"家里","energy_load":-3,"shareability":0.55},
-            {"start":"23:30","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05},
+            {"start":"19:00","end":"22:30","kind":"leisure","summary":"拼完上次没拼完的拼图","location":"家里","energy_load":-3,"shareability":0.55},
+            # v1.25.0 日记进日程：内置骨架自带日记节点——离线合成日也能满足「框架排了日记节点才写」。
+            {"start":"22:30","end":"23:00","kind":"rest","summary":"在书桌前写今天的日记","location":"书桌前","energy_load":0,"shareability":0.1},
+            {"start":"23:00","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05},
         ]
         template=self._template(); key="weekend" if weekend else "workday"; raw=template.get(key)
         # 模板即使是数组也可能缺睡眠或进餐；校验失败必须回到稳定内置骨架。

@@ -259,6 +259,15 @@ class LifeStore:
               session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message_id TEXT NOT NULL,
               reason TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL
             );
+            -- 群闸门静默期留痕（v1.25.0）：晨间补读素材；每群环形 120 条、24h 保留。
+            CREATE TABLE IF NOT EXISTS group_catchup_messages(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              group_id TEXT NOT NULL, session_id TEXT NOT NULL,
+              message_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+              sender_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
+              created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_catchup ON group_catchup_messages(group_id, created_at);
             CREATE TABLE IF NOT EXISTS conversation_continuity(
               user_id TEXT PRIMARY KEY, intent TEXT NOT NULL DEFAULT '',
               unresolved_topics TEXT NOT NULL DEFAULT '[]', updated_at REAL NOT NULL DEFAULT 0
@@ -1248,6 +1257,38 @@ class LifeStore:
             else:
                 self.conn.execute("DELETE FROM wake_candidates WHERE session_id=?",(session_id,))
             self.conn.commit()
+
+    # 群闸门静默期留痕（v1.25.0）：晨间补读素材。环形 120 条/群（新的挤最旧），24h 保留。
+    GROUP_CATCHUP_RING=120
+
+    async def add_group_catchup(self, group_id: str, session_id: str, message_id: str,
+                                sender_id: str, sender_name: str, content: str, now: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute(
+                    """INSERT INTO group_catchup_messages
+                    (group_id,session_id,message_id,sender_id,sender_name,content,created_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (group_id,session_id,message_id[:64],sender_id[:64],sender_name[:120],content[:200],now),
+                )
+                conn.execute(
+                    """DELETE FROM group_catchup_messages WHERE group_id=? AND id NOT IN
+                    (SELECT id FROM group_catchup_messages WHERE group_id=? ORDER BY id DESC LIMIT ?)""",
+                    (group_id,group_id,self.GROUP_CATCHUP_RING),
+                )
+
+    async def list_group_catchup(self, group_id: str, limit: int=80) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows=self.conn.execute(
+                """SELECT * FROM group_catchup_messages WHERE group_id=?
+                ORDER BY created_at ASC LIMIT ?""",(group_id,int(limit)),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def cleanup_group_catchup(self, before: float) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM group_catchup_messages WHERE created_at<?",(before,))
 
     async def get_continuity(self, user_id: str) -> dict[str, Any]:
         async with self._lock:

@@ -103,6 +103,25 @@ class CommandCatalogTests(unittest.TestCase):
             self.assertIsNotNone(re.fullmatch(pattern,legacy_sample),name)
         # v1.23.0：ADMIN_SCOPE_ALIASES 随 /麦麦管理 删除，别名表断言一并移除。
 
+    def test_command_matching_aligns_with_host_search_semantics(self):
+        """v1.25.0：宿主 find_command_by_text 用 search（任意位置派发）——子命令 pattern 去除 ^ 后
+        中段命令同样派发；全角斜杠由 unmatched 菜单兜底，/麦麦 相关输入不再漏进聊天。"""
+        from Mai_life.plugin import _MAI_COMMAND_RES,_SUSPECT_COMMAND_RE
+        def dispatched(text): return any(p.search(text) for p in _MAI_COMMAND_RES)
+        def menu(text):
+            own=any(p.search(text) for p in _MAI_COMMAND_RES)
+            return (not own) and bool(_SUSPECT_COMMAND_RE.match(text))
+        self.assertTrue(dispatched("帮我看下/麦麦状态"))
+        self.assertTrue(dispatched("帮我 /麦麦转述 123456 你好"))
+        self.assertTrue(dispatched("/麦麦状态 通知我"))
+        self.assertFalse(dispatched("/麦麦状态哦"))    # 词界 lookahead：尾部粘连不误触
+        self.assertFalse(dispatched("我叫/麦麦"))      # root 保留 ^：中段提及不弹菜单
+        self.assertTrue(menu("／麦麦状态"))            # 全角斜杠 → 菜单兜底
+        self.assertTrue(menu("／麦麦"))
+        self.assertTrue(menu("/麦麦状态："))           # 标点尾缀 → 菜单
+        self.assertTrue(menu("/麦麦写日记"))           # 未注册指令 → 菜单
+        self.assertFalse(menu("/麦麦状态"))            # 正常命令直接派发，不进菜单
+
     def test_manifest_declares_browse_web_image_and_stream_capabilities(self):
         manifest=json.loads((Path(__file__).parents[1]/"_manifest.json").read_text(encoding="utf-8-sig"))
         self.assertEqual(manifest["version"],"1.25.0")

@@ -1815,12 +1815,12 @@ class MaiLifePlugin(MaiBotPlugin):
         sent=await self._send_command_menu(kwargs,notice)
         return False,"未知子命令，已显示菜单" if sent[0] else sent[1],2
 
-    @Command(name="/麦麦状态",pattern=r"^(?:/麦麦状态|/mai_status)(?=\s|$)",description="查看麦生活与消息管线状态")
+    @Command(name="/麦麦状态",pattern=r"(?:/麦麦状态|/mai_status)(?=\s|$)",description="查看麦生活与消息管线状态")
     async def cmd_status(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command(kwargs,await self._status_report())
 
-    @Command(name="/麦麦添加日期",pattern=r"^(?:/麦麦添加日期|/mai_date_add)\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
+    @Command(name="/麦麦添加日期",pattern=r"(?:/麦麦添加日期|/mai_date_add)\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
     async def cmd_date_add(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
@@ -1838,14 +1838,14 @@ class MaiLifePlugin(MaiBotPlugin):
         saved=await self._store.add_important_date(uid,name,parsed.isoformat(),recurrence,"manual",self._env.now().timestamp()) if self._store and self._env and name else 0
         return await self._send_command(kwargs,f"已记录：{parsed.isoformat()} {name}{truncated}" if saved else "未能添加日期，请检查输入。")
 
-    @Command(name="/麦麦删除日期",pattern=r"^(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
+    @Command(name="/麦麦删除日期",pattern=r"(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
     async def cmd_date_remove(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         removed=await self._store.remove_important_date(int(groups.get("date_id") or 0),uid) if self._store else False
         return await self._send_command(kwargs,"已删除该日期。" if removed else "没有找到属于你的该日期。")
 
-    @Command(name="/麦麦确认日期",pattern=r"^(?:/麦麦确认日期|/mai_date_confirm)\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
+    @Command(name="/麦麦确认日期",pattern=r"(?:/麦麦确认日期|/mai_date_confirm)\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
     async def cmd_date_confirm(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
@@ -1857,7 +1857,7 @@ class MaiLifePlugin(MaiBotPlugin):
         saved=await self._store.confirm_date_candidate(candidate_id,uid,parsed.isoformat(),self._env.now().timestamp()) if self._store and self._env else 0
         return await self._send_command(kwargs,f"已确认日期 #{saved}：{parsed.isoformat()}。" if saved else "没有找到属于你的待确认项。")
 
-    @Command(name="/麦麦立即创作",pattern=r"^(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
+    @Command(name="/麦麦立即创作",pattern=r"(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
     async def cmd_create_now(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1869,7 +1869,7 @@ class MaiLifePlugin(MaiBotPlugin):
         )
         return await self._send_command(kwargs,_creation_result_text(result))
 
-    @Command(name="/麦麦转述",pattern=r"^(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
+    @Command(name="/麦麦转述",pattern=r"(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
     async def cmd_relay(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1881,7 +1881,7 @@ class MaiLifePlugin(MaiBotPlugin):
         }
         return await self._send_command(kwargs,str(result.get("message") if result.get("success") else result.get("error")))
 
-    @Command(name="/麦麦配置",pattern=r"^(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦生活配置摘要")
+    @Command(name="/麦麦配置",pattern=r"(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦生活配置摘要")
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         group_gate_mode="按设定时间" if self.config.group.gate_mode=="time_window" else "按日程判断"
@@ -1898,12 +1898,12 @@ class MaiLifePlugin(MaiBotPlugin):
               f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}")
         return await self._send_command(kwargs,text)
 
-    @Command(name="/麦麦帮助",pattern=r"^(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦生活指令")
+    @Command(name="/麦麦帮助",pattern=r"(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦生活指令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command_menu(kwargs)
 
-    @Command(name="/麦麦重生日程",pattern=r"^(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
+    @Command(name="/麦麦重生日程",pattern=r"(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1916,7 +1916,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                               environment=self._env.snapshot(now))
         return await self._send_command(kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
 
-    @Command(name="/麦麦休息测试",pattern=r"^(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
+    @Command(name="/麦麦休息测试",pattern=r"(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
     async def cmd_rest_test(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -2882,7 +2882,8 @@ def _command_pattern_res()->tuple[re.Pattern[str],...]:
 
 # 未识别指令兜底：命令形态、以 /麦麦 或 /mai 开头（大小写不敏感）却未命中任何自家命令 pattern。
 _MAI_COMMAND_RES:tuple[re.Pattern[str],...]=_command_pattern_res()
-_SUSPECT_COMMAND_RE=re.compile(r"\s*/(?:麦麦|mai)",re.IGNORECASE)
+# 全角斜杠同样算「像我们的命令」：中文键盘 ／ 极常见，漏进聊天比弹菜单糟。
+_SUSPECT_COMMAND_RE=re.compile(r"\s*[／/](?:麦麦|mai)",re.IGNORECASE)
 
 
 def _raw_command_text(message:dict[str,Any])->str:
@@ -2896,8 +2897,8 @@ def _raw_command_text(message:dict[str,Any])->str:
 
 
 def _matches_own_command(text:str)->bool:
-    """文本是否命中本插件任一命令 pattern（前缀匹配，与 Host 派发的宽松度一致）。"""
-    return any(pattern.match(str(text or "")) for pattern in _MAI_COMMAND_RES)
+    """文本是否命中本插件任一命令 pattern；用 search 与宿主派发语义对齐（宿主 component_registry 用 search）。"""
+    return any(pattern.search(str(text or "")) for pattern in _MAI_COMMAND_RES)
 
 
 def create_plugin()->MaiBotPlugin:return MaiLifePlugin()

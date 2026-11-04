@@ -513,11 +513,6 @@ class MemorySettings(PluginConfigBase):
         json_schema_extra=_ui("启用抽象日记", "只使用生活节点、梦境和互动数量，不复制聊天原文。", 5,
                               label_en="Enable Abstract Diary", hint_en="Uses life events and interaction counts, never chat transcripts."),
     )
-    diary_hour: int = Field(
-        default=2, ge=0, le=23, description="每天结算前一天日记的小时。",
-        json_schema_extra=_ui("日记结算时间（小时）", "默认凌晨 2 点，在 3 点生成新日程之前完成。", 6,
-                              label_en="Diary Settlement Hour", hint_en="Hour used to settle the previous day."),
-    )
     diary_max_chars: int = Field(
         default=1200, ge=300, le=4000, description="单篇日记正文最大字符数。",
         json_schema_extra=_ui("日记长度上限", "限制日记和后续 Prompt 占用。", 7,

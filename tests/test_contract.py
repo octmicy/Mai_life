@@ -416,7 +416,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
              "location":"书桌前","energy_load":-3,"shareability":0.2}])
         await self.store.save_scene("n2","边吃边看窗外",{"energy":1},[])
         data=await self.plugin.webui_schedule()
-        self.assertEqual(set(data),{"day","generated_at","current","next","scene","nodes","tomorrow"})
+        self.assertEqual(set(data),{"day","generated_at","current","next","scene","nodes","tomorrow","yesterday"})
         self.assertEqual(data["day"],day); self.assertEqual(data["tomorrow"]["day"],tomorrow)
         self.assertEqual(set(data["nodes"][1]),{"start","end","kind_zh","summary","location","scene",
                                                 "energy_load","shareability"})

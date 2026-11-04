@@ -80,6 +80,9 @@ class DummyLLM:
     async def generate_json(self, prompt, system, fallback=None, max_tokens=0, **kwargs):
         return fallback if fallback is not None else {}
 
+    async def generate_json_retry(self, prompt, system, fallback=None, max_tokens=0, **kwargs):
+        return await self.generate_json(prompt, system, fallback, max_tokens=max_tokens, **kwargs)
+
 
 class DummyStateEngine:
     """生活状态引擎替身：mark_woken 空实现。"""

@@ -564,6 +564,31 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("场所+具体位置",llm_on.prompt)
         self.assertIn("点名具体的游戏/作品",llm_on.prompt)
 
+    async def test_template_validation_and_status(self):
+        # v1.25.0：模板校验——仓库模板合法→ok；缺文件→missing；坏字段→invalid+回退内置骨架。
+        service=ScheduleService(self.store,self.config,DummyLLM(),str(Path(__file__).parents[1]),DummyLogger())
+        self.assertEqual(service.template_status(),"ok")
+        service2=ScheduleService(self.store,self.config,DummyLLM(),self.tmp.name,DummyLogger())
+        self.assertEqual(service2.template_status(),"missing")
+        Path(self.tmp.name,"mai_template.json").write_text(
+            '{"workday":[{"start":"25:00","end":"01:00","kind":"party","summary":"","location":"x","energy_load":0,"shareability":0.5}],"weekend":[]}',
+            encoding="utf-8")
+        status=service2.template_status()
+        self.assertTrue(status.startswith("invalid") and "个问题" in status, status)
+        # 校验失败整份弃用：提示词参考回退内置骨架（永远合法）。
+        class CapturingLLM:
+            def __init__(self):self.prompt=""
+            def task_available(self,kind):return kind=="schedule"
+            def task_for(self,kind):return "planner"
+            async def generate_json(self,prompt,system,fallback,**kwargs):
+                self.prompt=prompt; return fallback
+        llm=CapturingLLM()
+        service3=ScheduleService(self.store,self.config,llm,self.tmp.name,DummyLogger())
+        now=datetime(2026,9,19,3,0,tzinfo=timezone(timedelta(hours=8)))
+        await service3.ensure_day(now,"人格","晴",force=True)
+        self.assertIn("安稳睡觉",llm.prompt)  # 内置骨架特征节点
+        self.assertNotIn("party",llm.prompt)
+
     async def test_offline_timeline_crosses_sleep_and_meal_boundaries(self):
         start=datetime(2026,7,9,22,0,tzinfo=timezone(timedelta(hours=8)))
         now=datetime(2026,7,10,10,0,tzinfo=start.tzinfo)

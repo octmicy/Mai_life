@@ -6,7 +6,6 @@ import json
 import random
 import re
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 # 离线补日记：向前寻找最早有框架日最多查 14 天，补算窗口上限 7 天。
@@ -183,13 +182,20 @@ class MemoryService:
                 f"提到{name}，时间仍需确认",now.timestamp(),source_message_id,
             )
 
-    async def ensure_daily(self,now:datetime)->None:
-        """幂等维护日期提醒、昨日抽象日记和过期候选清理。"""
+    async def ensure_daily(self,now:datetime,current_node:dict[str,Any]|None=None)->None:
+        """幂等维护日期提醒、日程驱动的日记和过期候选清理。
+
+        日记 v1.25.0 起纯日程驱动：当前节点 summary 含「写日记」→ 写当天日记（占用该日程
+        窗口，不再按钟点后台触发）；历史日只补「框架里排了日记节点但缺日记」的日子——
+        模型没排节点的那天就不写（主人决策）。
+        """
         cfg=self.config.memory
         if not cfg.enabled:return
         await self._create_date_opportunities(now)
-        if now.hour<cfg.diary_hour:return
         if cfg.diary_enabled:
+            summary=str((current_node or {}).get("summary") or "")
+            if "日记" in summary and not await self.store.get_diary(now.date().isoformat()):
+                await self._generate_diary(now,now.date())
             await self._backfill_diaries(now)
         runtime=await self.store.memory_runtime()
         if now.timestamp()-float(runtime.get("last_cleanup_at") or 0)>=86400:
@@ -205,10 +211,11 @@ class MemoryService:
         self.logger.info(message)
 
     async def _backfill_diaries(self,now:datetime)->None:
-        """补算 [最早有框架日的次日, 昨天] 内缺日记的日子，窗口上限 7 天。
+        """补写「框架里排了日记节点但缺日记」的历史日，窗口上限 7 天。
 
-        离线多日时中间日没有落库框架，先用本地骨架补框架再生成日记；
-        向前 14 天都找不到任何框架（全新库）时保持 F1 守卫：一天都不补。
+        v1.25.0 日记纯日程驱动：模型没排日记节点的那天不写（主人决策）——
+        这里只覆盖节点窗口内插件恰好宕机/超时的漏写场景；窗口内无任何框架
+        （全新库/长期未运行）时保持 F1 守卫：一天都不补。
         """
         target=now.date()-timedelta(days=1)
         anchor:date|None=None
@@ -222,16 +229,12 @@ class MemoryService:
             return
         # 窗口 [anchor+1, target]：offset 0..N-1 即 target 到 anchor 次日，排序后取最近 7 天。
         days=sorted(target-timedelta(days=offset) for offset in range(0,(target-anchor).days))[-_BACKFILL_MAX_DAYS:]
-        if target not in days:days.append(target)  # 昨日有框架（正常运行路径）照旧补
+        if target not in days:days.append(target)  # 昨日有框架（正常运行路径）照旧参与补写判定
         for day in days:
             if await self.store.get_diary(day.isoformat()):continue
-            if not await self.store.get_framework(day.isoformat()):
-                # MemoryService 不持有 ScheduleService，按需构造；只用本地 _fallback 兜底骨架。
-                from .schedule_service import ScheduleService
-                schedule=ScheduleService(self.store,self.config,self.llm,
-                                         str(Path(__file__).resolve().parents[1]),self.logger)
-                await self.store.replace_framework(day.isoformat(),
-                                                   schedule._fallback(day.isoformat(),day.weekday()>=5))
+            framework=await self.store.get_framework(day.isoformat())
+            if not framework:continue  # 当日未运行：没有框架也就没有日记节点，不写
+            if not any("日记" in str(node.get("summary") or "") for node in framework):continue
             await self._generate_diary(now,day)
 
     async def _generate_diary(self,now:datetime,target:date)->None:

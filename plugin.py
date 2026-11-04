@@ -590,7 +590,8 @@ class MaiLifePlugin(MaiBotPlugin):
             # 逐小时状态快照：INSERT OR IGNORE 保证每小时只落一条，供长期动力学统计。
             await self._store.save_state_snapshot(now.timestamp(),await self._store.get_state())
             try:
-                await asyncio.wait_for(self._memory.ensure_daily(now),timeout=MAINTENANCE_MEMORY_TIMEOUT)
+                await asyncio.wait_for(self._memory.ensure_daily(now,current_node=context.get("current")),
+                                       timeout=MAINTENANCE_MEMORY_TIMEOUT)
             except TimeoutError:
                 self.ctx.logger.warning("[MaiLife] 每日记忆（日记/日期）超时，下一 tick 重试")
 
@@ -2281,6 +2282,7 @@ class MaiLifePlugin(MaiBotPlugin):
             scenes=await self._store.get_scenes_by_framework_ids([str(node.get("id") or "") for node in nodes])
             context=await self._schedule.context(now); scene=context.get("scene") or {}
             tomorrow=(now+timedelta(days=1)).date().isoformat()
+            yesterday=(now-timedelta(days=1)).date().isoformat()
             return {"day":day,"generated_at":now.isoformat(timespec="seconds"),
                     "current":_node_view(context.get("current") or {}),
                     "next":{"kind_zh":_SCHEDULE_KIND_ZH.get(str(nxt.get("kind") or ""),str(nxt.get("kind") or "") or "未知"),
@@ -2304,7 +2306,14 @@ class MaiLifePlugin(MaiBotPlugin):
                                           "kind_zh":_SCHEDULE_KIND_ZH.get(str(node.get("kind") or ""),str(node.get("kind") or "") or "未知"),
                                           "summary":str(node.get("summary") or ""),
                                           "location":str(node.get("location") or "")}
-                                         for node in await self._store.get_framework(tomorrow)]}}
+                                         for node in await self._store.get_framework(tomorrow)]},
+                    "yesterday":{"day":yesterday,
+                                 "nodes":[{"start":hhmm(int(node.get("start_minute") or 0)),
+                                           "end":hhmm(int(node.get("end_minute") or 0)),
+                                           "kind_zh":_SCHEDULE_KIND_ZH.get(str(node.get("kind") or ""),str(node.get("kind") or "") or "未知"),
+                                           "summary":str(node.get("summary") or ""),
+                                           "location":str(node.get("location") or "")}
+                                          for node in await self._store.get_framework(yesterday)]}}
         except Exception as exc:
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 
@@ -2606,7 +2615,6 @@ class MaiLifePlugin(MaiBotPlugin):
                               "dream_probability":round(float(cfg.memory.dream_probability),2),
                               "dream_weekly_max":int(cfg.memory.dream_weekly_max),
                               "diary_enabled":_switch(cfg.memory.diary_enabled),
-                              "diary_hour":int(cfg.memory.diary_hour),
                               "diary_max_chars":int(cfg.memory.diary_max_chars),
                               "important_dates_enabled":_switch(cfg.memory.important_dates_enabled),
                               "date_model_analysis_enabled":_switch(cfg.memory.date_model_analysis_enabled),
@@ -2645,7 +2653,8 @@ class MaiLifePlugin(MaiBotPlugin):
                     "schedule":{"generate_hour":int(cfg.schedule.generate_hour),
                                 "detail_lead_minutes":int(cfg.schedule.detail_lead_minutes),
                                 "template_file":str(cfg.schedule.template_file),
-                                "detailed_schedule":_switch(cfg.schedule.detailed_schedule)},
+                                "detailed_schedule":_switch(cfg.schedule.detailed_schedule),
+                                "template_status":(self._schedule.template_status() if self._schedule else "missing")},
                     "proactive":{"enabled":_switch(cfg.proactive.enabled),
                                  "patrol_interval_minutes":int(cfg.proactive.patrol_interval_minutes),
                                  "min_interval_minutes":int(cfg.proactive.min_interval_minutes),

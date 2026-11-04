@@ -805,8 +805,10 @@ class DiaryFallbackTests(unittest.IsolatedAsyncioTestCase):
         titles = set()
         for offset in range(10):
             day = (now - timedelta(days=offset + 1)).date()
-            await self.store.replace_framework(day.isoformat(),
-                                               sched._fallback(day.isoformat(), False))
+            nodes=sched._fallback(day.isoformat(), False)
+            nodes.append({"start": "22:00", "end": "22:30", "kind": "rest", "summary": "写今天的日记",
+                          "location": "书桌前", "energy_load": 0, "shareability": 0.05})
+            await self.store.replace_framework(day.isoformat(), nodes)
             await service.ensure_daily(now - timedelta(days=offset))
             entry = await self.store.get_diary(day.isoformat())
             if entry:
@@ -1015,6 +1017,82 @@ class RoutingHttp:
         return StubHttpResponse(self.forecast)
 
 
+class V1250ScheduleDiaryTests(unittest.IsolatedAsyncioTestCase):
+    """v1.25.0：日记纯日程驱动——当前节点含「写日记」→ 写当天日记；没排节点当天不写；
+    历史日只补「框架排了日记节点但缺日记」的日子（diary_hour 钟点兜底已删除）。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.now = datetime(2026, 10, 8, 23, 5, tzinfo=TZ)
+        self.service = MemoryService(self.store, self.config, DummyLLM(), DummyLogger())
+        self.today = self.now.date().isoformat()
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def _seed_framework(self, day: str, *, with_diary_node: bool) -> None:
+        nodes = [{"id": f"{day}-n1", "day": day, "start_minute": 480, "end_minute": 540,
+                  "kind": "meal", "summary": "做早餐", "location": "厨房",
+                  "energy_load": -1, "shareability": 0.3}]
+        if with_diary_node:
+            nodes.append({"id": f"{day}-n2", "day": day, "start_minute": 1380, "end_minute": 1410,
+                          "kind": "rest", "summary": "23:00 在书桌前写今天的日记",
+                          "location": "书桌前", "energy_load": 0, "shareability": 0.1})
+        await self.store.replace_framework(day, nodes)
+
+    async def test_diary_node_triggers_same_day_diary(self):
+        await self._seed_framework(self.today, with_diary_node=True)
+        await self.service.ensure_daily(self.now, current_node={
+            "summary": "23:00 在书桌前写今天的日记"})
+        diary = await self.store.get_diary(self.today)
+        self.assertEqual(diary.get("day"), self.today)  # 无 LLM 时回落兜底标题日记
+
+    async def test_non_diary_node_writes_nothing(self):
+        await self._seed_framework(self.today, with_diary_node=True)
+        await self.service.ensure_daily(self.now, current_node={"summary": "在客厅看书"})
+        self.assertEqual(await self.store.get_diary(self.today), {})
+
+    async def test_no_diary_node_in_framework_means_no_diary(self):
+        # 主人决策：模型没安排日记节点 → 当天不写日记（哪怕到了旧 diary_hour 之后）。
+        await self._seed_framework(self.today, with_diary_node=False)
+        await self.service.ensure_daily(self.now, current_node=None)
+        self.assertEqual(await self.store.get_diary(self.today), {})
+
+    async def test_diary_node_trigger_is_idempotent(self):
+        await self._seed_framework(self.today, with_diary_node=True)
+        node = {"summary": "23:00 在书桌前写今天的日记"}
+        await self.service.ensure_daily(self.now, current_node=node)
+        await self.service.ensure_daily(self.now + timedelta(minutes=10), current_node=node)
+        diary = await self.store.get_diary(self.today)
+        self.assertEqual(diary.get("day"), self.today)  # 第二次幂等跳过，不报错不重复
+
+    async def test_backfill_only_writes_days_with_diary_node(self):
+        day_with = (self.now - timedelta(days=1)).date().isoformat()
+        day_without = (self.now - timedelta(days=2)).date().isoformat()
+        await self._seed_framework(day_with, with_diary_node=True)
+        await self._seed_framework(day_without, with_diary_node=False)
+        await self.service.ensure_daily(self.now, current_node=None)
+        self.assertNotEqual(await self.store.get_diary(day_with), {})     # 排了节点但漏写 → 补
+        self.assertEqual(await self.store.get_diary(day_without), {})     # 没排节点 → 不写
+
+    async def test_prompt_requires_diary_node(self):
+        from Mai_life.life.schedule_service import ScheduleService
+        class CapturingLLM:
+            def __init__(self): self.prompt = ""
+            def task_available(self, kind): return kind == "schedule"
+            def task_for(self, kind): return "planner"
+            async def generate_json(self, prompt, system, fallback, **kwargs):
+                self.prompt = prompt; return fallback
+        llm = CapturingLLM()
+        service = ScheduleService(self.store, self.config, llm,
+                                  str(Path(__file__).parents[1]), DummyLogger())
+        await service.ensure_day(self.now, "人格", "晴", force=True)
+        self.assertIn("写日记的节点", llm.prompt)
+        self.assertIn("summary 明确含「写日记」", llm.prompt)
+
+
 class DiaryBackfillTests(unittest.IsolatedAsyncioTestCase):
     """F1：补日记前必须确认目标日插件确在运行（daily_framework 非空），杜绝幻觉日记。"""
 
@@ -1041,11 +1119,14 @@ class DiaryBackfillTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(f"跳过补日记 day={self.day}" in text for text in self.logger.messages("info")),
                         f"未记录跳过说明: {self.logger.calls}")
 
-    async def test_backfill_runs_when_yesterday_framework_exists(self):
-        """合法补算场景（昨日框架存在，如凌晨停机、白天恢复）→ 正常生成日记与 owner_only 契机。"""
+    async def test_backfill_runs_when_yesterday_framework_has_diary_node(self):
+        """合法补算场景（昨日框架存在且排了日记节点，如节点窗口内停机）→ 正常生成日记与 owner_only 契机。"""
         await self.store.sync_users([UserProfile(user_id="10001",role="owner",proactive_enabled=True)])
-        await self.store.replace_framework(self.day,[{"id":"n1","day":self.day,"start_minute":480,"end_minute":540,
-            "kind":"meal","summary":"做早餐","location":"厨房","energy_load":-1,"shareability":0.3}])
+        await self.store.replace_framework(self.day,[
+            {"id":"n1","day":self.day,"start_minute":480,"end_minute":540,
+             "kind":"meal","summary":"做早餐","location":"厨房","energy_load":-1,"shareability":0.3},
+            {"id":"n2","day":self.day,"start_minute":1320,"end_minute":1350,
+             "kind":"rest","summary":"23:00 写今天的日记","location":"书桌前","energy_load":0,"shareability":0.1}])
         await self.service.ensure_daily(self.now)
         diary=await self.store.get_diary(self.day)
         self.assertEqual(diary["day"],self.day)
@@ -4107,7 +4188,7 @@ class V11412WebuiScheduleTests(unittest.IsolatedAsyncioTestCase):
              "summary": "看书", "location": "客厅", "energy_load": 0.1, "shareability": 0.3}])
         data = await plugin.webui_schedule()
         self.assertEqual(set(data), {"day", "generated_at", "current", "next", "scene",
-                                     "nodes", "tomorrow"})
+                                     "nodes", "tomorrow", "yesterday"})
         self.assertEqual(data["day"], today)
         self.assertTrue(str(data["generated_at"] or ""))
         # 节点表：字段逐字对齐，起止为 HH:MM，类型中译，场景按 framework_id 关联。
@@ -4158,6 +4239,24 @@ class V11412WebuiScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["next"]), {"kind_zh", "summary", "start"})
         self.assertEqual(data["scene"], {"scene": "", "applied": False})
         self.assertEqual(data["tomorrow"]["nodes"], [])
+        self.assertEqual(data["yesterday"]["nodes"], [])
+
+    async def test_schedule_yesterday_history_view(self):
+        # v1.25.0：昨日日程查看——有框架返回节点投影（无 current/场景），无框架返回空列表。
+        plugin = await self._plugin()
+        yesterday = (self.now - timedelta(days=1)).date().isoformat()
+        await self.store.replace_framework(yesterday, [
+            {"id": "y1", "day": yesterday, "start_minute": 0, "end_minute": 480, "kind": "sleep",
+             "summary": "安稳睡觉", "location": "卧室", "energy_load": 8, "shareability": 0.05}])
+        data = await plugin.webui_schedule()
+        self.assertEqual(data["yesterday"]["day"], yesterday)
+        self.assertEqual(len(data["yesterday"]["nodes"]), 1)
+        self.assertEqual(set(data["yesterday"]["nodes"][0]),
+                         {"start", "end", "kind_zh", "summary", "location"})
+        self.assertEqual(data["yesterday"]["nodes"][0]["kind_zh"], "睡眠")
+        await self.store.replace_framework(yesterday, [])
+        again = await plugin.webui_schedule()
+        self.assertEqual(again["yesterday"]["nodes"], [])
 
     async def test_schedule_scenes_bind_by_framework_id_not_position(self):
         """同一 start_minute 的多个节点按 framework_id 各挂各的场景，不互相覆盖。"""
@@ -4709,7 +4808,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["rest_gate"]["enabled"], "关闭")
         self.assertEqual(data["group"]["gate_enabled"], "关闭")
         self.assertEqual(set(data["memory"]), {"enabled", "dream_fragments_enabled",
-                                               "dream_fragment_count", "diary_enabled", "diary_hour",
+                                               "dream_fragment_count", "diary_enabled",
                                                "diary_max_chars", "important_dates_enabled",
                                                "date_model_analysis_enabled",
                                                "date_candidate_retention_days",

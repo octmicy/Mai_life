@@ -4766,6 +4766,35 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["linkage"], {"drawpic_enabled": "开启", "drawpic_detected": "关闭"})
 
 
+class V1250MaintenanceParallelTests(unittest.IsolatedAsyncioTestCase):
+    """v1.25.0：维护 tick 并行相——单支失败只 warning 不阻塞主链（网络挂起不再串行卡死整条链）。"""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.config.memory.enabled = False  # 隔离每日记忆链路，聚焦并行相行为
+        self.logger = RecordingLogger()
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_parallel_branch_failure_does_not_block_main_chain(self):
+        plugin = await build_plugin(self.store, self.config, ctx=DummyCtx(self.logger), llm=DummyLLM(),
+                                    users=[UserProfile(user_id="1", role="owner", enabled=True)])
+        async def _boom(force=False, allow_network=True):
+            raise RuntimeError("天气接口模拟挂起")
+        plugin._env.refresh_weather = _boom
+        await plugin._maintenance_tick()  # 并行相单支抛错不应向外传播
+        texts = self.logger.texts("info") + self.logger.texts("warning")
+        self.assertTrue(any("维护并行相失败" in t for t in texts),
+                        f"并行相失败未留痕: {texts[-5:]}")
+        self.assertTrue(any("天气刷新" in t for t in texts))
+        # 主链走完：逐小时状态快照已落库（INSERT OR IGNORE 每小时一条）。
+        row = self.store.conn.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0]
+        self.assertGreaterEqual(row, 1)
+
+
 class V1249ConfigSaveTests(unittest.IsolatedAsyncioTestCase):
     """v1.24.9：webui_config_save 单键回写——字符串强转、全模型校验、落盘 config.toml、
     set_plugin_config + self 热更新；派生键/未知键/非法值/越界值全部拒绝且无副作用。"""

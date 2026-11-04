@@ -1,6 +1,7 @@
 """统一模型路由、结构化生成和插件 Token 统计。"""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import time
@@ -210,6 +211,33 @@ class LLMService:
         )
         self._count_json_failure(task_kind)
         if raise_on_failure:raise RuntimeError("结构化响应解析失败")
+        return fallback
+
+    async def generate_json_retry(self, prompt: str, system: str, fallback: Any, max_tokens: int = 0,
+                                  *, task_kind: str = "reasoning", request_type: str = "structured",
+                                  attempts: int = 3, backoff: tuple[float, ...] = (1.0, 2.0),
+                                  raise_on_failure: bool = False) -> Any:
+        """结构化生成统一重试：仅用于纯生成、幂等可重入的任务（v1.24.4 日程模式推广）。
+
+        每次尝试失败 warning 带第几次与原因（Usage 记录已由 generate 内部落，不重复记）；
+        全部失败：raise_on_failure=True 抛 RuntimeError，否则返回 fallback 交业务降级。
+        attempts=1 等价于直调 generate_json（零行为差异）。
+        """
+        last_error:Exception|None=None
+        for attempt in range(max(1,int(attempts))):
+            if attempt:
+                await asyncio.sleep(backoff[min(attempt-1,len(backoff)-1)])
+            try:
+                return await self.generate_json(prompt,system,fallback,max_tokens=max_tokens,
+                                                task_kind=task_kind,request_type=request_type,
+                                                raise_on_failure=True)
+            except RuntimeError as exc:
+                last_error=exc
+                self.ctx.logger.warning(
+                    f"[MaiLife] 结构化生成第 {attempt+1}/{int(attempts)} 次失败 "
+                    f"task={self.task_for(task_kind)} type={request_type}: {exc}")
+        if raise_on_failure:
+            raise last_error if last_error else RuntimeError("LLM 调用失败或返回为空")
         return fallback
 
     def _count_json_failure(self, task_kind: str) -> None:

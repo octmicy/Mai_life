@@ -72,6 +72,10 @@ MOMENT_HINT_DAILY_MAX=3           # 每用户每日注入上限（两通道共�
 MOMENT_STATE_COOLDOWN_HOURS=12    # 状态触发通道冷却（无对话信号时的低频引导）
 MOMENT_JUDGE_COOLDOWN_MINUTES=60  # 弱信号 LLM 判定冷却
 MOMENT_JUDGE_WINDOW_MAX=2         # 冷却窗口内至多判定次数
+# 维护 tick 主链步骤超时（秒）：超时跳过该步骤，下一 tick 幂等重试——网络挂起不串行阻塞整条链。
+MAINTENANCE_SCHEDULE_TIMEOUT=120  # 日程框架生成
+MAINTENANCE_SCENE_TIMEOUT=90      # 场景细化
+MAINTENANCE_MEMORY_TIMEOUT=120    # 每日记忆（日记/日期/清理）
 def _tool_definition_names(definitions:list[Any])->set[str]:
     """从 Planner 工具定义提取工具名：兼容 {"function":{"name":...}}（宿主序列化形态）与平铺 {"name":...}。"""
     names=set()
@@ -549,17 +553,33 @@ class MaiLifePlugin(MaiBotPlugin):
             except Exception as exc:self.ctx.logger.error(f"[MaiLife] 书柜创作巡检异常: {exc}")
 
     async def _maintenance_tick(self,force_weather:bool=False,*,allow_weather_network:bool=True)->None:
-        """串行维护天气、日程细化、离线状态、记忆、关系结算和运行记录清理。"""
+        """维护 tick：并行相（天气/联动/记忆上下文/关系/清理）+ 串行主链（日程→细化→睡前→相位→快照→每日记忆）。
+
+        并行相各支失败只 warning 不拖链；主链 LLM 步骤带步骤级超时，超时跳过等下一 tick
+        幂等重试（ensure_day/expand_due/ensure_daily 均可重入）——网络挂起不再串行阻塞整条链。
+        """
         if not self._ready:return
         async with self._maintenance_lock:
             assert self._env and self._schedule and self._store and self._state and self._memory
-            now=self._env.now(); weather=await self._env.refresh_weather(force=force_weather,allow_network=allow_weather_network)
-            if self.config.linkage.drawpic_enabled:await self._check_drawpic()  # 覆盖运行中途安装/卸载
-            memory_context=await self._memory.schedule_context(now)
-            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),memory_context=memory_context,
-                                                  environment=self._env.snapshot(now))
+            now=self._env.now()
+            weather,memory_context=await self._maintenance_parallel(now,force_weather,allow_weather_network)
+            # 主链 1：当日框架。超时→本次跳过细化与每日记忆（都依赖框架），下一 tick 幂等重试。
+            try:
+                nodes=await asyncio.wait_for(
+                    self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),
+                                              memory_context=memory_context,environment=self._env.snapshot(now)),
+                    timeout=MAINTENANCE_SCHEDULE_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 日程生成超时，本 tick 跳过细化与每日记忆")
+                return
             context=await self._schedule.context(now); state=await self._store.get_state()
-            await self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)); context=await self._schedule.context(now)
+            try:
+                await asyncio.wait_for(
+                    self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)),
+                    timeout=MAINTENANCE_SCENE_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 场景细化超时，下一 tick 重试")
+            context=await self._schedule.context(now)
             last_updated=float(state.get("last_updated_at") or now.timestamp())
             simulation_start=datetime.fromtimestamp(max(last_updated,(now-timedelta(hours=72)).timestamp()),tz=now.tzinfo)
             # 睡前流程先于相位推进：静默刚达标时先更新 defer/回睡，advance 才不会按旧值提前睡过去。
@@ -569,12 +589,36 @@ class MaiLifePlugin(MaiBotPlugin):
             await self._state.advance_timeline(now,timeline,context.get("current"),context.get("scene"))
             # 逐小时状态快照：INSERT OR IGNORE 保证每小时只落一条，供长期动力学统计。
             await self._store.save_state_snapshot(now.timestamp(),await self._store.get_state())
-            await self._memory.ensure_daily(now)
-            await self._settle_relationships(now)
-            await self._store.cleanup_runtime_records(
+            try:
+                await asyncio.wait_for(self._memory.ensure_daily(now),timeout=MAINTENANCE_MEMORY_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 每日记忆（日记/日期）超时，下一 tick 重试")
+
+    async def _maintenance_parallel(self,now:datetime,force_weather:bool,
+                                    allow_weather_network:bool)->tuple[dict[str,Any],dict[str,Any]]:
+        """并行相：天气刷新、绘图联动检测、记忆上下文、关系结算、运行记录清理。
+
+        各支互不依赖，gather(return_exceptions=True) 单支失败只 warning；SQLite 写全部在
+        LifeStore 锁内串行，并行安全。返回 (weather, memory_context)，失败支回退空字典。
+        """
+        results=await asyncio.gather(
+            self._env.refresh_weather(force=force_weather,allow_network=allow_weather_network),
+            self._check_drawpic() if self.config.linkage.drawpic_enabled else asyncio.sleep(0),
+            self._memory.schedule_context(now),
+            self._settle_relationships(now),
+            self._store.cleanup_runtime_records(
                 now.timestamp(),now.timestamp()-int(self.config.usage.retention_days)*86400,
                 records_before=now.timestamp()-RECORD_RETENTION_DAYS*86400,
-            )
+            ),
+            return_exceptions=True,
+        )
+        labels=("天气刷新","绘图联动检测","记忆上下文","关系结算","运行记录清理")
+        for label,result in zip(labels,results):
+            if isinstance(result,BaseException) and not isinstance(result,asyncio.CancelledError):
+                self.ctx.logger.warning(f"[MaiLife] 维护并行相失败（不阻塞主链）{label}: {result}")
+        weather=results[0] if isinstance(results[0],dict) else {}
+        memory_context=results[2] if isinstance(results[2],dict) else {}
+        return weather,memory_context
 
     async def _settle_relationships(self,now:datetime)->None:
         """按自然日补算离线期间关系变化，最多回看一年即可覆盖温度下限。

@@ -26,6 +26,8 @@ class MemoryLLM:
         if kwargs.get("request_type")=="dream":
             return {"summary":"梦里走过一间亮着灯的旧书店。","fragments":["木门轻响","书页翻动","窗外下雨"],"mood":"warm"}
         return fallback
+    async def generate_json_retry(self,prompt,system,fallback,max_tokens=0,**kwargs):
+        return await self.generate_json(prompt,system,fallback,max_tokens=max_tokens,**kwargs)
 
 
 class TriggerRecorder:

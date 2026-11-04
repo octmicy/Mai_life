@@ -163,8 +163,8 @@ class GroupObserver:
             "\"summary\":\"不超过180字的公开话题摘要，不公开时给空串\"}\n"
             f"群消息片段：\n{joined}"
         )
-        data=await self.llm.generate_json(prompt,"你是保守的群聊隐私整理器。",fallback,max_tokens=0,
-                                          task_kind="group_judgment",request_type="group_judgment")
+        data=await self.llm.generate_json_retry(prompt,"你是保守的群聊隐私整理器。",fallback,max_tokens=0,
+                                                task_kind="group_judgment",request_type="group_judgment")
         if not isinstance(data,dict):return fallback
         topic=" ".join(str(data.get("topic") or "").split())[:120]
         topic=re.sub(r"@\S+|https?://\S+|(?<!\d)\d{5,}(?!\d)","[已隐去]",topic)

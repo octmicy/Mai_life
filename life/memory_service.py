@@ -160,7 +160,7 @@ class MemoryService:
             "只返回JSON：{\"has_date\":true/false,\"event_name\":\"\",\"date_text\":\"\","
             "\"suggested_date\":\"YYYY-MM-DD或空\",\"confidence\":0到1,\"recurrence\":\"none或annual\"}。"
         )
-        result=await self.llm.generate_json(
+        result=await self.llm.generate_json_retry(
             prompt,"你只做日期信息抽取，不回复用户。",{},max_tokens=0,
             task_kind="date_analysis",request_type="important_date_analysis",
         )
@@ -261,7 +261,7 @@ class MemoryService:
                 f"根据以下{self.bot_name}自己的生活数据写一篇第一人称抽象日记。不得补写聊天原句、用户姓名、群名、账号、密码或朋友隐私。"
                 "互动数据只有数量，不能猜测聊天内容。返回JSON：title、content、mood_summary。\n"+serialized
             )
-            raw=await self.llm.generate_json(
+            raw=await self.llm.generate_json_retry(
                 prompt,"你写克制、自然的私人日记，只输出合法JSON。",fallback,max_tokens=0,
                 task_kind="diary",request_type="daily_diary",
             )

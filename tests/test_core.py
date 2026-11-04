@@ -950,6 +950,52 @@ class LLMRouteTests(unittest.TestCase):
         self.assertNotIn("task_name", captured["extra"])
 
 
+class LLMRetryTests(unittest.IsolatedAsyncioTestCase):
+    """v1.25.0：generate_json_retry——瞬时失败退避重试、耗尽回退/抛错、attempts=1 等价直调。"""
+
+    class _FlakyLLM:
+        def __init__(self, failures: int):
+            self.failures = failures; self.calls = 0
+        async def generate(self, prompt, model="", temperature=None, max_tokens=None, **kwargs):
+            self.calls += 1
+            if self.calls <= self.failures:
+                return {"success": False, "error": "timeout模拟"}
+            return {"success": True, "response": '{"ok":1}'}
+
+    @staticmethod
+    def _service(llm):
+        class Ctx: pass
+        ctx = Ctx(); ctx.llm = llm; ctx.logger = DummyLogger()
+        return LLMService(ctx, MaiLifeSettings(), store=None)
+
+    async def test_retry_recovers_after_transient_failures(self):
+        llm = self._FlakyLLM(failures=2)
+        result = await self._service(llm).generate_json_retry("p", "s", {"fallback": True},
+                                                              attempts=3, backoff=(0, 0))
+        self.assertEqual(result, {"ok": 1})
+        self.assertEqual(llm.calls, 3)
+
+    async def test_retry_exhausts_to_fallback(self):
+        llm = self._FlakyLLM(failures=99)
+        result = await self._service(llm).generate_json_retry("p", "s", {"fallback": True},
+                                                              attempts=3, backoff=(0, 0))
+        self.assertEqual(result, {"fallback": True})
+        self.assertEqual(llm.calls, 3)
+
+    async def test_retry_raise_on_failure_propagates(self):
+        llm = self._FlakyLLM(failures=99)
+        with self.assertRaises(RuntimeError):
+            await self._service(llm).generate_json_retry("p", "s", {"fallback": True},
+                                                         attempts=2, backoff=(0, 0), raise_on_failure=True)
+
+    async def test_attempts_one_is_direct_call(self):
+        llm = self._FlakyLLM(failures=1)
+        result = await self._service(llm).generate_json_retry("p", "s", {"fallback": True},
+                                                              attempts=1, backoff=(0, 0))
+        self.assertEqual(result, {"fallback": True})
+        self.assertEqual(llm.calls, 1)
+
+
 class V1236JsonFailureCounterTests(unittest.IsolatedAsyncioTestCase):
     """v1.23.6 P7：JSON 解析失败按「日|任务」内存计数，webui_usage 透出。"""
 

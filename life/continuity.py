@@ -32,7 +32,7 @@ class ContinuityService:
             "\n请只返回JSON：{\"intent\":\"当前主要意图\",\"unresolved_topics\":[\"最多5个尚未结束的话题\"]}。"
             "已自然结束、纯寒暄或无法确认的话题不要保留。"
         )
-        result=await self.llm.generate_json(
+        result=await self.llm.generate_json_retry(
             prompt,"你只整理会话连续性元数据，不回答用户消息。",{},max_tokens=0,
             task_kind="continuity",request_type="continuity",
         )

@@ -24,6 +24,7 @@ class SpyLLM:
     def __init__(self):self.calls=0
     def task_available(self,kind):return True
     async def generate_json(self,*args,**kwargs):self.calls+=1; return {"public":True,"score":1,"topic":"测试"}
+    async def generate_json_retry(self,*args,**kwargs):return await self.generate_json(*args,**kwargs)
     async def generate(self,*args,**kwargs):self.calls+=1; return "摘要"
 
 

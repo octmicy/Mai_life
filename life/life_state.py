@@ -235,7 +235,7 @@ class LifeStateEngine:
                     "生成克制自然的醒后梦境，"
                     f"返回JSON：summary为40到120字摘要，fragments为最多{count}个短片段，mood为calm/warm/uneasy之一。"
                     "不要解释，不要写成预言，不要强行出现用户，也不要制造重大健康事件。")
-            raw=await self.llm.generate_json(
+            raw=await self.llm.generate_json_retry(
                 prompt,"你只输出合法JSON格式的梦境记录。",fallback,max_tokens=0,
                 task_kind="dream",request_type="dream",
             )

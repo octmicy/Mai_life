@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.24.10"
+PLUGIN_VERSION = "1.25.0"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -513,11 +513,6 @@ class MemorySettings(PluginConfigBase):
         json_schema_extra=_ui("启用抽象日记", "只使用生活节点、梦境和互动数量，不复制聊天原文。", 5,
                               label_en="Enable Abstract Diary", hint_en="Uses life events and interaction counts, never chat transcripts."),
     )
-    diary_hour: int = Field(
-        default=2, ge=0, le=23, description="每天结算前一天日记的小时。",
-        json_schema_extra=_ui("日记结算时间（小时）", "默认凌晨 2 点，在 3 点生成新日程之前完成。", 6,
-                              label_en="Diary Settlement Hour", hint_en="Hour used to settle the previous day."),
-    )
     diary_max_chars: int = Field(
         default=1200, ge=300, le=4000, description="单篇日记正文最大字符数。",
         json_schema_extra=_ui("日记长度上限", "限制日记和后续 Prompt 占用。", 7,
@@ -792,6 +787,14 @@ class GroupChatSettings(PluginConfigBase):
     relay_enabled: bool = Field(default=False, description="社交转述总开关。",
         json_schema_extra=_ui("启用社交转述", "默认关闭；只处理白名单里开了「观察」的 QQ 群。", 10,
                               label_en="Enable Social Relay", hint_en="Disabled by default and limited to allowlisted groups."))
+    catchup_enabled: bool = Field(default=False, description="睡醒补读群消息：静默期留痕，晨间生成补读摘要并在群被动轮注入知晓。默认关闭。",
+        json_schema_extra=_ui("睡醒补读群消息", "默认关闭。开启后群静默期留痕（每群环形 120 条、保留 24h），自然醒后生成补读摘要，下次群被动轮一次性注入知晓。", 10,
+                              label_en="Wake-up Group Catch-up",
+                              hint_en="Record group messages during quiet hours and summarize them after waking. Off by default."))
+    catchup_reply_enabled: bool = Field(default=False, description="晨间补读事后回复：夜间消息明确指明 bot 时，睡醒后由 Planner 在群里回应。需先开启补读。默认关闭。",
+        json_schema_extra=_ui("补读事后回复", "默认关闭；需先开启「睡醒补读群消息」。仅在夜间消息明确指明（@或点名）麦麦时，睡醒后触发一次群内回应。", 10,
+                              label_en="Catch-up Morning Reply",
+                              hint_en="Reply in the group after waking only when night messages explicitly mention the bot. Requires catch-up enabled. Off by default."))
     observation_wait_seconds: float = Field(default=3.0, ge=0.5, le=20, description="群聊话题收口等待。",
         json_schema_extra=_ui("群话题等待（秒）", "使用独立群缓冲，收口群内连发再判定话题。", 11,
                               label_en="Group Topic Wait (sec)", hint_en="Wait window before judging a group topic."))

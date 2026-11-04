@@ -145,6 +145,21 @@ class GroupObserver:
         queued=await self._queue_private_share(item,now)
         return {"status":"saved","observation_id":observation_id,"private_share_queued":queued}
 
+    async def summarize_catchup(self,snippets:list[str])->str:
+        """睡醒补读摘要（v1.25.0）：复用群判定任务（含敏感过滤）；失败/不可用降级为原文拼接。
+
+        仅供本群语境的晨间知晓使用——判定为不公开话题时同样降级拼接（麦麦本就是群成员）。
+        """
+        if not snippets:return ""
+        try:
+            digest=await self._summarize(list(snippets)[:80])
+            summary=str(digest.get("summary") or "") if isinstance(digest,dict) else ""
+            if summary:
+                return re.sub(r"@\S+|https?://\S+|(?<!\d)\d{5,}(?!\d)","[已隐去]",summary)[:1200]
+        except Exception as exc:
+            self.logger.warning(f"[MaiLife] 补读摘要生成失败，降级原文拼接: {exc}")
+        return "；".join(str(item)[:80] for item in snippets[:10])[:1200]
+
     async def _summarize(self,snippets:list[str])->dict[str,Any]:
         """在本地敏感过滤后一次调用完成判定与摘要；模型输出还会再次经过相同边界。"""
         joined="\n".join(snippets)[:5000]
@@ -163,8 +178,8 @@ class GroupObserver:
             "\"summary\":\"不超过180字的公开话题摘要，不公开时给空串\"}\n"
             f"群消息片段：\n{joined}"
         )
-        data=await self.llm.generate_json(prompt,"你是保守的群聊隐私整理器。",fallback,max_tokens=0,
-                                          task_kind="group_judgment",request_type="group_judgment")
+        data=await self.llm.generate_json_retry(prompt,"你是保守的群聊隐私整理器。",fallback,max_tokens=0,
+                                                task_kind="group_judgment",request_type="group_judgment")
         if not isinstance(data,dict):return fallback
         topic=" ".join(str(data.get("topic") or "").split())[:120]
         topic=re.sub(r"@\S+|https?://\S+|(?<!\d)\d{5,}(?!\d)","[已隐去]",topic)

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -77,17 +78,78 @@ class ScheduleService:
         self._personality=str(personality or "")
 
     def _template(self) -> dict[str, Any]:
+        """读取并校验用户日程模板；结果按（路径,mtime）缓存。
+
+        解析失败或字段校验失败→整份弃用返回 {}（回退内置骨架，warning 逐条列出问题）；
+        状态写入 self._template_state 供 template_status() 展示。
+        """
         root=self.plugin_dir.resolve()
         path=(root/str(self.config.schedule.template_file or "mai_template.json")).resolve()
         try:path.relative_to(root)
         except ValueError:
             self.logger.warning("[MaiLife] 日程模板必须位于插件目录内，已使用内置 fallback")
-            return {}
+            self._template_state="missing"; return {}
+        if not path.exists():
+            self._template_state="missing"; return {}
+        try:mtime=path.stat().st_mtime
+        except OSError:mtime=0.0
+        cached=getattr(self,"_template_cache",None)
+        if cached is not None and cached[0]==(path,mtime):
+            self._template_state=cached[1]; return cached[2]
         try:
             data=json.loads(path.read_text(encoding="utf-8-sig"))
-            return data if isinstance(data,dict) else {}
+            if not isinstance(data,dict):raise ValueError("顶层必须是对象 {workday:[...],weekend:[...]}")
         except Exception as exc:
-            self.logger.warning(f"[MaiLife] 日程模板读取失败: {exc}"); return {}
+            self.logger.warning(f"[MaiLife] 日程模板读取失败，已整份弃用并回退内置骨架: {exc}")
+            self._template_state="invalid: 1 个问题"; self._template_cache=(path,mtime,self._template_state,{}); return {}
+        problems=self._validate_template(data)
+        if problems:
+            self.logger.warning("[MaiLife] 日程模板校验失败，已整份弃用并回退内置骨架：\n- " + "\n- ".join(problems))
+            self._template_state=f"invalid: {len(problems)} 个问题"; self._template_cache=(path,mtime,self._template_state,{}); return {}
+        self._template_state="ok"; self._template_cache=(path,mtime,"ok",data)
+        return data
+
+    def template_status(self) -> str:
+        """模板健康状态（WebUI/命令展示用）：ok / missing / invalid:<n>个问题。"""
+        self._template()
+        return str(getattr(self,"_template_state","missing"))
+
+    @staticmethod
+    def _validate_template(data:dict[str,Any])->list[str]:
+        """用户日程模板字段级校验；返回问题清单（空=通过）。用户改坏的常见点全在这拦下。"""
+        problems:list[str]=[]
+        if not isinstance(data,dict):return ["顶层必须是对象 {workday:[...],weekend:[...]}"]
+        kinds={"meal","work","study","travel","leisure","sleep","nap","rest"}
+        hhmm=re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+        def minutes(value:str)->int:return 24*60 if value=="24:00" else int(value[:2])*60+int(value[3:])
+        for section in ("workday","weekend"):
+            nodes=data.get(section)
+            if nodes is None:problems.append(f"缺少 {section} 数组"); continue
+            if not isinstance(nodes,list):problems.append(f"{section} 必须是数组"); continue
+            for index,node in enumerate(nodes,start=1):
+                tag=f"{section}[{index}]"
+                if not isinstance(node,dict):problems.append(f"{tag} 必须是对象"); continue
+                for field in ("start","end","kind","summary","location","energy_load","shareability"):
+                    if field not in node:problems.append(f"{tag} 缺字段 {field}")
+                start=str(node.get("start") or ""); end=str(node.get("end") or "")
+                for name,value in (("start",start),("end",end)):
+                    if value!="24:00" and not hhmm.match(value):problems.append(f"{tag}.{name} 不是合法 HH:MM（{value!r}）")
+                if (hhmm.match(start) or start=="24:00") and (hhmm.match(end) or end=="24:00"):
+                    if minutes(start)>=minutes(end):problems.append(f"{tag} start 必须早于 end")
+                if str(node.get("kind") or "") not in kinds:
+                    problems.append(f"{tag}.kind 非法（{node.get('kind')!r}），只能是 {'/'.join(sorted(kinds))}")
+                for name,low,high in (("energy_load",-8,8),("shareability",0,1)):
+                    value=node.get(name)
+                    if isinstance(value,bool) or not isinstance(value,(int,float)) or not (low<=value<=high):
+                        problems.append(f"{tag}.{name} 必须是 {low}~{high} 的数字（收到 {value!r}）")
+                if not str(node.get("summary") or "").strip():problems.append(f"{tag}.summary 不能为空")
+        return problems
+
+    def _schedule_reference(self,day:str,weekend:bool)->list[dict[str,Any]]:
+        """提示词的「参考节奏」：用户模板可用时用模板；缺失/校验失败回退内置骨架（永远合法）。"""
+        template=self._template()
+        nodes=template.get("weekend" if weekend else "workday")
+        return nodes if isinstance(nodes,list) and nodes else self._fallback(day,weekend)
 
     def _fallback(self, day: str, weekend: bool) -> list[dict[str, Any]]:
         builtin=[
@@ -98,8 +160,10 @@ class ScheduleService:
             {"start":"13:00","end":"13:40","kind":"nap","summary":"短暂午休","location":"卧室","energy_load":3,"shareability":0.05},
             {"start":"13:40","end":"18:00","kind":"study","summary":"整理这周的读书笔记和课程作业","location":"书桌前","energy_load":-5,"shareability":0.25},
             {"start":"18:00","end":"19:00","kind":"meal","summary":"做晚饭","location":"厨房","energy_load":-1,"shareability":0.55},
-            {"start":"19:00","end":"23:30","kind":"leisure","summary":"拼完上次没拼完的拼图","location":"家里","energy_load":-3,"shareability":0.55},
-            {"start":"23:30","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05},
+            {"start":"19:00","end":"22:30","kind":"leisure","summary":"拼完上次没拼完的拼图","location":"家里","energy_load":-3,"shareability":0.55},
+            # v1.25.0 日记进日程：内置骨架自带日记节点——离线合成日也能满足「框架排了日记节点才写」。
+            {"start":"22:30","end":"23:00","kind":"rest","summary":"在书桌前写今天的日记","location":"书桌前","energy_load":0,"shareability":0.1},
+            {"start":"23:00","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室","energy_load":1,"shareability":0.05},
         ]
         template=self._template(); key="weekend" if weekend else "workday"; raw=template.get(key)
         # 模板即使是数组也可能缺睡眠或进餐；校验失败必须回到稳定内置骨架。
@@ -277,7 +341,7 @@ class ScheduleService:
                 f"身份落实：{self._identity_note(personality)}\n"
                 f"{self._state_summary(state)}\n"
                 f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："
-                f"{json.dumps(self._template().get('weekend' if weekend else 'workday',[]),ensure_ascii=False)}\n"
+                f"{json.dumps(self._schedule_reference(day,weekend),ensure_ascii=False)}\n"
                 f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁。"
                 f"{variety}\n"
                 "要求：\n"
@@ -294,6 +358,9 @@ class ScheduleService:
                    "靠窗吧台'，不要只写'图书馆''便利店'）；休闲段 summary 必须点名具体的游戏/作品/事情"
                    "（例如'开两把星铁的每日''把《三体》看到黑暗森林篇'），禁止只写'玩游戏''看书'这类泛称。\n"
                    if self.config.schedule.detailed_schedule else "")
+                + (f"{7 if self.config.schedule.detailed_schedule else 6}) 晚上必须包含一个写日记的节点："
+                   "kind 用 rest 或 leisure，summary 明确含「写日记」（例如'23:00 在书桌前写今天的日记'），"
+                   "时长 20~40 分钟。\n")
                 + "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         nodes=[]

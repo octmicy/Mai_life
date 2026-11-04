@@ -1,4 +1,4 @@
-"""Mai_life v1.24.10 插件入口。"""
+"""Mai_life v1.25.0 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -72,6 +72,10 @@ MOMENT_HINT_DAILY_MAX=3           # 每用户每日注入上限（两通道共�
 MOMENT_STATE_COOLDOWN_HOURS=12    # 状态触发通道冷却（无对话信号时的低频引导）
 MOMENT_JUDGE_COOLDOWN_MINUTES=60  # 弱信号 LLM 判定冷却
 MOMENT_JUDGE_WINDOW_MAX=2         # 冷却窗口内至多判定次数
+# 维护 tick 主链步骤超时（秒）：超时跳过该步骤，下一 tick 幂等重试——网络挂起不串行阻塞整条链。
+MAINTENANCE_SCHEDULE_TIMEOUT=120  # 日程框架生成
+MAINTENANCE_SCENE_TIMEOUT=90      # 场景细化
+MAINTENANCE_MEMORY_TIMEOUT=120    # 每日记忆（日记/日期/清理）
 def _tool_definition_names(definitions:list[Any])->set[str]:
     """从 Planner 工具定义提取工具名：兼容 {"function":{"name":...}}（宿主序列化形态）与平铺 {"name":...}。"""
     names=set()
@@ -308,6 +312,10 @@ class MaiLifePlugin(MaiBotPlugin):
         self._config_save_lock=asyncio.Lock()
         # WebUI 配置保存的落盘路径；空串=插件目录下 config.toml，测试指向临时文件。
         self._config_toml_path:str=""
+        # 睡醒补读运行态：触发标记（群→日）与待注入摘要（会话→{day,text}），内存态、重载丢失可接受。
+        self._catchup_done:dict[str,str]={}
+        self._group_catchup_digest:dict[str,dict[str,str]]={}
+        self._last_sleep_phase:str=""
         self._drawpic_loaded:bool|None=None; self._drawpic_check_warned=False
         self._moment_hints:dict[str,dict[str,Any]]={}; self._moment_judges:dict[str,list[float]]={}
         self._continuity:Optional[ContinuityService]=None
@@ -431,6 +439,7 @@ class MaiLifePlugin(MaiBotPlugin):
         # 配置保存不得清空主动/转述任务注册表：WebUI 每次保存都重置会让进行中的任务失去归因。
         self._active_tasks.update_retention(int(self.config.context.turn_expire_seconds))
         self._reply_confirmations.clear(); self._group_turns.clear()
+        self._catchup_done.clear(); self._group_catchup_digest.clear()
         self._group_sessions.clear()
         if self._group_observer:await self._group_observer.reset()
         # 热更新按 scope 分发到各服务：只有 self 会替换插件配置实例，此时才全量下发；
@@ -549,17 +558,33 @@ class MaiLifePlugin(MaiBotPlugin):
             except Exception as exc:self.ctx.logger.error(f"[MaiLife] 书柜创作巡检异常: {exc}")
 
     async def _maintenance_tick(self,force_weather:bool=False,*,allow_weather_network:bool=True)->None:
-        """串行维护天气、日程细化、离线状态、记忆、关系结算和运行记录清理。"""
+        """维护 tick：并行相（天气/联动/记忆上下文/关系/清理）+ 串行主链（日程→细化→睡前→相位→快照→每日记忆）。
+
+        并行相各支失败只 warning 不拖链；主链 LLM 步骤带步骤级超时，超时跳过等下一 tick
+        幂等重试（ensure_day/expand_due/ensure_daily 均可重入）——网络挂起不再串行阻塞整条链。
+        """
         if not self._ready:return
         async with self._maintenance_lock:
             assert self._env and self._schedule and self._store and self._state and self._memory
-            now=self._env.now(); weather=await self._env.refresh_weather(force=force_weather,allow_network=allow_weather_network)
-            if self.config.linkage.drawpic_enabled:await self._check_drawpic()  # 覆盖运行中途安装/卸载
-            memory_context=await self._memory.schedule_context(now)
-            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),memory_context=memory_context,
-                                                  environment=self._env.snapshot(now))
+            now=self._env.now()
+            weather,memory_context=await self._maintenance_parallel(now,force_weather,allow_weather_network)
+            # 主链 1：当日框架。超时→本次跳过细化与每日记忆（都依赖框架），下一 tick 幂等重试。
+            try:
+                nodes=await asyncio.wait_for(
+                    self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),
+                                              memory_context=memory_context,environment=self._env.snapshot(now)),
+                    timeout=MAINTENANCE_SCHEDULE_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 日程生成超时，本 tick 跳过细化与每日记忆")
+                return
             context=await self._schedule.context(now); state=await self._store.get_state()
-            await self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)); context=await self._schedule.context(now)
+            try:
+                await asyncio.wait_for(
+                    self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)),
+                    timeout=MAINTENANCE_SCENE_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 场景细化超时，下一 tick 重试")
+            context=await self._schedule.context(now)
             last_updated=float(state.get("last_updated_at") or now.timestamp())
             simulation_start=datetime.fromtimestamp(max(last_updated,(now-timedelta(hours=72)).timestamp()),tz=now.tzinfo)
             # 睡前流程先于相位推进：静默刚达标时先更新 defer/回睡，advance 才不会按旧值提前睡过去。
@@ -568,13 +593,91 @@ class MaiLifePlugin(MaiBotPlugin):
             timeline=await self._schedule.state_timeline(simulation_start,now)
             await self._state.advance_timeline(now,timeline,context.get("current"),context.get("scene"))
             # 逐小时状态快照：INSERT OR IGNORE 保证每小时只落一条，供长期动力学统计。
-            await self._store.save_state_snapshot(now.timestamp(),await self._store.get_state())
-            await self._memory.ensure_daily(now)
-            await self._settle_relationships(now)
-            await self._store.cleanup_runtime_records(
+            state_after=await self._store.get_state()
+            await self._store.save_state_snapshot(now.timestamp(),state_after)
+            self._check_wake_catchup(now,state_after)
+            try:
+                await asyncio.wait_for(self._memory.ensure_daily(now,current_node=context.get("current")),
+                                       timeout=MAINTENANCE_MEMORY_TIMEOUT)
+            except TimeoutError:
+                self.ctx.logger.warning("[MaiLife] 每日记忆（日记/日期）超时，下一 tick 重试")
+
+    def _check_wake_catchup(self,now:datetime,state:dict[str,Any])->None:
+        """晨间自然醒来（sleep/nap→awake，04:00-11:00）且补读开启时，派发一次性补读任务（transient 不阻塞 tick）。"""
+        phase=str(state.get("sleep_phase") or "")
+        prev=self._last_sleep_phase
+        self._last_sleep_phase=phase
+        if not self.config.group.catchup_enabled:return
+        if prev not in {"sleep","nap"} or phase!="awake":return
+        if not (4<=now.hour<=11):return
+        self._spawn_transient(self._catchup_after_wake(now),f"mai-life-catchup-{now.date().isoformat()}")
+
+    async def _catchup_after_wake(self,now:datetime)->None:
+        """晨间补读：汇总静默期留痕的群消息生成摘要待注入；夜间消息明确点名 bot 时触发一次事后回复。
+
+        主人决策：知晓与回复双开关默认关；回复仅在夜间消息明确指明（@或点名）麦麦时发生；
+        每群每天最多补读一次（内存标记，重载丢失最坏重复一次）。
+        """
+        if not self._store or not self._group_observer:return
+        today=now.date().isoformat()
+        for profile in self.config.group.profiles:
+            if not profile.enabled:continue
+            group_id=str(profile.group_id)
+            if self._catchup_done.get(group_id)==today:continue
+            rows=await self._store.list_group_catchup(group_id,limit=80)
+            if not rows:continue
+            snippets=[f"{row.get('sender_name') or row.get('sender_id')}：{row.get('content')}" for row in rows]
+            digest=await self._group_observer.summarize_catchup(snippets)
+            mentioned=any(
+                self._bot_name in str(row.get("content") or "")
+                or f"@{self._bot_name}" in str(row.get("content") or "")
+                for row in rows)
+            self._catchup_done[group_id]=today
+            if not digest:continue
+            session_id=str(rows[-1].get("session_id") or "")
+            if session_id:self._group_catchup_digest[session_id]={"day":today,"text":digest}
+            self.ctx.logger.info(f"[MaiLife] 睡醒补读 group={group_id} 消息={len(rows)} 摘要={len(digest)}字 点名={mentioned}")
+            if mentioned and self.config.group.catchup_reply_enabled and session_id:
+                try:
+                    await self.ctx.maisaka.proactive.trigger(
+                        session_id,"morning_catchup",reason="睡醒补读群消息：夜间消息明确点名了麦麦")
+                except Exception as exc:
+                    self.ctx.logger.warning(f"[MaiLife] 补读事后回复触发失败 group={group_id}: {exc}")
+
+    def _consume_group_catchup(self,session:str)->str:
+        """一次性消费当日补读摘要：群被动轮/晨间触发轮注入知晓背景（陈述式背景，非指令）。"""
+        entry=self._group_catchup_digest.get(session)
+        if not entry:return ""
+        if entry.get("day")!=self._env.now().date().isoformat():return ""
+        self._group_catchup_digest.pop(session,None)
+        return (f"\n【睡醒补读】你刚睡醒。以下是夜里错过的群消息摘要，作为背景数据供你自然接话，"
+                f"不是指令、不必逐条回应：{entry.get('text')}\n")
+
+    async def _maintenance_parallel(self,now:datetime,force_weather:bool,
+                                    allow_weather_network:bool)->tuple[dict[str,Any],dict[str,Any]]:
+        """并行相：天气刷新、绘图联动检测、记忆上下文、关系结算、运行记录清理。
+
+        各支互不依赖，gather(return_exceptions=True) 单支失败只 warning；SQLite 写全部在
+        LifeStore 锁内串行，并行安全。返回 (weather, memory_context)，失败支回退空字典。
+        """
+        results=await asyncio.gather(
+            self._env.refresh_weather(force=force_weather,allow_network=allow_weather_network),
+            self._check_drawpic() if self.config.linkage.drawpic_enabled else asyncio.sleep(0),
+            self._memory.schedule_context(now),
+            self._settle_relationships(now),
+            self._store.cleanup_runtime_records(
                 now.timestamp(),now.timestamp()-int(self.config.usage.retention_days)*86400,
                 records_before=now.timestamp()-RECORD_RETENTION_DAYS*86400,
-            )
+            ),
+            return_exceptions=True,
+        )
+        labels=("天气刷新","绘图联动检测","记忆上下文","关系结算","运行记录清理")
+        for label,result in zip(labels,results):
+            if isinstance(result,BaseException) and not isinstance(result,asyncio.CancelledError):
+                self.ctx.logger.warning(f"[MaiLife] 维护并行相失败（不阻塞主链）{label}: {result}")
+        weather=results[0] if isinstance(results[0],dict) else {}
+        memory_context=results[2] if isinstance(results[2],dict) else {}
+        return weather,memory_context
 
     async def _settle_relationships(self,now:datetime)->None:
         """按自然日补算离线期间关系变化，最多回看一年即可覆盖温度下限。
@@ -995,6 +1098,15 @@ class MaiLifePlugin(MaiBotPlugin):
             group_allowed,group_reason=self._rest.decide_group(
                 direct_text(merged),self._env.now(),group_id,group_segment)
             if not group_allowed:
+                # 睡醒补读留痕（主人决策：环形 120 条/群、24h 保留；主开关关闭不写）。
+                if self.config.group.catchup_enabled:
+                    sender_id,sender_name=sender_identity(merged)
+                    text=direct_text(merged).strip()
+                    if not text:
+                        kinds=media_types(merged)
+                        if kinds:text="["+"、".join(kinds)+"]"
+                    await self._store.add_group_catchup(
+                        group_id or session,session,mid,uid,sender_name,text,self._env.now().timestamp())
                 self.ctx.logger.info(f"[MaiLife] 群休息闸门阻断 group={group_id or session} user={uid} reason={group_reason}")
                 return {"action":"abort"}
         if self.config.group.turn_enabled:
@@ -1215,6 +1327,8 @@ class MaiLifePlugin(MaiBotPlugin):
             suffix+=await self._relay.prompt_context(session,active.task_id)
         # 麦麦绘图联动：对话/状态触发的生活分享引导（独立 suffix，不受 _clip(4000) 截断影响）。
         suffix+=self._moment_guide_note(session,payload,active,group_passive,kwargs)
+        # 睡醒补读知晓（主人决策）：下一次群被动轮/晨间触发轮一次性注入，不过 _clip 截断。
+        suffix+=self._consume_group_catchup(session)
         if not suffix:return {"action":"continue"}
         return self._inject_planner_context(kwargs,suffix)
 
@@ -1701,12 +1815,12 @@ class MaiLifePlugin(MaiBotPlugin):
         sent=await self._send_command_menu(kwargs,notice)
         return False,"未知子命令，已显示菜单" if sent[0] else sent[1],2
 
-    @Command(name="/麦麦状态",pattern=r"^(?:/麦麦状态|/mai_status)(?=\s|$)",description="查看麦生活与消息管线状态")
+    @Command(name="/麦麦状态",pattern=r"(?:/麦麦状态|/mai_status)(?=\s|$)",description="查看麦生活与消息管线状态")
     async def cmd_status(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command(kwargs,await self._status_report())
 
-    @Command(name="/麦麦添加日期",pattern=r"^(?:/麦麦添加日期|/mai_date_add)\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
+    @Command(name="/麦麦添加日期",pattern=r"(?:/麦麦添加日期|/mai_date_add)\s+(?P<event_date>\d{4}-\d{2}-\d{2})\s+(?P<event_name>.+)$",description="添加当前用户的重要日期")
     async def cmd_date_add(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
@@ -1724,14 +1838,14 @@ class MaiLifePlugin(MaiBotPlugin):
         saved=await self._store.add_important_date(uid,name,parsed.isoformat(),recurrence,"manual",self._env.now().timestamp()) if self._store and self._env and name else 0
         return await self._send_command(kwargs,f"已记录：{parsed.isoformat()} {name}{truncated}" if saved else "未能添加日期，请检查输入。")
 
-    @Command(name="/麦麦删除日期",pattern=r"^(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
+    @Command(name="/麦麦删除日期",pattern=r"(?:/麦麦删除日期|/mai_date_remove)\s+(?P<date_id>\d+)$",description="删除当前用户的重要日期")
     async def cmd_date_remove(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
         removed=await self._store.remove_important_date(int(groups.get("date_id") or 0),uid) if self._store else False
         return await self._send_command(kwargs,"已删除该日期。" if removed else "没有找到属于你的该日期。")
 
-    @Command(name="/麦麦确认日期",pattern=r"^(?:/麦麦确认日期|/mai_date_confirm)\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
+    @Command(name="/麦麦确认日期",pattern=r"(?:/麦麦确认日期|/mai_date_confirm)\s+(?P<candidate_id>\d+)(?:\s+(?P<event_date>\d{4}-\d{2}-\d{2}))?$",description="确认当前用户的日期候选")
     async def cmd_date_confirm(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or ""); groups=kwargs.get("matched_groups") if isinstance(kwargs.get("matched_groups"),dict) else {}
         if not await self._command_user(kwargs):return await self._send_command(kwargs,self._profile_required_notice(uid))
@@ -1743,7 +1857,7 @@ class MaiLifePlugin(MaiBotPlugin):
         saved=await self._store.confirm_date_candidate(candidate_id,uid,parsed.isoformat(),self._env.now().timestamp()) if self._store and self._env else 0
         return await self._send_command(kwargs,f"已确认日期 #{saved}：{parsed.isoformat()}。" if saved else "没有找到属于你的待确认项。")
 
-    @Command(name="/麦麦立即创作",pattern=r"^(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
+    @Command(name="/麦麦立即创作",pattern=r"(?:/麦麦立即创作|/mai_create_now)(?=\s|$)",description="管理员立即执行一次创作判断")
     async def cmd_create_now(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1755,7 +1869,7 @@ class MaiLifePlugin(MaiBotPlugin):
         )
         return await self._send_command(kwargs,_creation_result_text(result))
 
-    @Command(name="/麦麦转述",pattern=r"^(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
+    @Command(name="/麦麦转述",pattern=r"(?:/麦麦转述|/mai_relay)\s+(?P<group_id>\d+)\s+(?P<relay_content>.+)$",description="主人或管理员按 QQ 群号发起转述")
     async def cmd_relay(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1767,7 +1881,7 @@ class MaiLifePlugin(MaiBotPlugin):
         }
         return await self._send_command(kwargs,str(result.get("message") if result.get("success") else result.get("error")))
 
-    @Command(name="/麦麦配置",pattern=r"^(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦生活配置摘要")
+    @Command(name="/麦麦配置",pattern=r"(?:/麦麦配置|/mai_config)(?=\s|$)",description="查看麦生活配置摘要")
     async def cmd_config(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         group_gate_mode="按设定时间" if self.config.group.gate_mode=="time_window" else "按日程判断"
@@ -1784,12 +1898,12 @@ class MaiLifePlugin(MaiBotPlugin):
               f"模型任务：{self.config.models.fast_task}/{self.config.models.reasoning_task}")
         return await self._send_command(kwargs,text)
 
-    @Command(name="/麦麦帮助",pattern=r"^(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦生活指令")
+    @Command(name="/麦麦帮助",pattern=r"(?:/麦麦帮助|/mai_help)(?=\s|$)",description="查看麦生活指令")
     async def cmd_help(self,**kwargs:Any)->tuple[bool,str,int]:
         if not await self._command_access(kwargs):return await self._send_command(kwargs,PRIVATE_COMMAND_ACCESS_DENIED)
         return await self._send_command_menu(kwargs)
 
-    @Command(name="/麦麦重生日程",pattern=r"^(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
+    @Command(name="/麦麦重生日程",pattern=r"(?:/麦麦重生日程|/mai_regenerate_schedule)(?=\s|$)",description="管理员重新生成今日日程")
     async def cmd_regenerate(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -1802,7 +1916,7 @@ class MaiLifePlugin(MaiBotPlugin):
                                               environment=self._env.snapshot(now))
         return await self._send_command(kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
 
-    @Command(name="/麦麦休息测试",pattern=r"^(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
+    @Command(name="/麦麦休息测试",pattern=r"(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
     async def cmd_rest_test(self,**kwargs:Any)->tuple[bool,str,int]:
         uid=str(kwargs.get("user_id") or "")
         if not await self._command_access(kwargs) or not await self._is_owner_or_admin(uid):
@@ -2237,6 +2351,7 @@ class MaiLifePlugin(MaiBotPlugin):
             scenes=await self._store.get_scenes_by_framework_ids([str(node.get("id") or "") for node in nodes])
             context=await self._schedule.context(now); scene=context.get("scene") or {}
             tomorrow=(now+timedelta(days=1)).date().isoformat()
+            yesterday=(now-timedelta(days=1)).date().isoformat()
             return {"day":day,"generated_at":now.isoformat(timespec="seconds"),
                     "current":_node_view(context.get("current") or {}),
                     "next":{"kind_zh":_SCHEDULE_KIND_ZH.get(str(nxt.get("kind") or ""),str(nxt.get("kind") or "") or "未知"),
@@ -2260,7 +2375,14 @@ class MaiLifePlugin(MaiBotPlugin):
                                           "kind_zh":_SCHEDULE_KIND_ZH.get(str(node.get("kind") or ""),str(node.get("kind") or "") or "未知"),
                                           "summary":str(node.get("summary") or ""),
                                           "location":str(node.get("location") or "")}
-                                         for node in await self._store.get_framework(tomorrow)]}}
+                                         for node in await self._store.get_framework(tomorrow)]},
+                    "yesterday":{"day":yesterday,
+                                 "nodes":[{"start":hhmm(int(node.get("start_minute") or 0)),
+                                           "end":hhmm(int(node.get("end_minute") or 0)),
+                                           "kind_zh":_SCHEDULE_KIND_ZH.get(str(node.get("kind") or ""),str(node.get("kind") or "") or "未知"),
+                                           "summary":str(node.get("summary") or ""),
+                                           "location":str(node.get("location") or "")}
+                                          for node in await self._store.get_framework(yesterday)]}}
         except Exception as exc:
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 
@@ -2553,6 +2675,8 @@ class MaiLifePlugin(MaiBotPlugin):
                              "summary_retention_hours":int(cfg.group.summary_retention_hours),
                              "relay_pending_seconds":int(cfg.group.relay_pending_seconds),
                              "owner_group_to_private_enabled":_switch(cfg.group.owner_group_to_private_enabled),
+                             "catchup_enabled":_switch(cfg.group.catchup_enabled),
+                             "catchup_reply_enabled":_switch(cfg.group.catchup_reply_enabled),
                              "inactivity_hours":round(float(cfg.group.inactivity_hours),1),
                              "group_share_daily_max":int(cfg.group.group_share_daily_max),
                              "group_share_min_interval_minutes":int(cfg.group.group_share_min_interval_minutes)},
@@ -2562,7 +2686,6 @@ class MaiLifePlugin(MaiBotPlugin):
                               "dream_probability":round(float(cfg.memory.dream_probability),2),
                               "dream_weekly_max":int(cfg.memory.dream_weekly_max),
                               "diary_enabled":_switch(cfg.memory.diary_enabled),
-                              "diary_hour":int(cfg.memory.diary_hour),
                               "diary_max_chars":int(cfg.memory.diary_max_chars),
                               "important_dates_enabled":_switch(cfg.memory.important_dates_enabled),
                               "date_model_analysis_enabled":_switch(cfg.memory.date_model_analysis_enabled),
@@ -2601,7 +2724,8 @@ class MaiLifePlugin(MaiBotPlugin):
                     "schedule":{"generate_hour":int(cfg.schedule.generate_hour),
                                 "detail_lead_minutes":int(cfg.schedule.detail_lead_minutes),
                                 "template_file":str(cfg.schedule.template_file),
-                                "detailed_schedule":_switch(cfg.schedule.detailed_schedule)},
+                                "detailed_schedule":_switch(cfg.schedule.detailed_schedule),
+                                "template_status":(self._schedule.template_status() if self._schedule else "missing")},
                     "proactive":{"enabled":_switch(cfg.proactive.enabled),
                                  "patrol_interval_minutes":int(cfg.proactive.patrol_interval_minutes),
                                  "min_interval_minutes":int(cfg.proactive.min_interval_minutes),
@@ -2758,7 +2882,8 @@ def _command_pattern_res()->tuple[re.Pattern[str],...]:
 
 # 未识别指令兜底：命令形态、以 /麦麦 或 /mai 开头（大小写不敏感）却未命中任何自家命令 pattern。
 _MAI_COMMAND_RES:tuple[re.Pattern[str],...]=_command_pattern_res()
-_SUSPECT_COMMAND_RE=re.compile(r"\s*/(?:麦麦|mai)",re.IGNORECASE)
+# 全角斜杠同样算「像我们的命令」：中文键盘 ／ 极常见，漏进聊天比弹菜单糟。
+_SUSPECT_COMMAND_RE=re.compile(r"\s*[／/](?:麦麦|mai)",re.IGNORECASE)
 
 
 def _raw_command_text(message:dict[str,Any])->str:
@@ -2772,8 +2897,8 @@ def _raw_command_text(message:dict[str,Any])->str:
 
 
 def _matches_own_command(text:str)->bool:
-    """文本是否命中本插件任一命令 pattern（前缀匹配，与 Host 派发的宽松度一致）。"""
-    return any(pattern.match(str(text or "")) for pattern in _MAI_COMMAND_RES)
+    """文本是否命中本插件任一命令 pattern；用 search 与宿主派发语义对齐（宿主 component_registry 用 search）。"""
+    return any(pattern.search(str(text or "")) for pattern in _MAI_COMMAND_RES)
 
 
 def create_plugin()->MaiBotPlugin:return MaiLifePlugin()

@@ -183,7 +183,6 @@ dream_probability = 0.35
 # 达到上限的当晚直接跳过做梦，是对冲连彩的可选保险。
 dream_weekly_max = 0
 diary_enabled = true
-diary_hour = 2
 diary_max_chars = 1200
 important_dates_enabled = true
 

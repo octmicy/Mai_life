@@ -871,6 +871,7 @@
         <h2 class="ml-card-title" id="sched-title">今日生活框架与微场景时间线</h2>
       </div>
       <div class="ml-seg-group">
+        <button type="button" class="ml-seg-btn" id="btn-sched-yesterday">昨日日程</button>
         <button type="button" class="ml-seg-btn active" id="btn-sched-today">今日日程</button>
         <button type="button" class="ml-seg-btn" id="btn-sched-tomorrow">明日预览</button>
       </div>
@@ -1411,20 +1412,21 @@
     if (!sc) return;
 
     const isToday = state.schedTab === 'today';
-    const dayStr = isToday ? sc.day : (sc.tomorrow?.day || '明日');
-    const nodes = isToday ? (sc.nodes || []) : (sc.tomorrow?.nodes || []);
+    const isYesterday = state.schedTab === 'yesterday';
+    const dayStr = isToday ? sc.day : (isYesterday ? (sc.yesterday?.day || '昨日') : (sc.tomorrow?.day || '明日'));
+    const nodes = isToday ? (sc.nodes || []) : (isYesterday ? (sc.yesterday?.nodes || []) : (sc.tomorrow?.nodes || []));
     const curStart = sc.current?.start || '';
     const curEnd = sc.current?.end || '';
 
     document.getElementById('sched-title').textContent =
-      `${isToday ? '今日生活框架与微场景时间线' : '明日生活框架预览'} (${dayStr || '—'})`;
+      `${isYesterday ? '昨日生活框架回顾' : isToday ? '今日生活框架与微场景时间线' : '明日生活框架预览'} (${dayStr || '—'})`;
 
     const ganttEl = document.getElementById('sched-gantt-track');
     const gridEl = document.getElementById('sched-nodes-grid');
 
     if (!nodes.length) {
       ganttEl.innerHTML = '';
-      gridEl.innerHTML = `<div class="ml-empty">${isToday ? '今日暂无日程节点' : '明日日程尚未生成（通常在凌晨自动生成）'}</div>`;
+      gridEl.innerHTML = `<div class="ml-empty">${isToday ? '今日暂无日程节点' : isYesterday ? '昨日没有留下日程记录' : '明日日程尚未生成（通常在凌晨自动生成）'}</div>`;
       return;
     }
 
@@ -1651,18 +1653,15 @@
     });
   });
 
-  // Schedule Today / Tomorrow toggle
-  document.getElementById('btn-sched-today').addEventListener('click', (e) => {
-    e.currentTarget.classList.add('active');
-    document.getElementById('btn-sched-tomorrow').classList.remove('active');
-    state.schedTab = 'today';
-    renderSchedule();
-  });
-  document.getElementById('btn-sched-tomorrow').addEventListener('click', (e) => {
-    e.currentTarget.classList.add('active');
-    document.getElementById('btn-sched-today').classList.remove('active');
-    state.schedTab = 'tomorrow';
-    renderSchedule();
+  // Schedule Yesterday / Today / Tomorrow toggle
+  const schedTabs = [['btn-sched-yesterday', 'yesterday'], ['btn-sched-today', 'today'], ['btn-sched-tomorrow', 'tomorrow']];
+  schedTabs.forEach(([btnId, tab]) => {
+    document.getElementById(btnId).addEventListener('click', (e) => {
+      schedTabs.forEach(([otherId]) => document.getElementById(otherId).classList.remove('active'));
+      e.currentTarget.classList.add('active');
+      state.schedTab = tab;
+      renderSchedule();
+    });
   });
 
   // Usage 7d metric toggle

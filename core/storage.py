@@ -1803,11 +1803,13 @@ class LifeStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    async def management_creation_runs(self, limit: int=50) -> list[dict[str, Any]]:
+    async def management_creation_runs(self, limit: int=50, include_error: bool=False) -> list[dict[str, Any]]:
+        """创作运行流水；include_error=True 仅供主人侧 WebUI 展示失败原因（错误串可能含敏感内容）。"""
         async with self._lock:
+            select_cols="r.error_summary," if include_error else ""
             rows=self.conn.execute(
-                """SELECT r.id,r.inspiration_id,r.document_id,r.status,r.started_at,r.completed_at,
-                d.title,d.privacy,d.work_type FROM creation_runs r
+                f"""SELECT r.id,r.inspiration_id,r.document_id,r.status,r.started_at,r.completed_at,
+                {select_cols}d.title,d.privacy,d.work_type FROM creation_runs r
                 LEFT JOIN bookshelf_documents d ON d.id=r.document_id
                 ORDER BY r.started_at DESC LIMIT ?""",(max(1,min(200,int(limit))),)
             ).fetchall()

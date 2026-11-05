@@ -1,7 +1,8 @@
 {
   "schema_version": 2,
   "required_capabilities": [
-    "custom_pages"
+    "custom_pages",
+    "image_upload"
   ],
   "workspace_title": "麦生活",
   "pages": [
@@ -115,7 +116,26 @@
           "version": "1"
         }
       },
+      "uploads": {
+        "refs": {"action": "refs_upload", "image_max_edge": 2048}
+      },
       "actions": {
+        "refs_upload": {
+          "api": "webui_persona_refs_upload",
+          "version": "1",
+          "parameters": {
+            "upload_id": {"type": "string", "required": true, "max_length": 128},
+            "name": {"type": "string", "required": false, "max_length": 60}
+          }
+        },
+        "refs_delete": {
+          "api": "webui_persona_refs_delete",
+          "version": "1",
+          "parameters": {
+            "ref_id": {"type": "string", "required": true, "max_length": 64}
+          },
+          "confirmation": "确认删除这张默认角色参考图？删除后自拍场景回退文字引导。"
+        },
         "save": {
           "api": "webui_config_save",
           "version": "1",

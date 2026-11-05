@@ -2,13 +2,13 @@
   "manifest_version": 2,
   "id": "maibot-community.mai-life",
   "name": "麦生活",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "description": "让麦麦拥有持续生活、消息体验、低频联网见闻以及自己的书柜与创作",
   "author": {
     "name": "octmicy",
     "url": "https://github.com/octmicy/Mai_life"
   },
-  "license": "MIT",
+  "license": "GPL-3.0",
   "host_application": {
     "min_version": "1.3.16",
     "max_version": "1.4.99"
@@ -32,6 +32,7 @@
     "llm.get_available_models",
     "message.get_by_id",
     "api.call",
+    "webui.claim_upload",
     "maisaka.proactive.trigger",
     "config.get",
     "component.list_loaded_plugins",

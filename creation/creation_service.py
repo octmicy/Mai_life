@@ -190,7 +190,21 @@ class CreationService:
             await self.store.add_bookshelf_revision(document_id,"review",json.dumps(review,ensure_ascii=False),
                                                      self.llm.task_for("creation_review"),now.timestamp(),set_current=False)
             if review.get("accepted") is False and not str(review.get("revised_content") or "").strip():
-                raise ValueError("创作审校未通过且没有可归档的修订正文")
+                # Issue #16：审校拒绝但没给修订稿不再是死局——带审校意见重写一次并复核，
+                # 仍拒才走 fail-closed（重写修订 set_current=False，避免新书文档行抖动）。
+                notes=str(review.get("review_notes") or "").strip()
+                self.logger.info(f"[MaiLife] 审校未通过，带意见重写一次: {notes[:120]}")
+                body=await self._body(personality,inspiration,work_type,outline,
+                                      book if continuation else None,revision_notes=notes)
+                await self.store.add_bookshelf_revision(document_id,"draft",body,
+                                                        self.llm.task_for("creation_body"),
+                                                        now.timestamp(),status="draft",set_current=False)
+                review=await self._review(personality,inspiration,work_type,outline,body,privacy,
+                                          book if continuation else None)
+                await self.store.add_bookshelf_revision(document_id,"review",json.dumps(review,ensure_ascii=False),
+                                                        self.llm.task_for("creation_review"),now.timestamp(),set_current=False)
+                if review.get("accepted") is False and not str(review.get("revised_content") or "").strip():
+                    raise ValueError("创作审校未通过且没有可归档的修订正文（已按意见重写一次仍被拒）")
             final=str(review.get("revised_content") or body)[:int(self.config.creation.max_body_chars)]
             await self.store.add_bookshelf_revision(document_id,"final",final,self.llm.task_for("creation_review"),
                                                      now.timestamp(),status="archived")
@@ -292,7 +306,7 @@ class CreationService:
         return result if isinstance(result,dict) else fallback
 
     async def _body(self,personality:str,inspiration:dict[str,Any],work_type:str,outline:dict[str,Any],
-                    book:dict[str,Any]|None=None)->str:
+                    book:dict[str,Any]|None=None,revision_notes:str="")->str:
         sections=outline.get("sections") if isinstance(outline.get("sections"),list) else []
         path="、".join(str(item) for item in sections[:3]) or "短暂铺陈"
         if book is not None:
@@ -318,6 +332,11 @@ class CreationService:
                     "不要写用户姓名、账号、群名、聊天原句或真实人物隐私；开头与上一章结尾自然衔接；"
                     f"目标长度约{target_length}字符以上；不得概括或复述已写章节，只写本章新内容。\n"+
                     json.dumps(payload,ensure_ascii=False))
+        if revision_notes:
+            # Issue #16：审校拒绝但没有给修订稿时，带意见重写一次。追加必须在两处 prompt
+            # 赋值之后、generate 之前，否则续写路径的后赋值会把意见冲掉。
+            prompt+=("\n上一稿被审校拒绝，请按以下审校意见重写，不要重复上一稿的问题：\n"
+                     +revision_notes[:1500]+"\n")
         result=await self.llm.generate(
             prompt,f"你以{self.bot_name}口吻完成原创文本，严格遵守指定体裁。",
             max_tokens=0,task_kind="creation_body",request_type="creation_body")
@@ -332,14 +351,16 @@ class CreationService:
                  "source_kind":inspiration["source_kind"],"outline":outline,"draft":body}
         prompt=("审校以下原创草稿。检查人设一致性、体裁、完成度和隐私。"
                 "不得把private改成public。返回JSON：accepted、review_notes、revised_content、summary；"
-                "只在确实需要时填写revised_content。\n"+json.dumps(payload,ensure_ascii=False))
+                "只在确实需要时填写revised_content；"
+                "若 accepted 为 false，必须在 revised_content 给出完整修订稿。\n"+json.dumps(payload,ensure_ascii=False))
         if book is not None:
             payload["book"]={"title":book["title"],"chapter_number":book["chapter_number"],
                              "chapters_so_far":book["chapters_so_far"]}
             prompt=("审校以下已有作品的续写草稿。除人设一致性、体裁、完成度和隐私外，"
                     "额外检查与已写章节是否矛盾、是否复述旧内容、章节编号与进度是否一致。"
                     "不得把private改成public。返回JSON：accepted、review_notes、revised_content、summary；"
-                    "只在确实需要时填写revised_content。\n"+json.dumps(payload,ensure_ascii=False))
+                    "只在确实需要时填写revised_content；"
+                    "若 accepted 为 false，必须在 revised_content 给出完整修订稿。\n"+json.dumps(payload,ensure_ascii=False))
         result=await self.llm.generate_json(
             prompt,"你是严格但不过度改写的创作审校。",fallback,max_tokens=0,
             task_kind="creation_review",request_type="creation_review")

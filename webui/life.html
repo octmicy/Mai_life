@@ -707,6 +707,7 @@
               <th>文档 ID</th>
               <th>状态</th>
               <th>启动时间</th>
+              <th>失败原因</th>
             </tr>
           </thead>
           <tbody id="shelf-runs-tbody"></tbody>
@@ -1147,10 +1148,11 @@
       <tr>
         <td><strong>${esc(r.title || '—')}</strong></td>
         <td style="font-family:var(--ml-font-mono);">${esc(r.document_id)}</td>
-        <td><span class="ml-badge">${esc(r.status)}</span></td>
+        <td><span class="ml-badge ${r.status === 'failed' ? 'ml-badge-warn' : ''}">${esc(r.status)}</span></td>
         <td style="font-family:var(--ml-font-mono);">${fmtEpoch(r.started_at)}</td>
+        <td style="color:var(--ml-muted);font-size:12px;">${esc(r.error_summary || '—')}</td>
       </tr>
-    `).join('') : '<tr><td colspan="4" class="ml-empty">暂无创作运行流水</td></tr>';
+    `).join('') : '<tr><td colspan="5" class="ml-empty">暂无创作运行流水</td></tr>';
   }
 
   // ==================== 5. Render Information Digest ====================

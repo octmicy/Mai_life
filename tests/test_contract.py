@@ -29,7 +29,7 @@ class ContractTests(unittest.TestCase):
         root=Path(__file__).parents[1]
         manifest=json.loads((root/"_manifest.json").read_text(encoding="utf-8-sig"))
         requirements=(root/"requirements.txt").read_text(encoding="utf-8")
-        self.assertEqual(manifest["version"],"1.25.0")
+        self.assertEqual(manifest["version"],"1.26.0")
         # v1.24.0 联网全面走宿主统一服务：声明 web.search/web.fetch 能力，不再依赖 Playwright。
         self.assertIn("web.search",manifest["capabilities"])
         self.assertIn("web.fetch",manifest["capabilities"])
@@ -40,10 +40,10 @@ class ContractTests(unittest.TestCase):
         from Mai_life.config import PLUGIN_VERSION
         from Mai_life.information.http_client import _USER_AGENT
         root=Path(__file__).parents[1]
-        self.assertEqual(PLUGIN_VERSION,"1.25.0")
+        self.assertEqual(PLUGIN_VERSION,"1.26.0")
         self.assertIn(f"Mai_life/{PLUGIN_VERSION}",_USER_AGENT)
         self.assertNotIn("1.9.2",_USER_AGENT)
-        # 管理概览与入口的显示版本必须统一为 1.25.0，不允许残留旧版本号。
+        # 管理概览与入口的显示版本必须统一为 1.26.0，不允许残留旧版本号。
         for relative in ("plugin.py","management/admin_service.py",
                          "information/http_client.py","core/environment.py","config.py",
                          "README.md","_manifest.json"):
@@ -571,7 +571,7 @@ class WebuiApiContractTests(unittest.IsolatedAsyncioTestCase):
         await self.store.save_search_key_runtime("p1-playwright","abcdef0123456789",status="healthy",
             cooldown_until=0,failure_count=0,error_class="",used_at=self.now.timestamp())
         data=await plugin.webui_admin_summary()
-        self.assertEqual(set(data),{"overview","groups","proactive"})
+        self.assertEqual(set(data),{"overview","groups","proactive","persona_refs"})
         self.assertEqual(set(data["overview"]),{"version","users","owners","pending_dates","pending_proactive",
                                                 "bookshelf_documents","private_documents","token_calls_today",
                                                 "token_total_today","search_calls_today","social_enabled",

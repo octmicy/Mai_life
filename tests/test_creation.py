@@ -26,9 +26,30 @@ class OfflineLLM:
 
 
 class RejectingReviewLLM(OfflineLLM):
-    def task_available(self,kind):return kind=="creation_review"
+    """始终拒绝且不给修订稿：v1.25.0 起会触发一次带意见重写，二次仍拒才 fail-closed。"""
+    def task_available(self,kind):return kind in {"creation_review","creation_body"}
+    def task_for(self,kind):return kind
     async def generate_json(self,*args,**kwargs):
         return {"accepted":False,"review_notes":"不适合归档","revised_content":"","summary":""}
+    async def generate(self,prompt,system,**kwargs):return "重写后的正文内容"
+
+
+class RejectOnceReviewLLM(OfflineLLM):
+    """首次审校拒绝且不给修订稿，重写后复核通过：验证 Issue #16 的带意见重写恢复路径。"""
+    def __init__(self):
+        self.reviews=0; self.body_prompts=[]
+    def task_available(self,kind):return kind in {"creation_outline","creation_review","creation_body"}
+    def task_for(self,kind):return kind
+    async def generate_json(self,prompt,system,fallback,**kwargs):
+        if str(kwargs.get("task_kind") or "")=="creation_review":
+            self.reviews+=1
+            if self.reviews==1:
+                return {"accepted":False,"review_notes":"节奏拖沓，压缩前两段","revised_content":"","summary":""}
+            return {"accepted":True,"review_notes":"复核通过","revised_content":"","summary":"本章摘要"}
+        return {"title":"拟定标题","premise":"拟定前提","sections":["起","承","转"],"privacy":"public"}
+    async def generate(self,prompt,system,**kwargs):
+        self.body_prompts.append(prompt)
+        return "重写后的本章正文"
 
 
 class ScriptedLLM:
@@ -202,14 +223,39 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         friend_user=await self.store.get_user("2")
         self.assertEqual(await shelf.resolve_reference("1",friend_user),"work-public")
 
-    async def test_rejected_review_without_revision_is_not_archived(self):
+    async def test_rejected_review_triggers_one_rewrite_then_fail_closed(self):
+        """Issue #16：审校拒绝且无修订稿 → 带意见重写一次并复核；仍拒才 fail-closed。"""
         self.config.creation.enabled=True; self.config.creation.plaintext_storage_acknowledged=True
         await self.add_inspiration()
-        service=CreationService(self.ctx,self.store,self.config,RejectingReviewLLM(),DummyLogger())
+        llm=RejectingReviewLLM()
+        service=CreationService(self.ctx,self.store,self.config,llm,DummyLogger())
         result=await service.tick(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},force=True)
         self.assertEqual(result["status"],"failed")
+        self.assertIn("已按意见重写一次",str(result.get("error") or ""))
+        doc_id=self.store.conn.execute(
+            "SELECT document_id FROM creation_runs WHERE status='failed' ORDER BY started_at DESC LIMIT 1").fetchone()[0]
+        rows=self.store.conn.execute(
+            "SELECT stage FROM bookshelf_revisions WHERE document_id=? ORDER BY created_at,rowid",
+            (doc_id,)).fetchall()
+        kinds=[r[0] for r in rows]
+        self.assertEqual(kinds,["outline","draft","review","draft","review"])  # 重写对 draft/review 各补一条
         self.assertEqual(await self.store.archived_work_count(self.now.replace(hour=0).timestamp(),
                                                               (self.now.replace(hour=0)+timedelta(days=1)).timestamp()),0)
+
+    async def test_rejected_review_with_rewrite_recovers_to_archived(self):
+        """Issue #16：重写稿复核通过 → 正常归档，当日额度照计。"""
+        self.config.creation.enabled=True; self.config.creation.plaintext_storage_acknowledged=True
+        await self.add_inspiration()
+        llm=RejectOnceReviewLLM()
+        service=CreationService(self.ctx,self.store,self.config,llm,DummyLogger())
+        result=await service.tick(self.now,"人格",await self.store.get_state(),{"current":{"kind":"leisure"}},force=True)
+        self.assertEqual(result["status"],"archived",result)
+        self.assertEqual(llm.reviews,2)
+        self.assertEqual(len(llm.body_prompts),2)
+        self.assertIn("审校意见重写",llm.body_prompts[1])   # 重写 prompt 携带审校意见
+        self.assertIn("节奏拖沓",llm.body_prompts[1])
+        self.assertEqual(await self.store.archived_work_count(self.now.replace(hour=0).timestamp(),
+                                                              (self.now.replace(hour=0)+timedelta(days=1)).timestamp()),1)
 
     async def test_external_reading_api_ignores_binary_and_stays_private(self):
         self.config.creation.plaintext_storage_acknowledged=True
@@ -527,8 +573,9 @@ class CreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"],"failed")
         document=await self.store.get_bookshelf_document("work-old",allow_private=True)
         # 中间修订是不可变尝试记录，照常落库；但 current_revision 仍指向上章终稿，文档未被碰过。
+        # v1.25.0 起：审校拒绝还会带意见重写一次（多一对 draft/review），仍拒才失败。
         self.assertEqual([item["stage"] for item in document["revisions"]],
-                         ["outline","draft","review","final","outline","draft","review"])
+                         ["outline","draft","review","final","outline","draft","review","draft","review"])
         self.assertEqual(int(document["current_revision"]),4)
         self.assertEqual(document["status"],"archived")
         self.assertEqual(document["archived_at"],self.now.timestamp()-5*86400)

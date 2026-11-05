@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.25.0"
+PLUGIN_VERSION = "1.26.0"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -1006,6 +1006,14 @@ class ScheduleSettings(PluginConfigBase):
             label_en="Detailed Schedule Descriptions", hint_en="Require precise locations and named games/works in generated schedules. Off by default.",
         ),
     )
+    persona_schedule_hint: str = Field(
+        default="",
+        description="主人补充的作息说明：原样注入日程生成提示词且优先级最高（如「她是大三学生，周二周四有实验课，周末去画室兼职」）。留空则完全按人格设定推导。",
+        json_schema_extra=_ui(
+            "人设备注作息", "自由文本，400 字以内；存在时优先级最高——日程优先服从这段说明，其次才是人格设定。留空则完全按人格设定推导作息。", 4,
+            label_en="Persona Schedule Hint", hint_en="Free-text schedule notes injected verbatim with top priority. Empty = derive from persona only.",
+        ),
+    )
 
 
 class ProactiveSettings(PluginConfigBase):
@@ -1097,6 +1105,15 @@ class LinkageSettings(PluginConfigBase):
             "默认关闭；需已安装麦麦绘图插件。检测仅确认插件已加载（不校验其版本与绘图平台 Key），注入时另需 draw 工具对当前对话可见，否则不生效。",
             0, label_en="Drawpic Linkage",
             hint_en="Off by default; requires the maimai-drawpic-plugin installed. Detection confirms the plugin is loaded only (no version or platform-key check); injection also requires the draw tool to be visible in the current chat.",
+        ),
+    )
+    persona_ref_draw: bool = Field(
+        default=False,
+        description="参考图直发：在「系统与配置」页上传默认角色参考图后，拍照分享场景改为按参考图直发图生图（需已装配麦麦绘图）。默认关闭。",
+        json_schema_extra=_ui(
+            "参考图直发", "默认关闭。开启且已上传默认角色参考图（≤3 张）时，拍照/生活照场景不再只做文字引导，而是直接以参考图+当前日程场景向麦麦绘图提交图生图，成品自动发进会话；提交失败自动回退文字引导。",
+            1, label_en="Persona Reference img2img",
+            hint_en="With persona reference images uploaded, submit img2img directly using current schedule/scene. Off by default; falls back to text guidance on failure.",
         ),
     )
 

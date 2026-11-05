@@ -22,21 +22,8 @@ _IDENTITY_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("自由职业", "创作者", "写作者", "画师", "博主", "up主", "主播", "自媒体", "独立开发"), "creator"),
     (("居家", "家庭主妇", "全职妈妈", "全职爸爸", "退休"), "homebody"),
 )
-_IDENTITY_NOTES: dict[str, str] = {
-    "student": ("人格表明麦麦是学生：工作日的在校段必须写成具体方向的上课、自习、实验、社团或赶作业"
-                "（例如'上午去教学楼听两门课''下午在图书馆整理笔记''晚上在宿舍赶课程论文'），"
-                "地点用学校、教室、图书馆、食堂、宿舍；不要编造固定课表，每天课程主题可以不同，周末可以离校活动。"),
-    "worker": ("人格表明麦麦已经工作：白天段必须写成通勤、工位上的具体事务、午休或加班"
-               "（例如'上午通勤后在工位赶项目进度''午休时下楼买咖啡''晚上加班整理方案'），地点用公司、工位、通勤路上。"),
-    "creator": ("人格表明麦麦是自由创作者：白天段必须写成具体的创作、约稿、整理素材或学习技法"
-                "（例如'上午在家画商稿的线稿''下午整理作品集''晚上学新的绘画技法'），地点以家里和工作室为主。"),
-    "homebody": ("人格表明麦麦以居家生活为主：白天段写成具体的家务、采买、照顾家人或兴趣手艺"
-                 "（例如'上午买菜做饭并打扫家里''下午打理阳台的花草''晚上做手工'），地点以家里和社区为主。"),
-}
-_GENERIC_IDENTITY_NOTE = ("如果人格里写明了身份（如学生、上班族、自由职业者），日程必须体现该身份的日常"
-                          "（学生写上课/自习方向，职场写通勤/工位事务方向），概括到方向即可；"
-                          "人格没有写明身份时按普通人的日常安排，不要假定特定身份。")
 # 回落模板按身份定向时只改 work/study 段的方向与地点，时间结构不动。
+# （v1.26.0：身份桶模板词已退出 LLM 生成提示词——见 _identity_note 的说明。）
 _IDENTITY_FALLBACK: dict[str, dict[str, tuple[str, str]]] = {
     "student": {"work": ("上午去学校上课", "学校"), "study": ("下午上课或去图书馆自习", "学校")},
     "worker": {"work": ("到公司处理工作事务", "公司"), "study": ("学习专业技能或收尾未完成的方案", "公司")},
@@ -179,7 +166,19 @@ class ScheduleService:
         return ""
 
     def _identity_note(self, personality: str) -> str:
-        return _IDENTITY_NOTES.get(self._identity_kind(personality), _GENERIC_IDENTITY_NOTE)
+        """v1.26.0 人格直驱：身份指引从人格原文推导，身份桶模板词整体退出 LLM 提示词。
+
+        _IDENTITY_RULES/_apply_identity 仅保留给离线回落骨架定向；生成路径一律走本指引，
+        反馈的用户痛点（关键词误判 student、homebody 固定三件套）由此根治。
+        """
+        parts=["身份指引：日程的作息、活动与地点必须从上面的人格设定推导——"
+               "设定写明的身份与日常（职业、学业、生活方式）要落在具体节点上；"
+               "设定没有写明的方面按普通人的常识安排，但不得与设定矛盾；"
+               "不要套用任何固定的身份模板词。"]
+        hint=" ".join(str(self.config.schedule.persona_schedule_hint or "").split())[:400]
+        if hint:
+            parts.append(f"主人补充的作息说明（优先级最高，与之冲突的通用安排一律让位）：{hint}")
+        return "\n".join(parts)
 
     def _apply_identity(self, nodes: list[dict[str, Any]], personality: str) -> list[dict[str, Any]]:
         """回落模板按人格身份定向：只改 work/study 段的方向与地点，时间结构不动。"""
@@ -338,7 +337,7 @@ class ScheduleService:
             variety=(variety+"\n今天可以考虑的活动灵感（自由选用，不要硬塞）："+ "、".join(picked)).strip()
         prompt=(f"为虚拟网友{self.bot_name}生成{day}的生活框架。{'周末' if weekend else '工作日'}，天气背景：{weather_text}。\n"
                 f"人格：{personality or '自然、独立、有自己的生活'}\n"
-                f"身份落实：{self._identity_note(personality)}\n"
+                f"{self._identity_note(personality)}\n"
                 f"{self._state_summary(state)}\n"
                 f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："
                 f"{json.dumps(self._schedule_reference(day,weekend),ensure_ascii=False)}\n"

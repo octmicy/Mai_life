@@ -448,6 +448,30 @@
     </div>
   </section>
 
+  <!-- 默认角色参考图（绘图联动：拍照场景按参考图直发图生图） -->
+  <section class="ml-card" id="sec-refs">
+    <div class="ml-card-header">
+      <h2 class="ml-card-title">默认角色参考图 (Persona References)</h2>
+      <span class="ml-badge" id="refs-badge">检测中…</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+        备注名（可选）
+        <input type="text" id="ref-name" class="ml-cfg-input" style="min-width:180px;" placeholder="例如：正面定妆照" maxlength="60">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ml-muted);">
+        图片（JPEG/PNG/WebP，宿主自动按最长边 2048 缩图）
+        <input type="file" id="ref-file" accept="image/jpeg,image/png,image/webp"
+               style="font-size:12px;color:var(--ml-muted);">
+      </label>
+      <button type="button" class="ml-btn ml-btn-primary" id="btn-ref-upload">上传参考图</button>
+    </div>
+    <div style="font-size:11.5px;color:var(--ml-muted);line-height:1.5;margin-bottom:8px;">
+      上传后（最多 3 张），拍照/生活照场景触发时自动以参考图 + 当前日程场景直发图生图；需开启「参考图直发」开关且已装配麦麦绘图，失败自动回退文字引导。
+    </div>
+    <div id="refs-list"></div>
+  </section>
+
   <!-- QQ 群白名单与观察/转述矩阵 -->
   <section class="ml-card" id="sec-groups">
     <div class="ml-card-header">
@@ -645,6 +669,32 @@
 
   function renderAdmin() {
     const d = state.admin;
+    // ---- 默认角色参考图卡片（persona_refs 由 admin 摘要携带）----
+    const refsBlock = document.getElementById('sec-refs');
+    const refs = d.persona_refs;
+    if (!refs) refsBlock.classList.add('ml-hidden');
+    else {
+      refsBlock.classList.remove('ml-hidden');
+      const badge = document.getElementById('refs-badge');
+      if (refs.available !== true) {
+        badge.textContent = '数据目录不可用';
+        badge.className = 'ml-badge ml-badge-warn';
+      } else {
+        const drawOk = refs.drawpic_detected === '开启';
+        badge.textContent = `已装配麦麦绘图：${drawOk ? '是' : '否'}｜${refs.items.length}/${refs.max} 张`;
+        badge.className = 'ml-badge';
+      }
+      const list = document.getElementById('refs-list');
+      list.innerHTML = refs.items.length ? refs.items.map((r) => `
+        <div class="ml-cfg-kv">
+          <span class="ml-cfg-k">${esc(r.name)} <small style="opacity:0.65;">${esc(r.id)}</small></span>
+          <span style="display:flex;gap:8px;align-items:center;">
+            <span class="ml-cfg-v" style="font-weight:400;">${(Number(r.bytes || 0) / 1024).toFixed(0)} KiB</span>
+            <button type="button" class="ml-cfg-edit" data-ref-del="${esc(r.id)}">删除</button>
+          </span>
+        </div>
+      `).join('') : '<div class="ml-empty">还没有上传参考图——上传后拍照场景将按参考图直发图生图</div>';
+    }
     if (!d) return;
     const ov = d.overview || {};
 
@@ -922,6 +972,59 @@
     if (edit) { openCfgEditor(edit); return; }
     if (e.target.closest('.ml-cfg-act.ok')) { submitCfgEdit(); return; }
     if (e.target.closest('.ml-cfg-act.cancel')) cancelCfgEditor();
+  });
+
+  // ---- 默认角色参考图：上传（走宿主 uploads 通道）与删除 ----
+  async function refreshAdmin() {
+    const errors = await runQueriesWithLimit([
+      { name: 'admin', label: '管理摘要', onSuccess: (r) => { state.admin = r; renderAdmin(); } },
+    ], 2);
+    if (errors.length) {
+      document.getElementById('error-text').textContent = errors.join('；');
+      document.getElementById('error-banner').classList.add('active');
+    }
+  }
+
+  document.getElementById('btn-ref-upload').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const fileInput = document.getElementById('ref-file');
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      document.getElementById('error-text').textContent = '请先选择图片文件';
+      document.getElementById('error-banner').classList.add('active');
+      return;
+    }
+    btn.disabled = true; btn.textContent = '上传中…';
+    try {
+      const res = await window.maibot.upload('refs', file,
+        { name: document.getElementById('ref-name').value.trim() });
+      if (res && res.success === false) throw new Error(res.error || '上传失败');
+      document.getElementById('error-banner').classList.remove('active');
+      document.getElementById('ref-name').value = '';
+      fileInput.value = '';
+      btn.textContent = '已上传';
+      await refreshAdmin();
+    } catch (err) {
+      document.getElementById('error-text').textContent = `参考图上传失败：${err?.message || String(err)}`;
+      document.getElementById('error-banner').classList.add('active');
+    } finally {
+      setTimeout(() => { btn.disabled = false; btn.textContent = '上传参考图'; }, 1200);
+    }
+  });
+
+  document.getElementById('refs-list').addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-ref-del]');
+    if (!del) return;
+    del.disabled = true;
+    try {
+      const res = await window.maibot.action('refs_delete', { ref_id: del.dataset.refDel });
+      if (res && res.success === false) throw new Error(res.error || '删除失败');
+      await refreshAdmin();
+    } catch (err) {
+      del.disabled = false;
+      document.getElementById('error-text').textContent = `参考图删除失败：${err?.message || String(err)}`;
+      document.getElementById('error-banner').classList.add('active');
+    }
   });
 
   document.getElementById('btn-refresh').addEventListener('click', loadAll);

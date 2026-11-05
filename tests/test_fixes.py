@@ -3424,6 +3424,75 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("【生活分享时刻】", note2)
         self.assertNotIn("edit_image", note2)
 
+    async def test_persona_ref_direct_draw_submits_and_falls_back(self):
+        """v1.26.0：参考图直发——开关开+参考图存在 → 提交 drawpic_submit_v2（Base64+场景 prompt）；
+        调用失败/开关关 → 回退文字引导。"""
+        import base64 as _b64
+        from types import SimpleNamespace as _NS
+        plugin = await self._plugin()
+        plugin.config.linkage.persona_ref_draw = True
+        plugin._drawpic_loaded = True
+        session = self._armed(plugin, "photo")
+        # 参考图落盘：直接写 data_dir/persona_refs（data_dir 指向临时目录）
+        data_dir = self.tmp.name
+        plugin.ctx.paths = _NS(data_dir=data_dir)
+        import os as _os
+        refs_dir = _os.path.join(data_dir, "persona_refs")
+        _os.makedirs(refs_dir, exist_ok=True)
+        raw = b"FAKE-IMAGE-BYTES-0123456789"
+        with open(_os.path.join(refs_dir, "ref-a.png"), "wb") as h: h.write(raw)
+        plugin._save_persona_refs(refs_dir, [
+            {"id": "ref-a", "name": "定妆照", "file": "ref-a.png", "sha256": "x",
+             "bytes": len(raw), "added_at": 0.0}])
+        calls: list[tuple[str, dict]] = []
+        async def _call(api_name, *, version="", **kwargs):
+            calls.append((api_name, kwargs))
+            return {"success": True, "result": {"success": True, "task_id": "t1"}}
+        plugin.ctx.api = _NS(call=_call)
+        kwargs = self._kwargs()
+        note = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("已按默认角色参考图", note)
+        self.assertNotIn("draw 工具", note)                      # 直发模式不再引导 draw
+        for _ in range(5): await asyncio.sleep(0)                # 让 transient 直发任务跑完
+        self.assertEqual(len(calls), 1)
+        api_name, kw = calls[0]
+        self.assertEqual(api_name, "maimai-drawpic-plugin.drawpic_submit_v2")
+        self.assertEqual(kw.get("stream_id"), session)
+        images = kw.get("source_images") or []
+        self.assertEqual(len(images), 1)
+        self.assertEqual(_b64.b64decode(images[0]), raw)          # Base64 与参考图字节一致
+        self.assertIn("第一人称手机随手拍", kw.get("prompt") or "")
+        self.assertIn("生活照", kw.get("prompt") or "")
+        # 一次性消费 + 频控已写。
+        self.assertEqual(plugin._session_runtime[session]["moment_signal"], "")
+        self.assertTrue(plugin._moment_hints.get("10001"))
+        # drawpic 调用失败：当次乐观返回，后台留当日失败标记；下一次触发回退 draw 引导。
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        self._armed(plugin, "photo")
+        async def _fail(api_name, *, version="", **kwargs): raise RuntimeError("drawpic 不可用")
+        plugin.ctx.api = _NS(call=_fail)
+        note2 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("已按默认角色参考图", note2)   # 乐观文案（提交成败由后台决定）
+        for _ in range(5): await asyncio.sleep(0)
+        self.assertEqual(len(calls), 1)              # 失败提交不再重试
+        self.assertEqual(plugin._persona_ref_fail.get(session),
+                         plugin._env.now().date().isoformat())
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        self._armed(plugin, "photo")
+        note3 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("【生活分享时刻】", note3)
+        self.assertIn("draw 工具", note3)            # 当日失败 → 回退文字引导
+        self.assertNotIn("已按默认角色参考图", note3)
+        # 开关关闭 → 永远走文字引导（重置当日频控计数，隔离额度因素）。
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        plugin._moment_hints["10001"]["count"] = 0
+        self._armed(plugin, "photo")
+        plugin.config.linkage.persona_ref_draw = False
+        plugin._persona_ref_fail.pop(session, None)
+        note4 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
+        self.assertIn("draw 工具", note4)
+        self.assertEqual(len(calls), 1)
+
     async def test_conversation_note_keywords_and_one_shot_consumption(self):
         plugin = await self._plugin()
         session = self._armed(plugin, "life")
@@ -4102,7 +4171,7 @@ class V11412WebuiBookshelfTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("diary", {book["doc_type"] for book in data["books"]})
         self.assertTrue(str(data["books"][0]["updated_age"] or ""))
         run = data["runs"][0]
-        self.assertEqual(set(run), {"document_id", "title", "status", "started_at"})
+        self.assertEqual(set(run), {"document_id", "title", "status", "started_at", "error_summary"})
         self.assertEqual(run["document_id"], "doc-0")
         self.assertEqual(run["title"], "随笔标题0")
         self.assertEqual(run["status"], "archived")
@@ -4251,7 +4320,8 @@ class V11412WebuiScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["yesterday"]["day"], yesterday)
         self.assertEqual(len(data["yesterday"]["nodes"]), 1)
         self.assertEqual(set(data["yesterday"]["nodes"][0]),
-                         {"start", "end", "kind_zh", "summary", "location"})
+                         {"start", "end", "kind_zh", "summary", "location",
+                          "scene", "energy_load", "shareability"})  # 与今日节点同形
         self.assertEqual(data["yesterday"]["nodes"][0]["kind_zh"], "睡眠")
         await self.store.replace_framework(yesterday, [])
         again = await plugin.webui_schedule()
@@ -4847,7 +4917,7 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["creation"]["continuation_chapter_tail_chars"], 400)
         self.assertEqual(set(data["schedule"]), {"generate_hour", "detail_lead_minutes",
                                                  "template_file", "detailed_schedule",
-                                                 "template_status"})
+                                                 "persona_schedule_hint", "template_status"})
         self.assertEqual(set(data["proactive"]), {"enabled", "patrol_interval_minutes",
                                                   "min_interval_minutes",
                                                   "recent_user_silence_minutes",
@@ -5154,7 +5224,7 @@ class V11412WebuiAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
         plugin = await self._plugin()
         await self._seed()
         data = await plugin.webui_admin_summary()
-        self.assertEqual(set(data), {"overview", "groups", "proactive"})
+        self.assertEqual(set(data), {"overview", "groups", "proactive", "persona_refs"})
         overview = data["overview"]
         self.assertEqual(set(overview), {"version", "users", "owners", "pending_dates",
                                          "pending_proactive", "bookshelf_documents",
@@ -5331,13 +5401,13 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 self.assertIn(binding.get("api"), registered,
                               f"查询 {alias} 绑定未注册 API: {binding.get('api')}")
                 bound.add(str(binding.get("api")))
-            # v1.24.9/1.24.10 写通道白名单：system 页配置回写、life 页日期写入/删除/候选处理，其余页零 actions。
+            # v1.24.9/1.24.10/1.26.0 写通道白名单：system 页配置回写+参考图上传删除、
+            # life 页日期写入/删除/候选处理，其余页零 actions。
             actions = page.get("actions") or {}
-            expected_apis = {"system": ("webui_config_save", {"section", "key", "value"}),
-                             "life": ("webui_date_write", {"event_name", "user_id", "calendar", "recurrence", "date"})}
             page_id = str(page.get("id"))
             if page_id == "system":
-                self.assertEqual(set(actions), {"save"}, f"{page_id} 只允许 save 动作")
+                self.assertEqual(set(actions), {"save", "refs_upload", "refs_delete"},
+                                 f"{page_id} 只允许配置回写与参考图动作")
                 save = actions["save"]
                 self.assertEqual(save.get("api"), "webui_config_save")
                 self.assertEqual(save.get("version"), "1")
@@ -5346,10 +5416,19 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 for param in (save.get("parameters") or {}).values():
                     self.assertEqual(param.get("type"), "string")
                     self.assertTrue(param.get("required"))
+                # 参考图上传走宿主 uploads 通道：upload_id 由宿主签发，action 必收必填字符串。
+                self.assertEqual(set(page.get("uploads") or {}), {"refs"})
+                self.assertEqual(page["uploads"]["refs"].get("action"), "refs_upload")
+                refs_binding = actions["refs_upload"]
+                self.assertEqual(refs_binding.get("api"), "webui_persona_refs_upload")
+                upload_param = (refs_binding.get("parameters") or {}).get("upload_id") or {}
+                self.assertEqual(upload_param.get("type"), "string")
+                self.assertTrue(upload_param.get("required"))
+                self.assertNotIn("upload_id", set())
             elif page_id == "life":
                 self.assertEqual(set(actions), {"date_write", "date_delete", "candidate_set"},
                                  f"{page_id} 只允许日期写入/删除/候选处理动作")
-                self.assertEqual(actions["date_write"].get("api"), expected_apis["life"][0])
+                self.assertEqual(actions["date_write"].get("api"), "webui_date_write")
                 self.assertEqual(actions["date_delete"].get("api"), "webui_date_delete")
                 self.assertEqual(actions["candidate_set"].get("api"), "webui_date_candidate_set")
                 for name, binding in actions.items():
@@ -5526,7 +5605,7 @@ class V11412WebuiRendererBindingTests(unittest.IsolatedAsyncioTestCase):
         "shelf": {"counts", "creation", "books", "books_full_text", "runs"},
         "digest": {"status", "news", "news_full_text", "explorations", "explorations_full_text", "search_history"},
         "config": {"plugin", "users", "models", "environment", "linkage", "context", "rest_gate", "group", "memory", "network", "creation", "schedule", "proactive", "usage", "editable"},
-        "admin": {"overview", "groups", "proactive"},
+        "admin": {"overview", "groups", "proactive", "persona_refs"},
     }
 
     def _validate_host_json_limits(self, value: Any, label: str) -> None:
@@ -5786,18 +5865,25 @@ class V11413ScheduleIdentityTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(service._identity_kind(personality), expected, personality)
 
-    def test_identity_notes_are_actionable(self):
+    def test_identity_guidance_is_persona_driven(self):
+        """v1.26.0 人格直驱：身份指引不再携带身份桶模板词；主人的 persona_schedule_hint 原样注入且标注最高优先级。"""
         service = self._service()
-        student = service._identity_note("大二学生")
-        self.assertIn("上课", student)
-        self.assertIn("学校", student)
-        self.assertIn("不要编造固定课表", student)  # 粒度：概括到方向
-        worker = service._identity_note("程序员")
-        self.assertIn("通勤", worker)
-        self.assertIn("工位", worker)
-        # 没有人身身份时提示词只要求"按普通人安排"，不假定身份。
-        generic = service._identity_note("聊天偏日常")
-        self.assertIn("不要假定特定身份", generic)
+        guidance = service._identity_note("大二学生，喜欢摄影")
+        self.assertIn("从上面的人格设定推导", guidance)
+        self.assertNotIn("在校段必须", guidance)   # 身份桶模板词退出提示词
+        self.assertNotIn("地点用学校、教室、图书馆、食堂、宿舍", guidance)
+        self.assertNotIn("上午买菜做饭并打扫家里", guidance)
+        # 关键词误判不再影响生成指引（痛点：人格里偶然出现"大学"也会被套学生模板）。
+        self.assertNotIn("大二学生：", guidance)
+        self.config.schedule.persona_schedule_hint = "她是大三学生，周二周四有实验课，周末去画室兼职"
+        with_hint = service._identity_note("随便写写")
+        self.assertIn("主人补充的作息说明", with_hint)
+        self.assertIn("优先级最高", with_hint)
+        self.assertIn("周二周四有实验课", with_hint)
+        self.assertEqual(service._identity_kind("大二学生"), "student")  # 桶判定保留给回落骨架
+        service.set_personality("大二学生，女生，住校")
+        fallback = service._fallback("2026-10-12", weekend=False)
+        self.assertTrue(any("学校" in str(node.get("location") or "") for node in fallback))
 
     async def test_fallback_workday_flavored_by_student_identity(self):
         service = self._service()
@@ -5847,10 +5933,11 @@ class V11413ScheduleIdentityTests(unittest.IsolatedAsyncioTestCase):
         service = self._service(llm)
         await service.ensure_day(self.now, "大二学生，女生，住校", "晴", force=True)
         self.assertIn("人格：大二学生，女生，住校", llm.prompt)
-        self.assertIn("身份落实：", llm.prompt)
-        self.assertIn("上午去教学楼听两门课", llm.prompt)  # 学生示例
-        self.assertIn("必须与上面的人格身份一致", llm.prompt)
-        self.assertIn("学校、图书馆、食堂、宿舍", llm.prompt)  # 地点要求
+        # v1.26.0 人格直驱：身份桶模板词退出提示词，改为从人格设定推导。
+        self.assertIn("从上面的人格设定推导", llm.prompt)
+        self.assertIn("不要套用任何固定的身份模板词", llm.prompt)
+        self.assertNotIn("上午去教学楼听两门课''下午在图书馆整理笔记", llm.prompt)  # 桶示例退出
+        self.assertIn("必须与上面的人格身份一致", llm.prompt)  # 通用一致性要求保留
 
     async def test_ensure_day_stores_identity_flavored_fallback_without_model(self):
         """模型不可用（或调用失败）时，落地的框架也必须带身份方向。"""
@@ -5873,7 +5960,7 @@ class V11413ScheduleIdentityTests(unittest.IsolatedAsyncioTestCase):
         service = self._service(llm)
         await service.ensure_day(self.now, "现在正在上网和群友聊天。聊天偏日常。", "晴", force=True)
         self.assertIn("人格：现在正在上网和群友聊天。聊天偏日常。", llm.prompt)
-        self.assertIn("不要假定特定身份", llm.prompt)
+        self.assertIn("按普通人的常识安排，但不得与设定矛盾", llm.prompt)
 
     async def test_scene_prompt_keeps_identity_consistent(self):
         class CapturingLLM(DummyLLM):

@@ -240,7 +240,7 @@ class MemoryService:
                 schedule=ScheduleService(self.store,self.config,self.llm,
                                          str(Path(__file__).resolve().parents[1]),self.logger)
                 framework=schedule._fallback(day.isoformat(),day.weekday()>=5)
-                await self.store.replace_framework(day.isoformat(),framework)
+                await self.store.replace_framework(day.isoformat(),framework,source="fallback")
             if not any("日记" in str(node.get("summary") or "") for node in framework):continue
             await self._generate_diary(now,day)
 

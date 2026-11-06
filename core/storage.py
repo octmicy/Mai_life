@@ -473,6 +473,7 @@ class LifeStore:
         self._ensure_column("interaction_events", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("rest_backlogs", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("important_dates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("daily_framework", "source", "TEXT NOT NULL DEFAULT 'llm'")
         self._ensure_column("important_dates", "calendar", "TEXT NOT NULL DEFAULT 'solar'")
         self._ensure_column("date_candidates", "source_message_id", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("group_observations", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'")
@@ -767,7 +768,9 @@ class LifeStore:
             return result
 
     # 替换日程时同步清理旧场景和机会，避免旧节点继续触发。
-    async def replace_framework(self, day: str, nodes: list[dict[str, Any]]) -> None:
+    async def replace_framework(self, day: str, nodes: list[dict[str, Any]], source: str="llm") -> None:
+        """落库当日框架；source 标记生成来源（llm/fallback），供 WebUI 兜底可见化。"""
+        clean_source=source if source in {"llm","fallback"} else "llm"
         async with self._lock:
             with self._tx() as conn:
                 old_ids = [r[0] for r in conn.execute("SELECT id FROM daily_framework WHERE day=?", (day,))]
@@ -777,9 +780,9 @@ class LifeStore:
                     conn.execute(f"DELETE FROM detailed_scenes WHERE framework_id IN ({marks})", old_ids)
                 conn.execute("DELETE FROM daily_framework WHERE day=?", (day,))
                 conn.executemany(
-                    """INSERT INTO daily_framework(id,day,start_minute,end_minute,kind,summary,location,energy_load,shareability)
-                    VALUES(:id,:day,:start_minute,:end_minute,:kind,:summary,:location,:energy_load,:shareability)""",
-                    nodes,
+                    """INSERT INTO daily_framework(id,day,start_minute,end_minute,kind,summary,location,energy_load,shareability,source)
+                    VALUES(:id,:day,:start_minute,:end_minute,:kind,:summary,:location,:energy_load,:shareability,:source)""",
+                    [dict(node,source=clean_source) for node in nodes],
                 )
 
     async def get_framework(self, day: str) -> list[dict[str, Any]]:
@@ -1183,6 +1186,43 @@ class LifeStore:
         async with self._lock:
             with self._tx() as conn:
                 self._expire_pending_locked(conn, now, max_retries, day)
+
+    async def recent_topic_delivered(self, user_id: str, topic: str, since: float) -> bool:
+        """Issue #19 去重：该用户在 since 之后是否已投递过同 topic 的机会（不论 Planner 判定结果）。"""
+        async with self._lock:
+            row=self.conn.execute(
+                """SELECT 1 FROM proactive_events e
+                JOIN proactive_opportunities o ON o.id=e.opportunity_id
+                WHERE e.user_id=? AND o.topic=? AND e.created_at>? LIMIT 1""",
+                (user_id,topic,float(since)),
+            ).fetchone()
+            return row is not None
+
+    async def last_proactive_attempt(self) -> dict[str, Any]:
+        """最近一次主动投递事件（任意状态）；无则空字典。供沉默退避计算。"""
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT status,sent_at,created_at FROM proactive_events ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else {}
+
+    async def recent_proactive_streak(self, limit: int=8) -> list[dict[str, Any]]:
+        """最近若干次主动投递事件（新→旧），供沉默退避计算连续未回应长度。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT status,sent_at,created_at FROM proactive_events ORDER BY created_at DESC LIMIT ?",
+                (max(1,min(50,int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def proactive_skip_count(self, user_id: str, reason: str, day: str) -> int:
+        """读取指定用户/原因/自然日的跳过计数（0 表示无记录）。"""
+        async with self._lock:
+            row=self.conn.execute(
+                "SELECT count FROM proactive_skip_stats WHERE user_id=? AND reason=? AND day=?",
+                (user_id,reason,day),
+            ).fetchone()
+            return int(row[0]) if row else 0
 
     async def record_proactive_skip(self, user_id: str, reason: str, now: float, day: str = "") -> None:
         """按用户、原因、自然日聚合累计一次主动候选跳过，供诊断与 /麦麦管理 主动 查看。

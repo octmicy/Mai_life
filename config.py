@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.26.0"
+PLUGIN_VERSION = "1.26.1"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -953,6 +953,9 @@ class ModelRoutingSettings(PluginConfigBase):
 
 
     max_output_tokens: int = Field(default=0, ge=0, description="模型输出 token 上限；0=不限制，由服务商决定。", json_schema_extra=_ui("输出 token 上限", "0=不限制（推荐）。推理模型的思考链占用输出预算，写死小上限会把正文挤成空响应；仅在对成本敏感时设正数。", 22, label_en="Max Output Tokens", hint_en="0 = unlimited (provider decides). Tight caps starve content on reasoning models."))
+    llm_rpc_timeout_ms: int = Field(default=0, ge=0, le=600000, description="日程与场景细化调用的单次 RPC 超时（毫秒）；0=使用宿主默认 30 秒。",
+        json_schema_extra=_ui("日程生成 RPC 超时（毫秒）", "日程/场景细化的单次推理可能超过宿主默认 30 秒——设为大于所用模型最长推理时长（如 190000≈190 秒，需大于该任务的模型 hard_timeout）。0 保持宿主默认。仅影响这两类任务。", 23,
+                              label_en="Schedule RPC Timeout (ms)", hint_en="Per-call RPC timeout for schedule/scene tasks. 0 = host default 30s."))
 
 
 class UsageSettings(PluginConfigBase):
@@ -1040,6 +1043,20 @@ class ProactiveSettings(PluginConfigBase):
             "主动巡检间隔（分钟）", "建议 10 分钟。更短只会增加检查频率，不代表一定发送更多消息。", 1,
             label_en="Proactive Patrol Interval (min)", hint_en="How often proactive opportunities are evaluated.",
         ),
+    )
+    dedup_hours: float = Field(
+        default=6, ge=0, le=72,
+        description="契机去重窗口（小时）：同一用户相同主题的机会在此窗口内只投递一次，避免同一话题反复占用 Planner 评估。",
+        json_schema_extra=_ui(
+            "契机去重窗口（小时）", "同一用户相同 topic 的机会在该窗口内只投递一次；0=关闭去重。默认 6 小时。", 1,
+            label_en="Topic Dedup Window (h)", hint_en="Same-topic opportunities are delivered once within this window. 0 disables."),
+    )
+    daily_eval_max: int = Field(
+        default=8, ge=0, le=100,
+        description="每日契机评估预算：投递给 Planner 评估的次数上限（与发送额度分离）；0=不限制。",
+        json_schema_extra=_ui(
+            "每日评估预算", "投递给 Planner 评估的每日次数上限，与每日主动发送额度分离——评估被否决也计数。0=不限制。默认 8。", 1,
+            label_en="Daily Evaluation Budget", hint_en="Daily cap on Planner evaluations (separate from send quota). 0 = unlimited."),
     )
     min_interval_minutes: int = Field(
         default=180, ge=1, le=1440,

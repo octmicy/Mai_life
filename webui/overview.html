@@ -1418,8 +1418,11 @@
     const curStart = sc.current?.start || '';
     const curEnd = sc.current?.end || '';
 
-    document.getElementById('sched-title').textContent =
-      `${isYesterday ? '昨日生活框架回顾' : isToday ? '今日生活框架与微场景时间线' : '明日生活框架预览'} (${dayStr || '—'})`;
+    const fallbackBadge = isToday && sc.source === 'fallback'
+      ? ' <span class="ml-badge ml-badge-warn" title="当日模型生成失败，使用模板兜底日程">模板兜底</span>' : '';
+
+    document.getElementById('sched-title').innerHTML =
+      `${isYesterday ? '昨日生活框架回顾' : isToday ? '今日生活框架与微场景时间线' : '明日生活框架预览'} (${dayStr || '—'})${fallbackBadge}`;
 
     const ganttEl = document.getElementById('sched-gantt-track');
     const gridEl = document.getElementById('sched-nodes-grid');

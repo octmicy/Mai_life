@@ -103,6 +103,73 @@ class LifeMemoryTests(unittest.IsolatedAsyncioTestCase):
         triggered=await engine.patrol(now,await self.store.get_state())
         self.assertTrue(triggered); self.assertEqual(ctx.maisaka.calls[0]["stream_id"],"stream-2")
 
+    async def test_patrol_topic_dedup_window(self):
+        """v1.27.0（Issue #19）：同 topic 机会在去重窗口内只投递一次；窗口外的同 topic 可再投。"""
+        await self.store.sync_users([UserProfile(user_id="10001",proactive_enabled=True,daily_proactive_max=10)])
+        await self.store.set_user_stream("10001","stream-1")
+        now=self.now.replace(hour=10)
+        self.config.proactive.dedup_hours=6
+        for index in range(2):
+            await self.store.add_opportunity({"id":f"op-dup-{index}","framework_id":"f","topic":"同一个话题",
+                "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
+        self.assertTrue(await engine.patrol(now,await self.store.get_state()))
+        first_calls=len(ctx.maisaka.calls)
+        # 第二个同 topic 机会被去重剔除：patrol 无候选可投。
+        self.assertFalse(await engine.patrol(now+timedelta(minutes=10),await self.store.get_state()))
+        self.assertEqual(len(ctx.maisaka.calls),first_calls)
+        skips=await self.store.proactive_skip_count("10001","topic_dedup",now.strftime("%Y-%m-%d"))
+        self.assertGreaterEqual(skips,1)
+
+    async def test_patrol_daily_eval_budget(self):
+        """v1.27.0（Issue #19）：评估预算用尽后 patrol 短路，不再向 Planner 投递。"""
+        profile=UserProfile(user_id="10001",proactive_enabled=True,daily_proactive_max=10)
+        await self.store.sync_users([profile]); await self.store.set_user_stream("10001","stream-1")
+        now=self.now.replace(hour=10)
+        self.config.proactive.daily_eval_max=1
+        await self.store.add_opportunity({"id":"op-e1","framework_id":"f","topic":"话题A",
+            "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
+        self.assertTrue(await engine.patrol(now,await self.store.get_state()))   # 第 1 次评估放行
+        self.store.conn.execute(
+            "UPDATE proactive_events SET expires_at=0 WHERE status='pending'"); self.store.conn.commit()
+        self.assertFalse(await engine.patrol(now+timedelta(minutes=20),await self.store.get_state()))
+        self.assertEqual(len(ctx.maisaka.calls),1)
+        skips=await self.store.proactive_skip_count("","eval_budget",now.strftime("%Y-%m-%d"))
+        self.assertGreaterEqual(skips,1)
+
+    async def test_patrol_silence_backoff_after_expired_streak(self):
+        """v1.27.0（Issue #19）：连续 2 次投递未被回应 → 退避窗口内短路；最近一次已发送则复位。"""
+        profile=UserProfile(user_id="10001",proactive_enabled=True,daily_proactive_max=10)
+        await self.store.sync_users([profile]); await self.store.set_user_stream("10001","stream-1")
+        now=self.now.replace(hour=10)
+        await self.store.add_opportunity({"id":"op-s1","framework_id":"f","topic":"话题B",
+            "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        ctx=ProactiveContext(); engine=ProactiveEngine(ctx,self.store,self.config,None,DummyLogger())
+        self.assertTrue(await engine.patrol(now,await self.store.get_state()))
+        # 两次投递均未回应：构造连续 expired 事件（第一次投递也过期、第二次刚投后手工过期）。
+        self.store.conn.execute(
+            "UPDATE proactive_events SET expires_at=0 WHERE status='pending'"); self.store.conn.commit()
+        await self.store.expire_pending(now.timestamp()+60,max_retries=0,day=now.strftime("%Y-%m-%d"))
+        await self.store.add_opportunity({"id":"op-s2","framework_id":"f","topic":"话题B2",
+            "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        self.assertTrue(await engine.patrol(now+timedelta(minutes=30),await self.store.get_state()))
+        self.store.conn.execute(
+            "UPDATE proactive_events SET expires_at=0 WHERE status='pending'"); self.store.conn.commit()
+        await self.store.expire_pending(now+timedelta(minutes=31),max_retries=0,day=now.strftime("%Y-%m-%d"))
+        # 连续 2 次 expired → 退避生效：30 分钟后仍在窗口内（base 10min×2=20min）。
+        await self.store.add_opportunity({"id":"op-s3","framework_id":"f","topic":"话题C",
+            "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        self.assertFalse(await engine.patrol(now+timedelta(minutes=40),await self.store.get_state()))
+        self.assertEqual(len(ctx.maisaka.calls),2)
+        # 最近一次事件改为已发送 → 退避复位。
+        self.store.conn.execute(
+            "UPDATE proactive_events SET sent_at=?, status='sent' WHERE status='expired'",
+            (now.timestamp()+3600,)); self.store.conn.commit()
+        await self.store.add_opportunity({"id":"op-s4","framework_id":"f","topic":"话题D",
+            "motive":"分享","weight":0.9,"privacy":"normal","expires_at":now.timestamp()+7200})
+        self.assertTrue(await engine.patrol(now+timedelta(minutes=50),await self.store.get_state()))
+
     async def test_pending_proactive_prevents_quota_race_until_expiry(self):
         profile=UserProfile(user_id="10001",role="owner",proactive_enabled=True,daily_proactive_max=2)
         await self.store.sync_users([profile]); await self.store.set_user_stream("10001","stream-1")

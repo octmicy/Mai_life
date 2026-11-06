@@ -35,6 +35,23 @@ class ProactiveEngine:
         return score
 
     # 一次巡检最多选择一个“用户 + 生活契机”交给 Planner。
+    async def _silence_backoff_seconds(self, now: Any) -> int:
+        """Issue #19 沉默退避：最近投递连续未回应（尾部连续 expired 且未发送）达到 2 条起，
+        有效巡检间隔按 2 的幂翻倍，封顶 3 小时；最近一次事件为已发送即复位。"""
+        cfg=getattr(self.config,"proactive",None)
+        base=max(1,int(getattr(cfg,"patrol_interval_minutes",10) or 10))*60
+        last=await self.store.last_proactive_attempt()
+        if not last or float(last.get("sent_at") or 0)>0:return 0
+        if str(last.get("status") or "")!="expired":return 0
+        history=await self.store.recent_proactive_streak()
+        streak=0
+        for item in history:
+            if str(item.get("status") or "")=="expired" and float(item.get("sent_at") or 0)==0:
+                streak+=1
+            else:break
+        if streak<2:return 0
+        return min(3*3600,base*(2**min(4,streak-1)))
+
     async def patrol(self, now: Any, state: dict[str,Any]) -> bool:
         """先执行额度、休息和间隔硬过滤，再将最高分候选交给 Planner 终审。"""
         cfg=self.config.proactive
@@ -48,6 +65,21 @@ class ProactiveEngine:
             # 精力不足属于全局跳过（不区分用户），记一次便于诊断主动发言偏低。
             await self.store.record_proactive_skip("", "low_energy", now.timestamp(), day=day)
             return False
+        # Issue #19：每日评估预算（与发送额度分离）——投递次数用尽即本轮短路。
+        eval_max=max(0,int(getattr(cfg,"daily_eval_max",0) or 0))
+        if eval_max>0:
+            used=await self.store.proactive_skip_count("","evaluated",day)
+            if used>=eval_max:
+                await self.store.record_proactive_skip("","eval_budget",now.timestamp(),day=day)
+                return False
+        # Issue #19：沉默退避——最近一次投递仍未回应且落在退避窗口内时跳过本轮。
+        backoff_seconds=await self._silence_backoff_seconds(now)
+        if backoff_seconds>0:
+            last=await self.store.last_proactive_attempt()
+            last_at=float(last.get("created_at") or 0)
+            if last_at and now.timestamp()-last_at<backoff_seconds:
+                await self.store.record_proactive_skip("","silence_backoff",now.timestamp(),day=day)
+                return False
         opportunities=await self.store.active_opportunities(now.timestamp())
         if not opportunities:return False
         users=await self.store.list_users(proactive_only=True)
@@ -86,6 +118,14 @@ class ProactiveEngine:
                 score=self._score(user,opportunity,state,now,hours_map.get(user_id,{}),
                                   backlogs_map.get(user_id,[]))
                 if score>=cfg.score_threshold:
+                    # Issue #19：topic 去重窗口——同一用户相同主题的机会只投递一次。
+                    dedup_hours=max(0.0,float(getattr(cfg,"dedup_hours",6) or 0))
+                    if dedup_hours>0:
+                        topic_key=" ".join(str(opportunity.get("topic") or "").split()).lower()
+                        if topic_key and await self.store.recent_topic_delivered(
+                                user_id,topic_key,now.timestamp()-dedup_hours*3600):
+                            await self.store.record_proactive_skip(user_id,"topic_dedup",now.timestamp(),day=day)
+                            continue
                     candidates.append((score,user,opportunity)); added=True
             if matched and not added:
                 # 有匹配该用户的机会，但评分都未达阈值。
@@ -112,6 +152,9 @@ class ProactiveEngine:
         reason=json.dumps({"source":"mai_life","event_id":event_id,"topic":opportunity["topic"],"motive":opportunity["motive"],
                            "relationship_temperature":user["temperature"],"score":round(score,3),
                            "privacy":opportunity.get("privacy","normal"),"instruction":instruction},ensure_ascii=False)
+        # Issue #19：评估预算计数——投递给 Planner 的每次评估都计入每日预算。
+        # Issue #19：评估预算计数（全局按日统计，user_id 置空与预算查询口径一致）。
+        await self.store.record_proactive_skip("","evaluated",now.timestamp(),day=day)
         try:
             result=await self.ctx.maisaka.proactive.trigger(
                 stream_id=user["stream_id"],intent="mai_life_proactive",reason=reason,

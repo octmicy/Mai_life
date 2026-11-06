@@ -1,4 +1,4 @@
-"""Mai_life v1.26.0 插件入口。"""
+"""Mai_life v1.26.1 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -571,12 +571,16 @@ class MaiLifePlugin(MaiBotPlugin):
             assert self._env and self._schedule and self._store and self._state and self._memory
             now=self._env.now()
             weather,memory_context=await self._maintenance_parallel(now,force_weather,allow_weather_network)
+            # Issue #20：日程/场景的 RPC 超时按配置放宽后，tick 外层超时随之抬高，避免外层先掐。
+            rpc_seconds=max(0,int(getattr(self.config.models,"llm_rpc_timeout_ms",0) or 0))//1000
+            schedule_timeout=max(MAINTENANCE_SCHEDULE_TIMEOUT,rpc_seconds+15)
+            scene_timeout=max(MAINTENANCE_SCENE_TIMEOUT,rpc_seconds+10)
             # 主链 1：当日框架。超时→本次跳过细化与每日记忆（都依赖框架），下一 tick 幂等重试。
             try:
                 nodes=await asyncio.wait_for(
                     self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),
                                               memory_context=memory_context,environment=self._env.snapshot(now)),
-                    timeout=MAINTENANCE_SCHEDULE_TIMEOUT)
+                    timeout=schedule_timeout)
             except TimeoutError:
                 self.ctx.logger.warning("[MaiLife] 日程生成超时，本 tick 跳过细化与每日记忆")
                 return
@@ -584,7 +588,7 @@ class MaiLifePlugin(MaiBotPlugin):
             try:
                 await asyncio.wait_for(
                     self._schedule.expand_due(now,nodes,state,self._env.weather_text(weather)),
-                    timeout=MAINTENANCE_SCENE_TIMEOUT)
+                    timeout=scene_timeout)
             except TimeoutError:
                 self.ctx.logger.warning("[MaiLife] 场景细化超时，下一 tick 重试")
             context=await self._schedule.context(now)
@@ -1400,18 +1404,45 @@ class MaiLifePlugin(MaiBotPlugin):
         return True
 
     @classmethod
-    def _inject_planner_context(cls,kwargs:dict[str,Any],suffix:str)->dict[str,Any]:
-        """按载荷类型注入：items（1.2.0+）就地追加 text part；messages（旧版）并入 system。"""
+    def _inject_planner_context(cls,kwargs:dict[str,Any],stable:str,volatile:str="")->dict[str,Any]:
+        """按载荷类型注入（Issues #17/#21 缓存友好装配）：
+
+        stable 进 system 追加（慢变块，跨轮尽量稳定参与前缀缓存）；
+        volatile 进末尾 UserMessageItem（逐轮变化区，宿主自己的"当前时间"也在尾部）；
+        messages 旧契约同理（system 并 stable，最后一条 user 并 volatile）。
+        """
         items=kwargs.get("items")
         if isinstance(items,list):
-            cls._append_item_text(items,suffix)
+            cls._append_item_text(items,stable)
+            if volatile:cls._append_user_item_text(items,volatile)
             return {"action":"continue","modified_kwargs":kwargs}
         messages=kwargs.get("messages")
         if isinstance(messages,list):
-            kwargs["messages"]=cls._planner_messages_with_context(messages,suffix)
+            result=cls._planner_messages_with_context(messages,stable)
+            if volatile:
+                for item in reversed(result):
+                    if isinstance(item,dict) and str(item.get("role") or "").lower()=="user" \
+                            and isinstance(item.get("content"),str):
+                        item["content"]=str(item["content"])+"\n"+volatile
+                        break
+            kwargs["messages"]=result
             return {"action":"continue","modified_kwargs":kwargs}
         # 两个键都不存在：契约再次变化，宁可放弃本次注入也不改坏载荷。
         return {"action":"continue"}
+
+    @staticmethod
+    def _append_user_item_text(items:list[Any],note:str)->bool:
+        """把逐轮变化的背景追加到最后一条 UserMessageItem（缓存友好：尾部本就逐轮变化）。"""
+        for item in reversed(items):
+            if not isinstance(item,dict) or item.get("item_type") != "UserMessageItem":
+                continue
+            parts=item.get("parts")
+            if not isinstance(parts,list) or not parts:continue
+            last=parts[-1]
+            if isinstance(last,dict) and last.get("type")=="text":
+                last["text"]=f"{last.get('text') or ''}\n{note}"
+                return True
+        return False
 
     @staticmethod
     def _planner_messages_with_context(messages:Any,suffix:str)->list[dict[str,Any]]:
@@ -1429,29 +1460,31 @@ class MaiLifePlugin(MaiBotPlugin):
         """识别插件主动任务，并向目标私聊 Planner 追加生活和转述边界。"""
         if self._stopping or self._reloading or not self.config.plugin.enabled:return {"action":"continue"}
         session=str(kwargs.get("session_id") or ""); suffix=""
+        stable=""  # 慢变背景（进 system，跨轮稳定参与前缀缓存）
+        volatile=""  # 快变背景与一次性提示（进末尾 UserMessageItem，逐轮变化区）
         active=await self._activate_planner_task(session,self._planner_payload(kwargs))
         group_passive=bool(not active and self.config.group.turn_enabled and self._has_recent_group_turn(session))
         payload:dict[str,Any]|None=None
         if self.config.context.enabled and not group_passive:
             payload=await self._prompt_payload(session)
             if payload:
-                suffix=self._prompts.planner(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
-                                             payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
-                                             int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
-                                             bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
+                stable,volatile=self._prompts.planner_split(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
+                                                            payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
+                                                            int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
+                                                            bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
         if active:
             # reply 的 msg_id 必须引用会话最近一条真实用户消息：proactive:xxx 任务编号宿主 reply 工具
             # 查不到（find_source_message_by_id 不认），报错还会被 to_display_message_id 哈希成乱码。
             runtime=self._session_runtime.get(session) or {}
-            suffix+=self._active_tasks.planner_instruction(active,str(runtime.get("message_id") or ""))
+            volatile+=self._active_tasks.planner_instruction(active,str(runtime.get("message_id") or ""))
         if active and active.kind=="relay" and self._relay and self.config.group.relay_enabled:
-            suffix+=await self._relay.prompt_context(session,active.task_id)
-        # 麦麦绘图联动：对话/状态触发的生活分享引导（独立 suffix，不受 _clip(4000) 截断影响）。
-        suffix+=self._moment_guide_note(session,payload,active,group_passive,kwargs)
-        # 睡醒补读知晓（主人决策）：下一次群被动轮/晨间触发轮一次性注入，不过 _clip 截断。
-        suffix+=self._consume_group_catchup(session)
-        if not suffix:return {"action":"continue"}
-        return self._inject_planner_context(kwargs,suffix)
+            volatile+=await self._relay.prompt_context(session,active.task_id)
+        # 麦麦绘图联动：对话/状态触发的生活分享引导（一次性提示，归尾部快变区）。
+        volatile+=self._moment_guide_note(session,payload,active,group_passive,kwargs)
+        # 睡醒补读知晓（主人决策）：下一次群被动轮/晨间触发轮一次性注入，归尾部快变区。
+        volatile+=self._consume_group_catchup(session)
+        if not stable and not volatile:return {"action":"continue"}
+        return self._inject_planner_context(kwargs,stable,volatile)
 
     @HookHandler("maisaka.planner.after_response",mode=HookMode.OBSERVE)
     async def on_planner_after(self,**kwargs:Any)->None:
@@ -2031,11 +2064,23 @@ class MaiLifePlugin(MaiBotPlugin):
             return await self._send_command(kwargs,"只有私聊管理员可以重新生成日程。"+ADMIN_IDS_HINT)
         if not self._ready:return await self._send_command(kwargs,"服务尚未初始化。")
         assert self._env and self._schedule and self._memory and self._store
-        now=self._env.now(); weather=await self._store.get_weather() or {"description":"天气未知"}
-        memory_context=await self._memory.schedule_context(now)
-        nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True,memory_context=memory_context,
-                                              environment=self._env.snapshot(now))
-        return await self._send_command(kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
+        # Issue #20：生成耗时可超命令 RPC 上限——后台执行，立即回执，完成后单独通知。
+        now=self._env.now()
+        self._spawn_transient(self._regenerate_schedule_job(now,kwargs),"mai-life-regen-schedule")
+        return await self._send_command(kwargs,"已开始重新生成今日日程，完成后会通知你。")
+
+    async def _regenerate_schedule_job(self,now:datetime,cmd_kwargs:dict[str,Any])->None:
+        """后台重生成今日日程；完成后按原命令上下文回执结果。"""
+        try:
+            weather=await self._store.get_weather() or {"description":"天气未知"}
+            memory_context=await self._memory.schedule_context(now)
+            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True,
+                                                  memory_context=memory_context,environment=self._env.snapshot(now))
+            await self._send_command(cmd_kwargs,f"已重新生成今日日程，共 {len(nodes)} 个节点。")
+        except Exception as exc:
+            self.ctx.logger.error(f"[MaiLife] 重生日程失败: {exc}")
+            try:await self._send_command(cmd_kwargs,f"重新生成日程失败：{str(exc)[:120]}")
+            except Exception:self.ctx.logger.warning("[MaiLife] 重生日程失败回执发送失败")
 
     @Command(name="/麦麦休息测试",pattern=r"(?:/麦麦休息测试|/mai_rest_test)(?=\s|$)",description="管理员查看休息闸门状态")
     async def cmd_rest_test(self,**kwargs:Any)->tuple[bool,str,int]:
@@ -2477,7 +2522,9 @@ class MaiLifePlugin(MaiBotPlugin):
             yesterday_nodes=await self._store.get_framework(yesterday)
             yesterday_scenes=await self._store.get_scenes_by_framework_ids(
                 [str(node.get("id") or "") for node in yesterday_nodes])
+            framework_source=str((nodes[0].get("source") or "llm")) if nodes else "fallback"
             return {"day":day,"generated_at":now.isoformat(timespec="seconds"),
+                    "source":framework_source,
                     "current":_node_view(context.get("current") or {}),
                     "next":{"kind_zh":_SCHEDULE_KIND_ZH.get(str(nxt.get("kind") or ""),str(nxt.get("kind") or "") or "未知"),
                             "summary":str(nxt.get("summary") or ""),
@@ -2863,7 +2910,9 @@ class MaiLifePlugin(MaiBotPlugin):
                                  "pending_expire_seconds":int(cfg.proactive.pending_expire_seconds),
                                  "max_retries_per_opportunity":int(cfg.proactive.max_retries_per_opportunity),
                                  "minimum_energy":int(cfg.proactive.minimum_energy),
-                                 "score_threshold":round(float(cfg.proactive.score_threshold),2)},
+                                 "score_threshold":round(float(cfg.proactive.score_threshold),2),
+                                 "dedup_hours":round(float(cfg.proactive.dedup_hours),1),
+                                 "daily_eval_max":int(cfg.proactive.daily_eval_max)},
                     "usage":{"enabled":_switch(cfg.usage.enabled),"retention_days":int(cfg.usage.retention_days)}}
             # editable:各节可经 webui_config_save 回写的字段与类型（非标量与派生键天然缺席）。
             editable:dict[str,dict[str,str]]={}

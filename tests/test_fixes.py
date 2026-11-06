@@ -2781,11 +2781,11 @@ class V1146BedtimePayloadTests(unittest.IsolatedAsyncioTestCase):
         result = await plugin.on_planner(session_id="stream-10001", items=[
             {"item_type": "UserMessageItem", "meta": {}, "parts": [{"type": "text", "text": "在吗"}]}])
         items = result.get("modified_kwargs", {}).get("items") or []
-        injected = next((item for item in items if item.get("item_type") == "SystemMessageItem"), None)
-        self.assertIsNotNone(injected)
-        note = injected["parts"][0]["text"]
+        # v1.27.0：相位提示归 volatile（尾部 UserMessageItem，逐轮变化区）。
+        tail = next((item for item in items if item.get("item_type") == "UserMessageItem"), None)
+        self.assertIsNotNone(tail)
+        note = tail["parts"][-1]["text"]
         self.assertIn("小米", note)
-        self.assertNotIn("麦麦", note)
         self.assertIn("【睡前氛围】", note)
 
     async def test_bot_name_refresh_reads_host_nickname_and_propagates(self):
@@ -4256,7 +4256,7 @@ class V11412WebuiScheduleTests(unittest.IsolatedAsyncioTestCase):
              "summary": "看书", "location": "客厅", "energy_load": 0.1, "shareability": 0.3}])
         data = await plugin.webui_schedule()
         self.assertEqual(set(data), {"day", "generated_at", "current", "next", "scene",
-                                     "nodes", "tomorrow", "yesterday"})
+                                     "nodes", "tomorrow", "yesterday", "source"})
         self.assertEqual(data["day"], today)
         self.assertTrue(str(data["generated_at"] or ""))
         # 节点表：字段逐字对齐，起止为 HH:MM，类型中译，场景按 framework_id 关联。
@@ -4923,7 +4923,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
                                                   "recent_user_silence_minutes",
                                                   "pending_expire_seconds",
                                                   "max_retries_per_opportunity",
-                                                  "minimum_energy", "score_threshold"})
+                                                  "minimum_energy", "score_threshold",
+                                                  "dedup_hours", "daily_eval_max"})
         self.assertEqual(set(data["usage"]), {"enabled", "retention_days"})
         serialized = json.dumps(data, ensure_ascii=False)
         self.assertNotIn("sk-top-secret", serialized)  # 本 API 不出任何 Key
@@ -5569,7 +5570,8 @@ class PlannerReplyAnchorTests(unittest.IsolatedAsyncioTestCase):
         plugin._session_runtime[session] = {"user_id": "100099", "message_id": "229855216"}
         result = await plugin.on_planner(session_id=session,
                                          messages=planner_task_messages(task_id, "event-anchor"))
-        content = result["modified_kwargs"]["messages"][0]["content"]
+        # v1.27.0：任务指令归尾部 user 消息（缓存友好装配）。
+        content = result["modified_kwargs"]["messages"][-1]["content"]
         self.assertIn("msg_id 设为 229855216", content)
         self.assertIn("不要把它当作 msg_id", content)
         self.assertNotIn("msg_id 设为该任务编号", content)
@@ -5580,7 +5582,7 @@ class PlannerReplyAnchorTests(unittest.IsolatedAsyncioTestCase):
         # 空会话：_session_runtime 没有该 session，调用点取不到 message_id，退回旧措辞。
         result = await plugin.on_planner(session_id=session,
                                          messages=planner_task_messages(task_id, "event-anchor"))
-        content = result["modified_kwargs"]["messages"][0]["content"]
+        content = result["modified_kwargs"]["messages"][-1]["content"]
         self.assertIn("msg_id 设为该任务编号", content)
         self.assertNotIn("最近一条真实用户消息", content)
 

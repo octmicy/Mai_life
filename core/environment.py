@@ -292,7 +292,8 @@ class EnvironmentService:
             except Exception:pass
         upcoming=self._upcoming_festival(day)
         return {
-            "iso_time":current.isoformat(timespec="seconds"),"timezone":str(self.config.environment.timezone),
+            "iso_time":current.isoformat(timespec="minutes"),  # Issue #17：分钟粒度，秒级抖动会逐轮打断 LLM 前缀缓存
+            "timezone":str(self.config.environment.timezone),
             "date":day.isoformat(),"weekday":weekday,"time_period":self._time_period(current.hour),
             "is_workday":is_workday,"day_type":holiday_name or ("工作日" if is_workday else "休息日"),
             "holiday":holiday_name,"lunar":lunar_text,"solar_term":solar_term or "无",

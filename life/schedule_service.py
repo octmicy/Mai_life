@@ -133,10 +133,39 @@ class ScheduleService:
         return problems
 
     def _schedule_reference(self,day:str,weekend:bool)->list[dict[str,Any]]:
-        """提示词的「参考节奏」：用户模板可用时用模板；缺失/校验失败回退内置骨架（永远合法）。"""
+        """提示词的「参考节奏」：用户模板可用时用模板；缺失/校验失败回退内置骨架（永远合法）。
+
+        Issue #18：只返回 start/end/kind 三个结构字段——summary 一旦进提示词，
+        「禁止照抄」的祈使句挡不住模型逐字复述（1.14.13 实测 22 天里 15 天逐字等于模板）。
+        """
         template=self._template()
         nodes=template.get("weekend" if weekend else "workday")
-        return nodes if isinstance(nodes,list) and nodes else self._fallback(day,weekend)
+        source=nodes if isinstance(nodes,list) and nodes else self._fallback(day,weekend)
+        result=[]
+        for n in source:
+            if not isinstance(n,dict):continue
+            start=str(n.get("start") or ""); end=str(n.get("end") or "")
+            # 回落骨架是规范化后的 start_minute/end_minute 键，转回 HH:MM 保持参考节奏可用。
+            if not start:start=hhmm(int(n.get("start_minute") or 0))
+            if not end:end=hhmm(int(n.get("end_minute") or 0))
+            result.append({"start":start,"end":end,"kind":str(n.get("kind") or "")})
+        return result
+
+    def _template_copycat(self,day:str,weekend:bool,raw:Any)->bool:
+        """Issue #18 去重闸门：生成结果与模板/骨架的 summary 重合面 ≥50% 视为照抄（触发重试）。
+
+        比对对象是模板原文（未剥离前的完整 summary 集合），而不是剥离后的参考节奏。
+        """
+        if not isinstance(raw,list) or not raw:return False
+        template=self._template()
+        nodes=template.get("weekend" if weekend else "workday")
+        if not isinstance(nodes,list) or not nodes:
+            nodes=self._fallback(day,weekend)
+        normalize=lambda text:" ".join(str(text or "").split())
+        expected={normalize(n.get("summary")) for n in nodes if isinstance(n,dict)}
+        generated={normalize(n.get("summary")) for n in raw if isinstance(n,dict) and n.get("summary")}
+        if not generated:return False
+        return len(expected & generated)>=max(1,int(len(generated)*0.5))
 
     def _fallback(self, day: str, weekend: bool) -> list[dict[str, Any]]:
         builtin=[
@@ -366,13 +395,14 @@ class ScheduleService:
         if self.llm.task_available("schedule"):
             raw=await self._generate_with_retry(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,
                 task_kind="schedule",request_type="daily_schedule",
-                check=lambda item: bool(self._validate(day,item,state)))
+                check=lambda item: bool(self._validate(day,item,state)) and not self._template_copycat(day,weekend,item))
             if raw is None:
                 self.logger.warning("[MaiLife] 日程生成重试后仍不合格，使用兜底模板")
                 raw=fallback
             nodes=self._validate(day,raw,state)
+        source="fallback" if not nodes else "llm"
         if not nodes:nodes=fallback
-        await self.store.replace_framework(day,nodes); return await self.store.get_framework(day)
+        await self.store.replace_framework(day,nodes,source=source); return await self.store.get_framework(day)
 
     @staticmethod
     def current_and_next(nodes: list[dict[str, Any]], minute: int) -> tuple[dict[str, Any]|None,dict[str, Any]|None]:

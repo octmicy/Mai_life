@@ -586,7 +586,9 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         service3=ScheduleService(self.store,self.config,llm,self.tmp.name,DummyLogger())
         now=datetime(2026,9,19,3,0,tzinfo=timezone(timedelta(hours=8)))
         await service3.ensure_day(now,"人格","晴",force=True)
-        self.assertIn("安稳睡觉",llm.prompt)  # 内置骨架特征节点
+        # 参考节奏已剥离 summary（Issue #18）：骨架只贡献 start/end/kind 结构。
+        self.assertIn('"kind": "sleep"',llm.prompt)
+        self.assertNotIn("安稳睡觉",llm.prompt)
         self.assertNotIn("party",llm.prompt)
 
     async def test_offline_timeline_crosses_sleep_and_meal_boundaries(self):

@@ -163,8 +163,14 @@ class LLMService:
                 messages=prompt if has_system else [{"role":"system","content":system},*prompt]
         started=time.perf_counter(); result:dict[str,Any]={}
         try:
-            result=await self.ctx.llm.generate(**self._generate_call(task,messages,temperature,
-                                                                     self._output_limit(max_tokens)))
+            call_kwargs=self._generate_call(task,messages,temperature,self._output_limit(max_tokens))
+            rpc_timeout=int(getattr(self.config.models,"llm_rpc_timeout_ms",0) or 0)
+            if rpc_timeout>0 and task_kind in {"schedule","scene_detail"}:
+                # Issue #20：日程/场景细化的单次推理可能超过宿主默认 30s RPC 上限，
+                # 按调用放宽（只影响这两类任务，其余调用维持宿主默认）。
+                result=await self.ctx.call_capability("llm.generate",timeout_ms=rpc_timeout,**call_kwargs)
+            else:
+                result=await self.ctx.llm.generate(**call_kwargs)
             success=bool(isinstance(result,dict) and result.get("success") and result.get("response"))
             failure_reason=str(result.get("error") or "empty_response") if isinstance(result,dict) else "invalid_result"
             if not success and isinstance(result,dict) and result.get("reasoning"):

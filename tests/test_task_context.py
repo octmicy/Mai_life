@@ -108,7 +108,7 @@ class ActiveTaskHookTests(unittest.IsolatedAsyncioTestCase):
         plugin._store=self.store; plugin._env=EnvironmentService(self.store,config,DummyLogger())
         result=await plugin.on_planner(session_id=session,messages=planner_messages(
             task_id,{"mai_life_event_id":event_id}))
-        self.assertIn(task_id,result["modified_kwargs"]["messages"][0]["content"])
+        self.assertIn(task_id,result["modified_kwargs"]["messages"][-1]["content"])
         self.assertEqual((await self.store.proactive_event(event_id))["host_task_id"],task_id)
         plugin._session_runtime[session]={"user_id":user_id,"adapter":adapter}
         return plugin,session,event_id,task_id

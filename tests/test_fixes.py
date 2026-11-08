@@ -3447,7 +3447,7 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
         calls: list[tuple[str, dict]] = []
         async def _call(api_name, *, version="", **kwargs):
             calls.append((api_name, kwargs))
-            return {"success": True, "result": {"success": True, "task_id": "t1"}}
+            return {"accepted": True, "task_id": "t1"}
         plugin.ctx.api = _NS(call=_call)
         kwargs = self._kwargs()
         note = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
@@ -3457,6 +3457,7 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         api_name, kw = calls[0]
         self.assertEqual(api_name, "maimai-drawpic-plugin.drawpic_submit_v2")
+        self.assertEqual(kw.get("task_type"), "edit_image")   # v2 契约：显式图生图任务类型
         self.assertEqual(kw.get("stream_id"), session)
         images = kw.get("source_images") or []
         self.assertEqual(len(images), 1)

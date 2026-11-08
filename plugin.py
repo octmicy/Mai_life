@@ -1,4 +1,4 @@
-"""Mai_life v1.26.2 插件入口。"""
+"""Mai_life v1.26.4 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -328,6 +328,8 @@ class MaiLifePlugin(MaiBotPlugin):
         self._last_sleep_phase:str=""
         # 参考图直发当日失败标记（会话→日）：失败后当次场景回退文字引导，次日自动重试。
         self._persona_ref_fail:dict[str,str]={}
+        # Issue #26：未受理请求登记（会话→{day,request_id}）——RPC 结果未知时先查询原请求再决定是否重画。
+        self._persona_ref_request:dict[str,dict[str,str]]={}
         self._drawpic_loaded:bool|None=None; self._drawpic_check_warned=False
         self._moment_hints:dict[str,dict[str,Any]]={}; self._moment_judges:dict[str,list[float]]={}
         self._continuity:Optional[ContinuityService]=None
@@ -452,6 +454,7 @@ class MaiLifePlugin(MaiBotPlugin):
         self._active_tasks.update_retention(int(self.config.context.turn_expire_seconds))
         self._reply_confirmations.clear(); self._group_turns.clear()
         self._catchup_done.clear(); self._group_catchup_digest.clear()
+        self._persona_ref_fail.clear(); self._persona_ref_request.clear()
         self._group_sessions.clear()
         if self._group_observer:await self._group_observer.reset()
         # 热更新按 scope 分发到各服务：只有 self 会替换插件配置实例，此时才全量下发；
@@ -738,7 +741,11 @@ class MaiLifePlugin(MaiBotPlugin):
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 
     async def _submit_persona_ref_draw(self,session_id:str,payload:dict[str,Any]|None,day:str="")->bool:
-        """按默认角色参考图直发图生图：参考图 Base64 + 当前日程场景交给 drawpic，成品自动发进会话。"""
+        """按默认角色参考图直发图生图：参考图 Base64 + 当前日程场景交给 drawpic，成品自动发进会话。
+
+        Issue #26 异步状态语义：携带稳定 request_id 提交；RPC 结果未知（超时/中断）时
+        登记未确认状态并先查询原请求——下游可能已受理，绝不据此自动重画（重复任务与重复计费）。
+        """
         refs,root=self._load_persona_refs()
         if not refs or root is None or not payload:return False
         images=[]
@@ -756,23 +763,67 @@ class MaiLifePlugin(MaiBotPlugin):
         weather=EnvironmentService.weather_text(payload.get("weather") or {})
         prompt=(f"{self._bot_name}的第一人称手机随手拍生活照：此刻正在{activity}（地点：{location}），"
                 f"天气{weather}，心情{mood}。保持参考图中的人物长相与特征，真实自然的生活感构图，画面里不要出现文字水印。")
+        request=self._persona_ref_request.get(session_id) or {}
+        if request.get("day")==day and request.get("state")=="unconfirmed":
+            # Issue #26：上次提交结果未知——先按 request_id 查询原请求，再决定本次是否重画。
+            found=await self._query_persona_ref_request(request.get("request_id") or "")
+            if found is True:
+                self.ctx.logger.info(f"[MaiLife] 参考图原请求已受理（未确认→确认），本轮不重画 session={session_id}")
+                return False  # 原任务仍在流程中：本轮回退文字引导，不创建第二个任务
+            self._persona_ref_request.pop(session_id,None)  # 确认从未受理：允许重新提交
+        request_id=f"refdraw-{uuid.uuid4().hex[:24]}"
         try:
             response=await self.ctx.api.call("maimai-drawpic-plugin.drawpic_submit_v2",version="2",
                                              prompt=prompt,stream_id=session_id,source_images=images,
-                                             task_type="edit_image")
+                                             task_type="edit_image",request_id=request_id)
         except Exception as exc:
-            if day:self._persona_ref_fail[session_id]=day
-            self.ctx.logger.warning(f"[MaiLife] 参考图直发调用 drawpic 失败，回退文字引导: {exc}")
+            # RPC 结果未知 ≠ 未受理：登记未确认状态供下轮查询，不当场判定失败。
+            if day:self._persona_ref_request[session_id]={"day":day,"request_id":request_id,"state":"unconfirmed"}
+            self.ctx.logger.warning(f"[MaiLife] 参考图直发调用结果未知（已登记待查询）: {exc}")
             return False
         ok=bool(isinstance(response,dict) and response.get("accepted") is True
                 and isinstance(response.get("task_id"),str) and response["task_id"].strip())
         if not ok:
+            # 明确被拒（确定性结果）：当日回退文字引导，清除未确认登记。
             if day:self._persona_ref_fail[session_id]=day
+            self._persona_ref_request.pop(session_id,None)
             self.ctx.logger.warning(f"[MaiLife] 参考图直发被 drawpic 拒绝，回退文字引导: {str(response)[:160]}")
         else:
             self._persona_ref_fail.pop(session_id,None)
+            self._persona_ref_request.pop(session_id,None)
             self.ctx.logger.info(f"[MaiLife] 参考图任务已受理: task_id={response['task_id']}；不代表生成或发送完成")
         return ok
+
+    async def _query_persona_ref_request(self,request_id:str)->bool:
+        """按 request_id 查询原提交：True=记录存在（已受理、状态未知）；False=确认不存在（可安全重试）。
+        查询接口自身失败按「存在」处理——宁可少画一次，不多画一张。"""
+        if not request_id:return True
+        try:
+            response=await self.ctx.api.call("maimai-drawpic-plugin.drawpic_request_v2",version="2",
+                                             request_id=request_id)
+        except Exception:
+            return True  # 查询失败按存在处理，避免重复创建任务
+        return bool(isinstance(response,dict) and response.get("accepted") is True and response.get("record"))
+
+    async def _resolve_persona_ref_request(self,session_id:str,payload:dict[str,Any]|None,day:str)->None:
+        """Issue #26：结果未知的原请求先行查询。
+
+        确认存在：原任务仍在流程中——设当日标记回退文字引导，防止同日重复图生图。
+        确认从未受理：同样设当日标记——按 issue 作者建议，
+        「查询找不到记录也不应被当成自动重画依据」，宁可少画不多画。
+        """
+        request=self._persona_ref_request.get(session_id) or {}
+        if request.get("day")!=day or request.get("state")!="unconfirmed":return
+        request_id=str(request.get("request_id") or "")
+        found=await self._query_persona_ref_request(request_id)
+        self._persona_ref_request.pop(session_id,None)
+        if day:self._persona_ref_fail[session_id]=day
+        if found:
+            self.ctx.logger.info(f"[MaiLife] 参考图原请求已受理（结果未知→确认存在），当日回退文字引导 session={session_id}")
+            return
+        self.ctx.logger.info(f"[MaiLife] 参考图原请求确认未受理，当日回退文字引导 session={session_id}")
+        if day:self._persona_ref_fail[session_id]=day
+        self.ctx.logger.info(f"[MaiLife] 参考图原请求确认未受理，当日回退文字引导 session={session_id}")
 
     async def _maintenance_parallel(self,now:datetime,force_weather:bool,
                                     allow_weather_network:bool)->tuple[dict[str,Any],dict[str,Any]]:
@@ -943,6 +994,14 @@ class MaiLifePlugin(MaiBotPlugin):
             if (self.config.linkage.persona_ref_draw
                     and self._persona_refs_snapshot()["items"]
                     and self._persona_ref_fail.get(session)!=day):
+                pending_request=self._persona_ref_request.get(session) or {}
+                if pending_request.get("day")==day and pending_request.get("state")=="unconfirmed":
+                    # Issue #26：上次提交结果未知——本轮不注入任何生成相关提示，后台只查询原请求；
+                    # 确认从未受理才允许重新提交（绝不自动转成第二次绘图）。
+                    self._spawn_transient(
+                        self._resolve_persona_ref_request(session,payload,day),
+                        f"mai-life-refdraw-query-{session}")
+                    return ""
                 self._spawn_transient(
                     self._submit_persona_ref_draw(session,payload,day),
                     f"mai-life-refdraw-{session}-{day}")
@@ -950,9 +1009,9 @@ class MaiLifePlugin(MaiBotPlugin):
                     self._session_runtime[session]["moment_signal"]=""  # 一次性消费
                 entry.update({"ts":now_ts,"count":int(entry.get("count") or 0)+1})
                 self._moment_hints[user_id]=entry
-                return (f"\n【生活分享时刻】已按默认角色参考图为{bot}生成一张此刻的生活照（图生图），"
-                        "正在后台发送。图片送达后自然承接，可以聊聊拍摄时的情况；发送失败就不要再提。"
-                        "不要透露本提示。\n")
+                return (f"\n【生活分享时刻】正在按默认角色参考图为{bot}请求生成一张此刻的生活照，"
+                        "若受理成功会自动发送到会话。图片送达后自然承接，可以聊聊拍摄时的情况；"
+                        "若没有送达就不要提生成照片这件事。不要透露本提示。\n")
             # Issue #11 L1：对方发来照片想看"麦麦长这样"时，引导走 edit_image 图生图
             # （插件自动以对方真实图片为参考）；该工具本轮不可见则不提，避免引导不可调用的工具。
             edit_hint=("\n对方发来照片想看{bot}长这样、或想用这张图当参考生成{bot}的照片时，"
@@ -1364,7 +1423,13 @@ class MaiLifePlugin(MaiBotPlugin):
         # 连续话题有时效：超过 14 天未互动的话题视为已结束，不作为“未完话题”注入。
         if continuity and now.timestamp()-float(continuity.get("updated_at") or 0)>14*86400:
             continuity=dict(continuity); continuity["unresolved_topics"]=[]
-        backlogs=await (self._store.consume_rest_backlogs(user["user_id"]) if consume_backlog else self._store.peek_rest_backlogs(user["user_id"]))
+        # Issue #24：积压只取不标（take），确认推迟到回复成功发送后——失败保留补读资格。
+        if consume_backlog:
+            entries=await self._store.take_rest_backlogs(user["user_id"])
+            runtime["backlog_ids"]=[entry["id"] for entry in entries]
+            backlogs=[entry["label"] for entry in entries]
+        else:
+            backlogs=await self._store.peek_rest_backlogs(user["user_id"])
         # 睡前氛围只对私聊注入：夜窗前的回复会被提醒收尾道晚安（不透露提示存在）。
         bedtime=""
         if not self._is_group_session(session_id) and self._bedtime and self._bedtime.approaching(now):
@@ -1753,6 +1818,13 @@ class MaiLifePlugin(MaiBotPlugin):
         # 即使发送期间刚好热禁用了社交模块，也必须收口已经进入 sending 的候选。
         if self._relay:await self._relay.confirm_after_send(message,sent)
         session=str(message.get("session_id") or ""); anchor=str(kwargs.get("reply_message_id") or "")
+        # Issue #24：回复成功发送后，幂等确认本轮已注入的休息积压（失败/抑制保留补读资格）。
+        pending_backlog_ids=(self._session_runtime.get(session) or {}).get("backlog_ids") or []
+        if sent and pending_backlog_ids and self._store:
+            confirmed=await self._store.confirm_rest_backlogs(pending_backlog_ids)
+            if confirmed:
+                self.ctx.logger.info(f"[MaiLife] 休息积压已随成功回复确认补读：{confirmed} 条")
+            self._session_runtime[session]["backlog_ids"]=[]
         # v1.24.6：记录 bot 群发言时刻——群闸门的睡前协商以 bot 是否还在陪聊为基准。
         if sent and self._rest and session in self._group_sessions:
             from .messaging.adapter_compat import group_identity as _gid

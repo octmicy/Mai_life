@@ -1005,6 +1005,26 @@ class LifeStore:
                 now=time.time()
                 return [self._backlog_label(str(r[1]),float(r[2]),now) for r in rows]
 
+    async def take_rest_backlogs(self, user_id: str) -> list[dict[str, Any]]:
+        """Issue #24：读取未消费积压但**不标记消费**——确认时机推迟到回复成功发送之后。"""
+        async with self._lock:
+            rows=self.conn.execute(
+                "SELECT id,summary,created_at FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 5",
+                (user_id,),
+            ).fetchall()
+        now=time.time()
+        return [{"id":str(r[0]),"label":self._backlog_label(str(r[1]),float(r[2]),now)} for r in rows]
+
+    async def confirm_rest_backlogs(self, backlog_ids: Iterable[str]) -> int:
+        """按 id 幂等确认积压已随成功回复补读；返回实际确认条数。"""
+        ids=[str(item) for item in backlog_ids if str(item)]
+        if not ids:return 0
+        marks=",".join("?" for _ in ids)
+        async with self._lock:
+            with self._tx() as conn:
+                cursor=conn.execute(f"UPDATE rest_backlogs SET consumed=1 WHERE id IN ({marks})",ids)
+                return cursor.rowcount
+
     async def peek_rest_backlogs(self, user_id: str) -> list[str]:
         async with self._lock:
             rows=self.conn.execute("SELECT summary,created_at FROM rest_backlogs WHERE user_id=? AND consumed=0 ORDER BY created_at LIMIT 5",(user_id,)).fetchall()

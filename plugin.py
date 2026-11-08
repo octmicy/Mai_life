@@ -1,4 +1,4 @@
-"""Mai_life v1.26.1 插件入口。"""
+"""Mai_life v1.26.2 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -106,6 +106,15 @@ def _relative_age(created_at:float,now:float)->str:
     if delta<3600:return f"{int(delta//60)} 分钟前"
     if delta<86400:return f"{int(delta//3600)} 小时前"
     return f"{int(delta//86400)} 天前"
+
+
+def _as_number(value:Any)->float:
+    """宽容数值化：float 失败（如脏数据里的文本）返回 0.0，不拖垮整条 WebUI 查询。"""
+    if value is None or isinstance(value,bool):return 0.0
+    try:
+        result=float(value)
+    except (TypeError,ValueError):return 0.0
+    return result if math.isfinite(result) else 0.0
 
 
 def _switch(value:Any)->str:
@@ -2423,26 +2432,27 @@ class MaiLifePlugin(MaiBotPlugin):
             news=[{"title":str(item.get("title") or "")[:160],"summary":str(item.get("summary") or ""),
                    "url":str(item.get("url") or ""),
                    "content":str(item.get("content") or ""),
-                   "age":_relative_age(float(item.get("published_at") or item.get("fetched_at") or 0),now_ts),
-                   "score":round(float(item.get("relevance_score") or 0),2)}
+                   "age":_relative_age(_as_number(item.get("published_at") or item.get("fetched_at")),now_ts),
+                   "score":round(_as_number(item.get("relevance_score")),2)}
                   for item in await self._store.recent_news_items(now_ts,limit=10)]
-            news_full_text=_FULL_TEXT_SEP.join(
+            news_full_text=(_FULL_TEXT_SEP.join(
                 f"【{item['title']}】\n来源：{item['url'] or '—'}｜{item['age']}｜关联分 {item['score']}\n\n"
                 f"{item['content'] or item['summary'] or '（无正文）'}"
-                for item in news) or "（暂无新闻）"
+                for item in news) or "（暂无新闻）")[:200_000]
             # 探索笔记：summary 存储侧本就保留 5000 字全量；source_urls 是数组，拼成顿号串供网页显示。
             explorations=[{"topic":str(item.get("topic") or "")[:160],"query":str(item.get("query") or ""),
                            "summary":str(item.get("summary") or ""),
                            "sources_text":"、".join(str(u) for u in (item.get("source_urls") or [])[:10]),
-                           "age":_relative_age(float(item.get("created_at") or 0),now_ts),
-                           "score":round(float(item.get("relevance_score") or 0),2)}
+                           "age":_relative_age(_as_number(item.get("created_at")),now_ts),
+                           "score":round(_as_number(item.get("relevance_score")),2)}
                           for item in await self._store.recent_exploration_notes(now_ts,limit=10)]
-            explorations_full_text=_FULL_TEXT_SEP.join(
+            explorations_full_text=(_FULL_TEXT_SEP.join(
                 f"【{item['topic']}】\n查询词：{item['query'] or '—'}｜{item['age']}｜关联分 {item['score']}\n"
                 f"来源：{item['sources_text'] or '—'}\n\n{item['summary'] or '（无笔记）'}"
-                for item in explorations) or "（暂无探索笔记）"
+                for item in explorations) or "（暂无探索笔记）")[:200_000]
             # 搜索历史：查询词不截断，补错误类型与结果摘要（results JSON 解析为多行文本）。
-            searches=[{"time":datetime.fromtimestamp(float(item.get("created_at") or 0),tz=now.tzinfo).strftime("%m-%d %H:%M"),
+            # created_at 走宽容数值化并钳制到合法区间，脏行不拖垮整个 Tab（Issue #22）。
+            searches=[{"time":datetime.fromtimestamp(min(max(_as_number(item.get("created_at")),0),4102444800),tz=now.tzinfo).strftime("%m-%d %H:%M"),
                        "operation":str(item.get("operation") or ""),
                        "query":str(item.get("query") or ""),
                        "provider_type":str(item.get("provider_type") or ""),
@@ -2450,7 +2460,7 @@ class MaiLifePlugin(MaiBotPlugin):
                        "result_count":int(item.get("result_count") or 0),
                        "error_class":str(item.get("error_class") or ""),
                        "results_digest":_search_results_digest(item.get("results") or []),
-                       "duration_ms":round(float(item.get("duration_ms") or 0),1)}
+                       "duration_ms":round(_as_number(item.get("duration_ms")),1)}
                       for item in await self._store.recent_search_history(now_ts,limit=20)]
             # status 只回开关与计数。
             return {"status":{"information_enabled":_switch(info.get("enabled")),

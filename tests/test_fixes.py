@@ -3425,15 +3425,15 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("edit_image", note2)
 
     async def test_persona_ref_direct_draw_submits_and_falls_back(self):
-        """v1.26.0：参考图直发——开关开+参考图存在 → 提交 drawpic_submit_v2（Base64+场景 prompt）；
-        调用失败/开关关 → 回退文字引导。"""
+        """v1.26.4：参考图直发全链路——受理前只说「正在请求生成」；RPC 结果未知登记
+        未确认 request_id（不设 fail 标记、不自动重画）；未确认期间抑制提示并由
+        后台查询原请求；明确被拒才当日回退文字引导；开关关闭走普通 draw 引导。"""
         import base64 as _b64
         from types import SimpleNamespace as _NS
         plugin = await self._plugin()
         plugin.config.linkage.persona_ref_draw = True
         plugin._drawpic_loaded = True
         session = self._armed(plugin, "photo")
-        # 参考图落盘：直接写 data_dir/persona_refs（data_dir 指向临时目录）
         data_dir = self.tmp.name
         plugin.ctx.paths = _NS(data_dir=data_dir)
         import os as _os
@@ -3445,54 +3445,66 @@ class V11411GuideNoteTests(unittest.IsolatedAsyncioTestCase):
             {"id": "ref-a", "name": "定妆照", "file": "ref-a.png", "sha256": "x",
              "bytes": len(raw), "added_at": 0.0}])
         calls: list[tuple[str, dict]] = []
-        async def _call(api_name, *, version="", **kwargs):
+        async def _route(api_name, *, version="", **kwargs):
             calls.append((api_name, kwargs))
-            return {"accepted": True, "task_id": "t1"}
-        plugin.ctx.api = _NS(call=_call)
-        kwargs = self._kwargs()
-        note = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
-        self.assertIn("已按默认角色参考图", note)
-        self.assertNotIn("draw 工具", note)                      # 直发模式不再引导 draw
-        for _ in range(5): await asyncio.sleep(0)                # 让 transient 直发任务跑完
-        self.assertEqual(len(calls), 1)
-        api_name, kw = calls[0]
-        self.assertEqual(api_name, "maimai-drawpic-plugin.drawpic_submit_v2")
-        self.assertEqual(kw.get("task_type"), "edit_image")   # v2 契约：显式图生图任务类型
-        self.assertEqual(kw.get("stream_id"), session)
-        images = kw.get("source_images") or []
-        self.assertEqual(len(images), 1)
-        self.assertEqual(_b64.b64decode(images[0]), raw)          # Base64 与参考图字节一致
-        self.assertIn("第一人称手机随手拍", kw.get("prompt") or "")
-        self.assertIn("生活照", kw.get("prompt") or "")
-        # 一次性消费 + 频控已写。
-        self.assertEqual(plugin._session_runtime[session]["moment_signal"], "")
-        self.assertTrue(plugin._moment_hints.get("10001"))
-        # drawpic 调用失败：当次乐观返回，后台留当日失败标记；下一次触发回退 draw 引导。
-        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
-        self._armed(plugin, "photo")
-        async def _fail(api_name, *, version="", **kwargs): raise RuntimeError("drawpic 不可用")
-        plugin.ctx.api = _NS(call=_fail)
-        note2 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
-        self.assertIn("已按默认角色参考图", note2)   # 乐观文案（提交成败由后台决定）
+            if api_name == "maimai-drawpic-plugin.drawpic_submit_v2":
+                raise RuntimeError("提交结果未知（模拟 RPC 超时）")   # 结果未知 ≠ 未受理
+            if api_name == "maimai-drawpic-plugin.drawpic_request_v2":
+                return {"accepted": True, "record": {"task_id": "t-1", "status": "pending"}}
+            raise AssertionError(f"未预期的 API 调用: {api_name}")
+        plugin.ctx.api = _NS(call=_route)
+
+        kwargs = self._kwargs(); payload = self._payload()
+        note1 = plugin._moment_guide_note(session, payload, None, False, kwargs)
+        self.assertIn("正在按默认角色参考图", note1)     # 受理前只说「正在请求生成」
+        self.assertNotIn("已按", note1)                  # 不再声称已生成
         for _ in range(5): await asyncio.sleep(0)
-        self.assertEqual(len(calls), 1)              # 失败提交不再重试
-        self.assertEqual(plugin._persona_ref_fail.get(session),
-                         plugin._env.now().date().isoformat())
+        request = plugin._persona_ref_request.get(session) or {}
+        self.assertEqual(request.get("state"), "unconfirmed")   # RPC 未知 → 登记未确认
+        self.assertTrue(request.get("request_id","").startswith("refdraw-"))
+        self.assertNotIn(session, plugin._persona_ref_fail)     # 结果未知不当失败
+
+        # 未确认期间触发：本轮抑制提示，后台仅查询原请求（不重画）。
         _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
         self._armed(plugin, "photo")
-        note3 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
-        self.assertIn("【生活分享时刻】", note3)
-        self.assertIn("draw 工具", note3)            # 当日失败 → 回退文字引导
-        self.assertNotIn("已按默认角色参考图", note3)
+        note2 = plugin._moment_guide_note(session, payload, None, False, kwargs)
+        self.assertEqual(note2, "")                  # 未确认期间不注入生成相关提示
+        for _ in range(5): await asyncio.sleep(0)
+        self.assertEqual(calls[1][0], "maimai-drawpic-plugin.drawpic_request_v2")
+        self.assertNotIn(session, plugin._persona_ref_request)  # 查询后登记清除
+
+        # 查询确认从未受理 → resolver 设当日 fail 标记；下一次触发回退 draw 引导（不重画）。
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        self._armed(plugin, "photo")
+        note3 = plugin._moment_guide_note(session, payload, None, False, kwargs)
+        self.assertIn("【生活分享时刻】", note3)     # fail 标记 → persona 分支跳过 → draw 引导文本
+        self.assertIn("draw 工具", note3)
+        self.assertNotIn("正在按默认角色参考图", note3)
+        self.assertEqual(len(calls), 2)              # 查询确认后不再重画，无新调用
+
+        # 明确被拒（确定性结果）→ 当日回退文字引导。
+        _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
+        self._armed(plugin, "photo")
+        async def _reject(api_name, *, version="", **kwargs):
+            if api_name.endswith("drawpic_submit_v2"):
+                return {"accepted": False, "error": {"code": "INVALID_REQUEST"}}
+            raise AssertionError("被拒阶段不应有其他调用")
+        plugin.ctx.api = _NS(call=_reject)
+        note4 = plugin._moment_guide_note(session, payload, None, False, kwargs)
+        self.assertIn("【生活分享时刻】", note4)
+        self.assertIn("draw 工具", note4)            # 明确被拒 → 回退文字引导
+        self.assertNotIn("正在按默认角色参考图", note4)
+        self.assertIn(session, plugin._persona_ref_fail)
+
         # 开关关闭 → 永远走文字引导（重置当日频控计数，隔离额度因素）。
         _rewind_moment_clock(plugin, "10001", MOMENT_HINT_COOLDOWN_HOURS * 3600 + 300)
         plugin._moment_hints["10001"]["count"] = 0
         self._armed(plugin, "photo")
         plugin.config.linkage.persona_ref_draw = False
         plugin._persona_ref_fail.pop(session, None)
-        note4 = plugin._moment_guide_note(session, self._payload(), None, False, kwargs)
-        self.assertIn("draw 工具", note4)
-        self.assertEqual(len(calls), 1)
+        note5 = plugin._moment_guide_note(session, payload, None, False, kwargs)
+        self.assertIn("draw 工具", note5)
+        self.assertEqual(len(calls), 2)              # 开关关闭不再触发任何 drawpic 调用
 
     async def test_conversation_note_keywords_and_one_shot_consumption(self):
         plugin = await self._plugin()
@@ -5568,12 +5580,15 @@ class PlannerReplyAnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不要自行解释或连续追发", text)
         self.assertIn("插件仍会在本地按会话任务防重", text)
 
-    async def test_instruction_falls_back_to_task_number_without_message_id(self):
+    async def test_instruction_without_message_id_stops_recommending_task_number(self):
+        """v1.26.4（Issue #25）：取不到真实消息锚点时不再推荐把任务编号当 msg_id——
+        宿主 reply 的消息查找器无法识别 proactive:xxx，模型照做必然报错重试。"""
         task = await self._active_task()
         text = ActiveTaskRegistry.planner_instruction(task)
-        # 取不到真实消息（空会话）时退回旧措辞，仍以任务编号提示。
-        self.assertIn("msg_id 设为该任务编号", text)
-        self.assertNotIn("最近一条真实用户消息", text)
+        self.assertNotIn("msg_id 设为该任务编号", text)
+        self.assertNotIn("msg_id 设为", text)              # 任何消息号推荐都不出现
+        self.assertIn("没有可引用的真实用户消息锚点", text)
+        self.assertIn("不要把任务编号当作 msg_id", text)   # 防误用约束保留
         self.assertIn("一次任务最多产生一轮可见发送", text)
         # 缺省参数与显式空串等价。
         self.assertEqual(text, ActiveTaskRegistry.planner_instruction(task, ""))
@@ -5597,8 +5612,10 @@ class PlannerReplyAnchorTests(unittest.IsolatedAsyncioTestCase):
         # 空会话：_session_runtime 没有该 session，调用点取不到 message_id，退回旧措辞。
         result = await plugin.on_planner(session_id=session,
                                          messages=planner_task_messages(task_id, "event-anchor"))
+        # v1.26.4（Issue #25）：空锚点不再推荐把任务编号当 msg_id。
         content = result["modified_kwargs"]["messages"][-1]["content"]
-        self.assertIn("msg_id 设为该任务编号", content)
+        self.assertIn("没有可引用的真实用户消息锚点", content)
+        self.assertNotIn("msg_id 设为该任务编号", content)
         self.assertNotIn("最近一条真实用户消息", content)
 
 

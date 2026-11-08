@@ -331,8 +331,11 @@ class ActiveTaskRegistry:
                     "（这是目标会话最近一条真实用户消息），"
                     "不要改为较早的用户消息或 Bot 自己刚发出的消息。")
         else:
-            anchor=(f"当前主动任务编号是 {task.task_id}。若决定调用 reply，请优先把 msg_id 设为该任务编号，"
-                    "不要改为较早的用户消息或 Bot 自己刚发出的消息。")
+            # Issue #25：无真实消息锚点时绝不能再推荐把任务编号当 msg_id——
+            # 宿主 reply 的消息查找器无法识别 proactive:xxx，模型照做必然报错重试。
+            anchor=(f"当前主动任务编号是 {task.task_id}（仅插件内部编号）。"
+                    "本轮没有可引用的真实用户消息锚点：若调用 reply，"
+                    "不要把任务编号当作 msg_id（宿主无法识别、必然报错），也不要编造消息号。")
         return (
             "\n【Mai_life 主动任务约束】\n"
             f"{anchor}一次任务最多产生一轮可见发送；"

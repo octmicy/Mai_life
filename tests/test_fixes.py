@@ -4015,6 +4015,20 @@ class V11412WebuiDigestTests(unittest.IsolatedAsyncioTestCase):
         config.network.news_enabled = information_enabled
         return await build_plugin(self.store, config, llm=DummyLLM())
 
+    async def test_digest_survives_hostile_rows(self):
+        """v1.27.0（Issue #22）：脏行（文本时间戳/文本分数/NULL created_at）不拖垮整个 Tab，
+        数值降级为 0、时间降级为「未知」。"""
+        plugin = await self._plugin()
+        await self._seed_news(1)
+        self.store.conn.execute(
+            "UPDATE news_items SET published_at='不是时间戳', relevance_score='很高' WHERE id='news-0'")
+        rows=self.store.conn.execute("SELECT id FROM news_items").fetchall()
+        self.assertTrue(rows)
+        data = await plugin.webui_information_digest()
+        self.assertIn("news", data)          # 未走 success:False 兜底，正常出载荷
+        self.assertEqual(data["news"][0]["age"], "未知")
+        self.assertEqual(data["news"][0]["score"], 0.0)
+
     async def _seed_news(self, count: int) -> None:
         for index in range(count):
             await self.store.upsert_news_item({

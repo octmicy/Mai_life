@@ -758,18 +758,20 @@ class MaiLifePlugin(MaiBotPlugin):
                 f"天气{weather}，心情{mood}。保持参考图中的人物长相与特征，真实自然的生活感构图，画面里不要出现文字水印。")
         try:
             response=await self.ctx.api.call("maimai-drawpic-plugin.drawpic_submit_v2",version="2",
-                                             prompt=prompt,stream_id=session_id,source_images=images)
+                                             prompt=prompt,stream_id=session_id,source_images=images,
+                                             task_type="edit_image")
         except Exception as exc:
             if day:self._persona_ref_fail[session_id]=day
             self.ctx.logger.warning(f"[MaiLife] 参考图直发调用 drawpic 失败，回退文字引导: {exc}")
             return False
-        ok=bool(isinstance(response,dict) and response.get("success")
-                and isinstance(response.get("result"),dict) and response["result"].get("success"))
+        ok=bool(isinstance(response,dict) and response.get("accepted") is True
+                and isinstance(response.get("task_id"),str) and response["task_id"].strip())
         if not ok:
             if day:self._persona_ref_fail[session_id]=day
             self.ctx.logger.warning(f"[MaiLife] 参考图直发被 drawpic 拒绝，回退文字引导: {str(response)[:160]}")
         else:
             self._persona_ref_fail.pop(session_id,None)
+            self.ctx.logger.info(f"[MaiLife] 参考图任务已受理: task_id={response['task_id']}；不代表生成或发送完成")
         return ok
 
     async def _maintenance_parallel(self,now:datetime,force_weather:bool,

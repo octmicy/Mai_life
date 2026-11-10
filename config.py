@@ -12,14 +12,17 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.26.4"
+PLUGIN_VERSION = "1.26.5"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def _qq_id(value:Any,field_name:str)->str:
+    """Issue #34：放宽为字母数字下划线横线——官方网关 OpenID（32 位字母数字）可直接填入。
+    纯数字 QQ 号完全兼容；中文和空格仍然拒绝。"""
     text=str(value or "").strip()
-    if text and not re.fullmatch(r"[0-9]+",text):raise ValueError(f"{field_name} 必须填写纯数字 QQ 号")
+    if text and not re.fullmatch(r"[0-9A-Za-z_-]+",text):
+        raise ValueError(f"{field_name} 必须填写 QQ 号或 OpenID（字母数字下划线横线）")
     return text
 
 

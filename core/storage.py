@@ -1208,12 +1208,17 @@ class LifeStore:
                 self._expire_pending_locked(conn, now, max_retries, day)
 
     async def recent_topic_delivered(self, user_id: str, topic: str, since: float) -> bool:
-        """Issue #19 去重：该用户在 since 之后是否已投递过同 topic 的机会（不论 Planner 判定结果）。"""
+        """Issue #19 去重：该用户在 since 之后是否已投递过同 topic 的机会（不论 Planner 判定结果）。
+
+        Issue #30：调用方传入的 topic 已 lower()，SQL 侧用 lower(o.topic) 对齐——
+        SQLite 内置 lower() 只折叠 ASCII（与 Python .lower() 在 ASCII 范围一致），
+        中文 topic 无大小写不受影响。
+        """
         async with self._lock:
             row=self.conn.execute(
                 """SELECT 1 FROM proactive_events e
                 JOIN proactive_opportunities o ON o.id=e.opportunity_id
-                WHERE e.user_id=? AND o.topic=? AND e.created_at>? LIMIT 1""",
+                WHERE e.user_id=? AND lower(o.topic)=? AND e.created_at>? LIMIT 1""",
                 (user_id,topic,float(since)),
             ).fetchone()
             return row is not None

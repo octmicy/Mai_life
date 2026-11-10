@@ -168,6 +168,44 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.mark_pending_sent("s1",now+1))
         self.assertEqual((await self.store.get_user("1"))["proactive_count"],1)
 
+    async def test_recent_topic_delivered_case_insensitive(self):
+        """v1.26.5（Issue #30）：投递侧 lower() 后，含大写字母的 topic 也能命中去重窗口。"""
+        now=time.time()
+        for oid,topic in (("o1","Signal@1kHz"),("o2","beacon@2mhz")):
+            await self.store.add_opportunity({"id":oid,"framework_id":"f1","topic":topic,
+                "motive":"m","weight":1.0,"expires_at":now+3600})
+            await self.store.add_proactive_pending("e-"+oid,"u1",oid,"s1",now,now+600)
+        since=now-6*3600
+        self.assertTrue(await self.store.recent_topic_delivered("u1","signal@1khz",since))
+        self.assertTrue(await self.store.recent_topic_delivered("u1","beacon@2mhz",since))
+        self.assertFalse(await self.store.recent_topic_delivered("u2","signal@1khz",since))
+
+    def test_recent_day_overlap_gate(self):
+        """v1.27.0（Issue #33）：生成结果非固定节点与近 3 天重合 ≥50% → 判为重复。"""
+        svc=ScheduleService.__new__(ScheduleService)
+        now=datetime(2026,11,8,3,0,tzinfo=timezone(timedelta(hours=8)))
+        recent={"拼拼图","整理读书笔记","散步"}
+        # 全部非固定节点均与近期重合 → True
+        self.assertTrue(svc._recent_day_overlap(now,
+            [{"kind":"leisure","summary":"拼拼图"},{"kind":"study","summary":"整理读书笔记"},
+             {"kind":"leisure","summary":"散步"},{"kind":"work","summary":"新活动"}],recent))
+        # 低于阈值 → False
+        self.assertFalse(svc._recent_day_overlap(now,
+            [{"kind":"leisure","summary":"拼拼图"},{"kind":"work","summary":"全新活动"}],recent))
+        # 固定节点不参与重合比对
+        self.assertFalse(svc._recent_day_overlap(now,
+            [{"kind":"sleep","summary":"睡觉"},{"kind":"meal","summary":"吃饭"}],recent))
+
+    def test_qq_id_accepts_official_openid(self):
+        """v1.26.5（Issue #34）：_qq_id 放宽为字母数字下划线横线，官方网关 OpenID 可直接填入。"""
+        from Mai_life.config import _qq_id
+        self.assertEqual(_qq_id("C2C1ABCD1234567890EFGH","私聊用户"), "C2C1ABCD1234567890EFGH")
+        self.assertEqual(_qq_id("123456","私聊用户"), "123456")           # 纯数字不变
+        with self.assertRaises(ValueError):
+            _qq_id("有中文","私聊用户")
+        with self.assertRaises(ValueError):
+            _qq_id("a b c","私聊用户")                                    # 空格不允许
+
     async def test_proactive_confirmation_matches_exact_host_task(self):
         await self.store.sync_users([UserProfile(user_id="1")]); await self.store.set_user_stream("1","s1")
         now=time.time()

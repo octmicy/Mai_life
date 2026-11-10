@@ -167,6 +167,21 @@ class ScheduleService:
         if not generated:return False
         return len(expected & generated)>=max(1,int(len(generated)*0.5))
 
+    def _recent_day_overlap(self,now:datetime,raw:Any,recent_summaries:set)->bool:
+        """Issue #33：生成结果的非固定节点 summary 与最近 3 天重合 ≥50% 视为重复（触发重试）。
+
+        固定作息（sleep/meal/nap）天然重复不参与；重合判定按空白归一化精确匹配。
+        """
+        if not recent_summaries or not isinstance(raw,list):return False
+        normalize=lambda text:" ".join(str(text or "").split())
+        fixed={"sleep","meal","nap"}
+        generated={normalize(n.get("summary")) for n in raw
+                   if isinstance(n,dict) and str(n.get("kind") or "") not in fixed}
+        generated.discard("")
+        if not generated:return False
+        overlap=len(generated & recent_summaries)
+        return overlap>=max(2,int(len(generated)*0.5))
+
     def _fallback(self, day: str, weekend: bool) -> list[dict[str, Any]]:
         builtin=[
             {"start":"00:00","end":"08:00","kind":"sleep","summary":"安稳睡觉","location":"卧室","energy_load":8,"shareability":0.05},
@@ -392,10 +407,21 @@ class ScheduleService:
                 + "返回JSON数组。字段必须是start,end,kind,summary,location,energy_load,shareability。"
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         nodes=[]
+        # Issue #33：预读最近 3 天非固定节点 summary，供生成结果重复率闸门使用。
+        recent_summaries=set()
+        for offset in range(1,4):
+            past=(now-timedelta(days=offset)).date().isoformat()
+            for n in await self.store.get_framework(past):
+                kind=str(n.get("kind") or "")
+                if kind not in {"sleep","meal","nap"}:
+                    summary=" ".join(str(n.get("summary") or "").split())
+                    if summary: recent_summaries.add(summary)
         if self.llm.task_available("schedule"):
             raw=await self._generate_with_retry(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,
                 task_kind="schedule",request_type="daily_schedule",
-                check=lambda item: bool(self._validate(day,item,state)) and not self._template_copycat(day,weekend,item))
+                check=lambda item: bool(self._validate(day,item,state))
+                    and not self._template_copycat(day,weekend,item)
+                    and not self._recent_day_overlap(now,day,item,recent_summaries))
             if raw is None:
                 self.logger.warning("[MaiLife] 日程生成重试后仍不合格，使用兜底模板")
                 raw=fallback

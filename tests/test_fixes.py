@@ -4879,7 +4879,8 @@ class V11412WebuiConfigSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(data["context"]), {"enabled", "continuity_enabled",
                                                 "continuity_interval_minutes", "prompt_max_chars",
                                                 "outbound_turn_guard", "turn_expire_seconds",
-                                                "background_cache_minutes", "replyer_detail"})
+                                                "background_cache_minutes", "replyer_detail",
+                                                "planner_mode"})
         self.assertEqual(data["context"]["enabled"], "开启")
         # 休息闸门：窗口串由起止时刻拼接，静默时长取 bedtime 常量。
         self.assertEqual(set(data["rest_gate"]), {"enabled", "mode", "gate_mode", "wake_probability",
@@ -5393,14 +5394,14 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
         self.assertLessEqual(len(pages), 20)
         ids = [str(page.get("id") or "") for page in pages]
         self.assertEqual(len(set(ids)), len(ids))
-        self.assertTrue(any(str(page.get("placement") or "") == "workspace" for page in pages))
+        # v1.26.6：placement 已整体移除——workspace 被宿主停用（告警），sidebar 是默认值无需声明。
         total_doc_bytes = 0
         for page in pages:
             extra = set(page) - self.ALLOWED_PAGE_KEYS
             self.assertEqual(extra, set(), f"{page.get('id')} 含协议外属性: {sorted(extra)}")
+            self.assertNotIn("placement", page, f"{page.get('id')} 应省略 placement（宿主已停用 workspace，sidebar 为默认值）")
             self.assertEqual(page.get("mode"), "custom", f"{page.get('id')} 必须为 custom 模式")
             self.assertNotIn("document", page, "webui.json 不得内联 document 字段")
-            self.assertIn(str(page.get("placement") or ""), {"sidebar", "workspace"})
             self.assertIn(str(page.get("icon") or ""),
                           {"puzzle", "chart", "settings", "database", "list"})
             self.assertIn(str(page.get("layout", "document")), {"document", "viewport"})
@@ -6214,6 +6215,238 @@ class V11414OutputBudgetTests(unittest.TestCase):
         result = asyncio.run(run())
         self.assertEqual(result["default"], "不限制")
         self.assertEqual(result["capped"], "640")
+
+
+# ==========v1.26.6 dev dashboard 对象数组 integer 兼容（上游 MaiBot#2440）==========
+
+
+class V1266DevDashboardCompatTests(unittest.TestCase):
+    """dev dashboard（dashboard 1.10.4.dev 起）的对象数组编辑器没有 integer 分支，
+    SDK 把 int 子字段映射为 "integer" 后会落进 string 分支并对数字调用 split，
+    导致插件设置页整页崩溃。插件侧规避：对象数组子字段一律不用 int（float→"number"）。
+    本用例守着生成的 schema，防止未来再引入会触发上游缺陷的子字段类型。
+    """
+
+    @staticmethod
+    def _walk_item_fields(node: Any) -> "list[dict[str, Any]]":
+        """深度优先收集 schema 树里的全部 item_fields（子字段还可能再嵌套数组）。"""
+        found: list[dict[str, Any]] = []
+        if isinstance(node, dict):
+            item_fields = node.get("item_fields")
+            if isinstance(item_fields, dict):
+                found.append(item_fields)
+                for sub in item_fields.values():
+                    if isinstance(sub, dict):
+                        found.extend(V1266DevDashboardCompatTests._walk_item_fields(sub))
+            for key in ("fields", "sections", "properties"):
+                child = node.get(key)
+                if isinstance(child, dict):
+                    for value in child.values():
+                        found.extend(V1266DevDashboardCompatTests._walk_item_fields(value))
+            if isinstance(node.get("items"), dict):
+                found.extend(V1266DevDashboardCompatTests._walk_item_fields(node["items"]))
+        elif isinstance(node, list):
+            for value in node:
+                found.extend(V1266DevDashboardCompatTests._walk_item_fields(value))
+        return found
+
+    def _schema(self) -> dict[str, Any]:
+        from maibot_sdk.config import generate_plugin_config_schema
+        return generate_plugin_config_schema(MaiLifeSettings)
+
+    def test_no_integer_typed_subfields_in_object_arrays(self):
+        """对象数组（item_fields）子字段不得出现 "integer" 类型（dev dashboard 会崩）。"""
+        item_fields_list = self._walk_item_fields(self._schema())
+        self.assertTrue(item_fields_list, "schema 中应能找到对象数组的 item_fields")
+        for item_fields in item_fields_list:
+            for name, sub in item_fields.items():
+                if isinstance(sub, dict):
+                    self.assertNotEqual(
+                        sub.get("type"), "integer",
+                        f"对象数组子字段 {name} 仍声明为 int（SDK 映射 integer，dev dashboard 设置页会崩，见上游 MaiBot#2440）")
+
+    def test_profile_numeric_subfields_map_to_number(self):
+        """users.profiles 的两个数值子字段应映射为 "number"（SDK 对 float 的映射）。"""
+        users_fields = self._schema()["sections"]["users"]["fields"]
+        item_fields = users_fields["profiles"]["item_fields"]
+        self.assertEqual(item_fields["daily_proactive_max"]["type"], "number")
+        self.assertEqual(item_fields["initial_temperature"]["type"], "number")
+        # 默认值随类型迁移为 float，旧配置里的整数值由 pydantic 无缝接收。
+        self.assertIsInstance(item_fields["daily_proactive_max"]["default"], float)
+        self.assertIsInstance(item_fields["initial_temperature"]["default"], float)
+
+    def test_profile_fields_still_validate_and_coerce_legacy_ints(self):
+        """旧配置里的整数值（1/30）与 -1 迁移语义在 float 字段上行为不变。"""
+        cfg = MaiLifeSettings.model_validate({
+            "users": {"profiles": [
+                {"user_id": "123", "role": "owner", "daily_proactive_max": -1,
+                 "initial_temperature": 30},
+                {"user_id": "456", "daily_proactive_max": 3, "initial_temperature": 55},
+            ]}})
+        owner, friend = cfg.users.profiles
+        self.assertEqual(owner.daily_proactive_max, 2.0)  # -1 → 主人迁移为 2
+        self.assertEqual(friend.daily_proactive_max, 3.0)
+        self.assertEqual(friend.initial_temperature, 55.0)
+
+
+# ==========v1.26.6 Planner lean 注入模式==========
+
+
+class V1266PlannerLeanTests(unittest.IsolatedAsyncioTestCase):
+    """lean 注入模式：正常对话 Planner 只拿极简决策背景（v1.26.6）。
+
+    - 内容素材（记忆/书柜/见闻列表/天气/日程/梦境）全部留给 Replyer；
+    - 整块进尾部 UserMessageItem，system item 保持宿主原样（前缀缓存友好）；
+    - 主动任务轮仍全量注入（撰写指导需要背景素材）；
+    - 宿主 emotion/expression_selector/sub_agent 轮（tool_definitions 恒为空列表）完全跳过，
+      键缺失/None 时保守放行（宁多勿漏）。
+    """
+
+    def _state(self, sleep_phase: str = "awake") -> dict[str, Any]:
+        return {"energy": 62, "hunger": 30, "mood_valence": -0.35, "mood_arousal": 0.5,
+                "health_note": "状态正常", "sleep_phase": sleep_phase,
+                "current_location": "家", "current_activity": "自由活动"}
+
+    def _lean(self, *, state: dict[str, Any] | None = None, user: dict[str, Any] | None = None,
+              backlogs: list[str] | None = None, topics: list[str] | None = None,
+              intent: str = "聊天", information: dict[str, Any] | None = None,
+              bedtime: str = "", bot_name: str = "麦麦") -> str:
+        builder = PromptBuilder()
+        return builder.planner_lean(
+            state or self._state(),
+            user or {"user_id": "1", "role": "friend", "temperature": 50},
+            backlogs or [], {"unresolved_topics": topics or []}, intent,
+            information=information or {"news": [], "explorations": []},
+            bot_name=bot_name, bedtime=bedtime)
+
+    def test_lean_keeps_decision_aid_and_drops_content_material(self):
+        text = self._lean(topics=["上周说的拼图"], backlogs=["约2小时前：问我在不在"], intent="分享近况")
+        # 决策所需块齐全。
+        self.assertIn("【麦生活决策背景】", text)
+        self.assertIn("温度 50.0/80.0", text)
+        self.assertIn("阶段 熟悉", text)
+        self.assertIn("分享近况", text)
+        self.assertIn("上周说的拼图", text)
+        self.assertIn("约2小时前：问我在不在", text)
+        self.assertIn("精力 62/100", text)
+        self.assertIn("心情 -0.35", text)
+        self.assertIn("awake", text)
+        # 内容素材与完整背景块不再进决策层。
+        self.assertNotIn("【生活记忆】", text)
+        self.assertNotIn("【当前关系可见书柜】", text)
+        self.assertNotIn("【近期外界见闻】", text)
+        self.assertNotIn("【独立环境背景】", text)
+        self.assertNotIn("农历", text)
+        self.assertNotIn("天气", text)
+        self.assertNotIn("当前日程", text)
+        self.assertNotIn("梦境余韵", text)
+        self.assertNotIn("【也可提及】", text)
+        # 长度受控（对比 full 模式动辄上千字符）。
+        self.assertLessEqual(len(text), 700)
+
+    def test_lean_owner_cap_and_role_note(self):
+        # lean 只留一行关系标记：完整角色边界文案属内容层，由 Replyer 背景兜底。
+        text = self._lean(user={"user_id": "1", "role": "owner", "temperature": 90})
+        self.assertIn("温度 90.0/100.0", text)
+        self.assertIn("阶段 知己", text)
+        self.assertIn("角色 owner", text)
+
+    def test_lean_phase_notes_still_reach_decision_layer(self):
+        text = self._lean(state=self._state("woken"))
+        self.assertIn("【刚被叫醒】", text)
+        night = self._lean(bedtime="approaching")
+        self.assertIn("【睡前氛围】", night)
+        self.assertNotIn("【刚被叫醒】", night)
+
+    def test_lean_hot_topic_only(self):
+        hot = {"news": [], "explorations": [{"topic": "深海火山", "summary": "新发现", "score": 0.9}]}
+        text = self._lean(information=hot)
+        self.assertIn("【最近想聊】", text)
+        self.assertIn("深海火山", text)
+        low = {"news": [], "explorations": [{"topic": "冷门话题", "summary": "低相关", "score": 0.3}]}
+        self.assertNotIn("【最近想聊】", self._lean(information=low))
+
+    # ---- hook 层 ----
+
+    @staticmethod
+    def _hook_items() -> list[dict[str, Any]]:
+        return [{"item_type": "SystemMessageItem", "meta": {},
+                 "parts": [{"type": "text", "text": "宿主系统提示"}]},
+                {"item_type": "UserMessageItem", "meta": {},
+                 "parts": [{"type": "text", "text": "在吗"}]}]
+
+    _PLANNER_TOOLS = [{"type": "function", "function": {"name": "reply"}}]
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = LifeStore(self.tmp.name); await self.store.initialize()
+        self.config = MaiLifeSettings()
+        self.plugin = await build_plugin(self.store, self.config,
+                                         users=[UserProfile(user_id="10001", role="owner")],
+                                         llm=DummyLLM(),
+                                         now=datetime(2026, 11, 12, 10, 0, tzinfo=TZ))
+
+    async def asyncTearDown(self):
+        await self.store.close(); self.tmp.cleanup()
+
+    async def test_lean_mode_keeps_system_item_host_owned(self):
+        self.assertEqual(self.plugin.config.context.planner_mode, "lean")
+        result = await self.plugin.on_planner(session_id="stream-10001",
+                                              items=self._hook_items(),
+                                              tool_definitions=list(self._PLANNER_TOOLS))
+        items = result["modified_kwargs"]["items"]
+        self.assertEqual(items[0]["parts"][0]["text"], "宿主系统提示")  # system 原样
+        tail = items[-1]["parts"][-1]["text"]
+        self.assertIn("在吗", tail)
+        self.assertIn("【麦生活决策背景】", tail)
+        self.assertNotIn("【生活记忆】", tail)
+
+    async def test_full_mode_keeps_legacy_system_injection(self):
+        self.plugin.config.context.planner_mode = "full"
+        result = await self.plugin.on_planner(session_id="stream-10001",
+                                              items=self._hook_items(),
+                                              tool_definitions=list(self._PLANNER_TOOLS))
+        items = result["modified_kwargs"]["items"]
+        system = items[0]["parts"][-1]["text"]
+        self.assertIn("宿主系统提示", system)
+        self.assertIn("【背景使用边界】", system)  # full=旧行为：stable 进 system
+        self.assertIn("【生活记忆】", system)
+        tail = items[-1]["parts"][-1]["text"]
+        self.assertIn("【麦麦内在生活状态】", tail)
+
+    async def test_empty_tool_definitions_skips_injection(self):
+        kwargs: dict[str, Any] = {"session_id": "stream-10001",
+                                  "items": self._hook_items(), "tool_definitions": []}
+        result = await self.plugin.on_planner(**kwargs)
+        self.assertEqual(result, {"action": "continue"})
+        self.assertEqual(kwargs["items"][0]["parts"][0]["text"], "宿主系统提示")
+
+    async def test_missing_tool_definitions_still_injects(self):
+        """旧宿主/契约变化导致键缺失时保守放行：宁多勿漏。"""
+        result = await self.plugin.on_planner(session_id="stream-10001", items=self._hook_items())
+        self.assertIsNotNone(result.get("modified_kwargs"))
+        tail = result["modified_kwargs"]["items"][-1]["parts"][-1]["text"]
+        self.assertIn("【麦生活决策背景】", tail)
+
+    async def test_active_task_round_keeps_full_background_in_lean_mode(self):
+        """主动任务轮在 lean 模式下仍全量注入：撰写指导需要记忆/见闻素材。"""
+        now = time.time(); user_id = "10001"; session = "stream-10001"
+        event_id = "event-lean"
+        task_id = f"{HOST_TASK_PREFIX}9002"
+        await self.store.add_opportunity({"id": "op-lean", "framework_id": "f", "topic": "便利店见闻",
+            "motive": "想分享", "weight": 0.8, "privacy": "normal", "expires_at": now + 300})
+        await self.store.consume_opportunity("op-lean", user_id, now)
+        await self.store.add_proactive_pending(event_id, user_id, "op-lean", session, now, now + 180)
+        self.plugin.config.context.planner_mode = "lean"
+        result = await self.plugin.on_planner(session_id=session,
+                                              messages=planner_task_messages(task_id, event_id))
+        self.assertIsNotNone(await self.plugin._active_tasks.current(session, now))
+        system = result["modified_kwargs"]["messages"][0]["content"]
+        self.assertIn("【背景使用边界】", system)  # 主动任务轮：完整背景进 system
+        self.assertIn("【生活记忆】", system)
+        tail = result["modified_kwargs"]["messages"][-1]["content"]
+        self.assertIn("【麦麦内在生活状态】", tail)
+        self.assertIn("一次任务最多产生一轮可见发送", tail)  # 任务指令照常注入
 
 
 # ==========v1.14.17 WebUI 协议 v2 迁移==========

@@ -421,7 +421,7 @@ class ScheduleService:
                 task_kind="schedule",request_type="daily_schedule",
                 check=lambda item: bool(self._validate(day,item,state))
                     and not self._template_copycat(day,weekend,item)
-                    and not self._recent_day_overlap(now,day,item,recent_summaries))
+                    and not self._recent_day_overlap(now,item,recent_summaries))
             if raw is None:
                 self.logger.warning("[MaiLife] 日程生成重试后仍不合格，使用兜底模板")
                 raw=fallback

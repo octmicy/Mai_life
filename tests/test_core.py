@@ -673,6 +673,56 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("禁止'处理自己的事情'",prompt)
         self.assertEqual(await self.store.get_framework(now.date().isoformat()),nodes)
 
+    async def test_ensure_day_overlap_check_rejects_recent_repeat(self):
+        """v1.26.6 修复回归（Issue #33）：check lambda 必须真正执行到 _recent_day_overlap。
+
+        桩 LLM 返回合法且非模板复刻的框架，第二个条件 template_copycat 为 False，
+        第三个条件（近期重复闸门）因此被真正调用——v1.26.5 的参数个数错误就在此暴露。
+        首轮与近 3 天非固定节点全部重合 → 判为重复重试；次轮全新框架 → 被接受落库。
+        """
+        class SwitchingLLM:
+            def __init__(self,payloads):self.payloads=list(payloads);self.calls=0;self.prompt=""
+            def task_available(self,kind):return kind=="schedule"
+            def task_for(self,kind):return "planner"
+            async def generate_json(self,prompt,system,fallback,**kwargs):
+                self.prompt=prompt
+                payload=self.payloads[min(self.calls,len(self.payloads)-1)]
+                self.calls+=1
+                return payload
+        now=datetime(2026,11,8,3,0,tzinfo=timezone(timedelta(hours=8)))
+        past_nodes=[
+            {"start":"00:00","end":"08:00","kind":"sleep","summary":"睡觉","location":"卧室"},
+            {"start":"08:00","end":"09:00","kind":"meal","summary":"吃早餐","location":"家"},
+            {"start":"12:00","end":"13:00","kind":"meal","summary":"吃午饭","location":"家"},
+            {"start":"14:00","end":"16:00","kind":"leisure","summary":"拼完上次的拼图","location":"家"},
+            {"start":"19:00","end":"21:00","kind":"leisure","summary":"扫描旧照片归档","location":"家"},
+            {"start":"23:00","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室"}]
+        for offset in (1,2,3):
+            past=(now-timedelta(days=offset)).date().isoformat()
+            await self.store.replace_framework(past,self.service._validate(past,past_nodes))
+        repeated=[
+            {"start":"00:00","end":"08:00","kind":"sleep","summary":"睡觉","location":"卧室"},
+            {"start":"08:00","end":"09:00","kind":"meal","summary":"吃早餐","location":"家"},
+            {"start":"12:00","end":"13:00","kind":"meal","summary":"吃午饭","location":"家"},
+            {"start":"14:00","end":"16:00","kind":"leisure","summary":"拼完上次的拼图","location":"家"},
+            {"start":"19:00","end":"21:00","kind":"leisure","summary":"扫描旧照片归档","location":"家"},
+            {"start":"23:00","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室"}]
+        fresh=[
+            {"start":"00:00","end":"08:00","kind":"sleep","summary":"睡觉","location":"卧室"},
+            {"start":"08:00","end":"09:00","kind":"meal","summary":"吃早餐","location":"家"},
+            {"start":"12:00","end":"13:00","kind":"meal","summary":"吃午饭","location":"家"},
+            {"start":"14:00","end":"16:00","kind":"leisure","summary":"给绿植换盆","location":"阳台"},
+            {"start":"19:00","end":"21:00","kind":"leisure","summary":"整理旅行照片","location":"家"},
+            {"start":"23:00","end":"24:00","kind":"sleep","summary":"准备睡觉","location":"卧室"}]
+        llm=SwitchingLLM([repeated,fresh])
+        service=ScheduleService(self.store,self.config,llm,str(Path(__file__).parents[1]),DummyLogger())
+        service.retry_backoff=(0.0,0.0)
+        nodes=await service.ensure_day(now,"人格","晴",force=True)
+        self.assertEqual(llm.calls,2)  # 首轮判重被拒，次轮通过
+        summaries={" ".join(str(n.get("summary") or "").split()) for n in nodes if str(n.get("kind")) not in {"sleep","meal","nap"}}
+        self.assertEqual(summaries,{"给绿植换盆","整理旅行照片"})
+        self.assertEqual(await self.store.get_framework(now.date().isoformat()),nodes)
+
 
 class RestAndStateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

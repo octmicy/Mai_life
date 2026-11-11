@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.26.5"
+PLUGIN_VERSION = "1.26.6"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -165,16 +165,18 @@ class UserProfile(PluginConfigBase):
             enum_labels={"owner": "主人（owner）", "friend": "朋友（friend）"},
         ),
     )
-    daily_proactive_max: int = Field(
-        default=1, ge=0, le=20,
+    daily_proactive_max: float = Field(
+        default=1.0, ge=0, le=20,
+        # v1.26.6：float 而非 int——SDK 把 int 映射为 "integer"，dev 版 dashboard 的对象数组
+        # 编辑器没有 integer 分支，数值会落进 string 分支调用 split 导致设置页崩溃（上游 MaiBot#2440）。
         description="该用户每天最多实际收到的主动消息次数（硬上限，不是目标次数）。",
         json_schema_extra=_ui(
             "用户每日主动上限", "每日最多主动发送 N 次（硬上限，非目标次数）。实际次数常少于该值：受免打扰、冷却、精力、候选评分和 Planner 自主决策约束。0 表示禁止主动消息；主人通常填 2，朋友通常填 1。", 4,
             label_en="Per-user Daily Proactive Limit", hint_en="Hard cap of proactive messages per day (not a target). Actual count is often lower due to quiet hours, cooldown, energy, scoring and Planner decisions. Zero disables proactive messages.",
         ),
     )
-    initial_temperature: int = Field(
-        default=30, ge=0, le=100,
+    initial_temperature: float = Field(
+        default=30.0, ge=0, le=100,
         description="首次创建用户档案时使用的关系温度。",
         json_schema_extra=_ui(
             "初始关系温度", "仅首次创建档案时使用。30 表示“认识”，不会自动进入恋爱语气。", 6,
@@ -896,6 +898,19 @@ class ContextSettings(PluginConfigBase):
     prompt_max_chars: int = Field(
         default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
         json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
+    )
+    # v1.26.6：lean 注入模式——正常对话 Planner 只拿决策所需极简背景，内容素材留给 Replyer。
+    planner_mode: Literal["lean", "full"] = Field(
+        default="lean", description="Planner 注入模式：lean 极简决策背景；full 完整背景（旧行为）。",
+        json_schema_extra=_ui(
+            "Planner 注入模式", "lean=正常对话只注入关系/意图/未完话题/状态的极简决策背景（不碰 system，"
+            "内容素材全留给回复层，主动任务轮仍注入完整背景）；full=每轮注入完整生活背景（旧行为，"
+            "Planner 背景很多时可能导致模型不调用工具而直接作答）。默认 lean。",
+            9, label_en="Planner Injection Mode",
+            hint_en="lean injects a minimal decision aid for normal chat (full background only on proactive task turns); "
+                    "full keeps the legacy always-complete injection.",
+            enum_labels={"lean": "lean（精简决策）", "full": "full（完整背景）"},
+        ),
     )
 
 

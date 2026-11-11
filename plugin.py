@@ -1,4 +1,4 @@
-"""Mai_life v1.26.5 插件入口。"""
+"""Mai_life v1.26.6 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -1506,15 +1506,17 @@ class MaiLifePlugin(MaiBotPlugin):
         stable 进 system 追加（慢变块，跨轮尽量稳定参与前缀缓存）；
         volatile 进末尾 UserMessageItem（逐轮变化区，宿主自己的"当前时间"也在尾部）；
         messages 旧契约同理（system 并 stable，最后一条 user 并 volatile）。
+        stable 为空（lean 模式/纯任务轮）不触碰 system，保持宿主前缀原样参与缓存。
         """
         items=kwargs.get("items")
         if isinstance(items,list):
-            cls._append_item_text(items,stable)
+            if stable:cls._append_item_text(items,stable)
             if volatile:cls._append_user_item_text(items,volatile)
             return {"action":"continue","modified_kwargs":kwargs}
         messages=kwargs.get("messages")
         if isinstance(messages,list):
-            result=cls._planner_messages_with_context(messages,stable)
+            result=cls._planner_messages_with_context(messages,stable) if stable \
+                else [dict(item) for item in messages if isinstance(item,dict)]
             if volatile:
                 for item in reversed(result):
                     if isinstance(item,dict) and str(item.get("role") or "").lower()=="user" \
@@ -1555,6 +1557,13 @@ class MaiLifePlugin(MaiBotPlugin):
     async def on_planner(self,**kwargs:Any)->dict[str,Any]:
         """识别插件主动任务，并向目标私聊 Planner 追加生活和转述边界。"""
         if self._stopping or self._reloading or not self.config.plugin.enabled:return {"action":"continue"}
+        # v1.26.6：宿主的主 planner/sub_agent/expression_selector/emotion 轮共用本 hook，
+        # 且载荷不含 request_kind。这些轮的 tool_definitions 恒为空列表，而主 planner 恒有
+        # 内置 reply/stop/wait 等工具——仅在确定非主 planner 时跳过注入与任务激活，
+        # 避免表情/表达选择轮吃到生活背景（键缺失/None 时保守放行，宁多勿漏）。
+        definitions=kwargs.get("tool_definitions")
+        if isinstance(definitions,list) and not definitions:
+            return {"action":"continue"}
         session=str(kwargs.get("session_id") or ""); suffix=""
         stable=""  # 慢变背景（进 system，跨轮稳定参与前缀缓存）
         volatile=""  # 快变背景与一次性提示（进末尾 UserMessageItem，逐轮变化区）
@@ -1564,10 +1573,19 @@ class MaiLifePlugin(MaiBotPlugin):
         if self.config.context.enabled and not group_passive:
             payload=await self._prompt_payload(session)
             if payload:
-                stable,volatile=self._prompts.planner_split(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
-                                                            payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
-                                                            int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
-                                                            bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
+                if active or self.config.context.planner_mode=="full":
+                    # 主动任务轮撰写指导需要完整背景，与 full 模式一样走 planner_split。
+                    stable,volatile=self._prompts.planner_split(payload["state"],payload["weather"],payload["context"],payload["user"],payload["dream"],
+                                                                payload["backlogs"],payload["environment"],payload["continuity"],payload["intent"],
+                                                                int(self.config.context.prompt_max_chars),memory=payload["memory"],information=payload["information"],
+                                                                bookshelf=payload["bookshelf"],bot_name=self._bot_name,bedtime=payload["bedtime"])
+                else:
+                    # lean 模式：正常对话只注入决策所需极简背景，全部归尾部快变区，
+                    # system item 保持宿主原样（前缀缓存不再被背景 TTL 变化打断）。
+                    volatile=self._prompts.planner_lean(payload["state"],payload["user"],payload["backlogs"],
+                                                        payload["continuity"],payload["intent"],
+                                                        information=payload["information"],
+                                                        bot_name=self._bot_name,bedtime=payload["bedtime"])
         if active:
             # reply 的 msg_id 必须引用会话最近一条真实用户消息：proactive:xxx 任务编号宿主 reply 工具
             # 查不到（find_source_message_by_id 不认），报错还会被 to_display_message_id 哈希成乱码。
@@ -2949,7 +2967,8 @@ class MaiLifePlugin(MaiBotPlugin):
                                "outbound_turn_guard":_switch(cfg.context.outbound_turn_guard),
                                "turn_expire_seconds":int(cfg.context.turn_expire_seconds),
                                "background_cache_minutes":int(cfg.context.background_cache_minutes),
-                               "replyer_detail":str(cfg.context.replyer_detail)},
+                               "replyer_detail":str(cfg.context.replyer_detail),
+                               "planner_mode":str(cfg.context.planner_mode)},
                     "rest_gate":{"enabled":_switch(gate.enabled),"mode":str(gate.mode),"gate_mode":str(gate.gate_mode),
                                  "wake_probability":round(float(gate.wake_probability),2),
                                  "llm_threshold":int(gate.llm_threshold),

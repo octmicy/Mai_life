@@ -248,6 +248,13 @@ background_cache_minutes = 5
 #（日记余韵不进回复层、见闻/书柜摘要减半，更省 token）。
 replyer_detail = "full"
 
+# Planner 注入模式（v1.26.6）：
+# lean = 正常对话只注入关系/意图/未完话题/状态的极简决策背景（约几百字符，不碰 system，
+#        内容素材全留给回复层；主动任务轮仍注入完整背景）。背景太多会让 Planner 不调用
+#        工具而直接作答；lean 同时提升请求前缀缓存命中。
+# full = 每轮注入完整生活背景（旧行为）。
+planner_mode = "lean"
+
 
 
 [models]

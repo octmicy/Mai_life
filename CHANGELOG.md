@@ -1,5 +1,17 @@
 # 更新日志
 
+## [1.26.6] - 2026-11-12
+
+### 新增
+
+- **Planner lean 注入模式（`context.planner_mode`，默认 lean）**：宿主调研结论——Planner 只是"决策器 + 指导摘要器"（产出 reply 工具调用与 reply_reference），正文由 Replyer 用自己的全量背景生成；给 Planner 塞满背景反而让它"什么都知道"而不调用工具。lean 模式下正常对话只注入约几百字符的决策背景（关系一行、意图/未完话题/积压、精力/心情/睡眠一行、刚醒/睡前相位提示、≥0.6 热点话题一条），**不碰 system item**——请求前缀完全由宿主内容构成，背景块的分钟级 TTL 变化不再打断前缀缓存（#17/#21 的进一步收敛）。主动任务轮（proactive/relay）仍走 planner_split 全量注入（撰写指导需要记忆/见闻素材）。同时利用 `tool_definitions` 判别宿主的 emotion/expression_selector/sub_agent 轮（恒为空列表，主 planner 恒有内置工具）：这些轮次不再吃到生活背景，也不再触发任务激活副作用；键缺失/None 时保守放行（宁多勿漏）。`_inject_planner_context` 在 stable 为空时不追加空行到 system。WebUI 概览与配置示例同步；可一键切回 `full`（旧行为）。
+
+### 修复
+
+- **日程近期重复闸门参数不匹配导致插件加载崩溃（v1.26.5 引入）**：`ensure_day` 的 check lambda 给 `_recent_day_overlap` 多传了一个 `day` 参数——LLM 生成路径一执行即 TypeError，`on_load` 失败、宿主回滚旧版本（新装机或新一天首次生成必现；已缓存当日框架的老用户不触发，故 v1.26.5 发布时全量测试未暴露）。修正调用参数；新增回归用例让桩 LLM 返回合法且非模板复刻的框架，强制 check lambda 真正执行到重复闸门（已做红绿验证）。
+- **dev 版 dashboard 插件设置页崩溃的插件侧适配（上游 MaiBot#2440）**：SDK 把 `int` 子字段映射为 `"integer"`，而 dashboard 对象数组编辑器没有 integer 分支，数值落入 string 默认分支对数字调用 `split` → `TypeError: p.split is not a function`，整页崩溃（dashboard 1.10.4.dev 起；稳定版 dashboard 不受影响）。`UserProfile.daily_proactive_max` 与 `initial_temperature` 改为 `float`（SDK 映射为 `"number"`，stable/dev 均正常渲染数字输入框）；旧配置整数值由 pydantic 无缝接收，存储与业务层本就做 int/float 转换，行为零变化。新增 schema 契约断言：对象数组子字段不得出现 `integer` 类型。
+- **移除 webui.json 已废弃的 `placement` 字段**：宿主已停用 `workspace` 页面并告警"页面已转入侧栏"；三页均省略 placement（sidebar 为默认值）。对 stable（1.3.19）与 dev（1.4.2）双宿主 `load_webui_extension` 实测通过且零告警。
+
 ## [1.26.5] - 2026-11-10
 
 ### 修复

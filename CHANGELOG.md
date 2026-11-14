@@ -1,5 +1,25 @@
 # 更新日志
 
+## [1.27.0] - 2026-11-14
+
+### 新增
+
+- **书柜导入书籍（#35）**：书柜 Tab 新增「导入书籍」入口，支持 `.txt`（UTF-8/GB18030 自动探测、去 BOM）与 `.epub`。宿主上传通道仅收图片，故文件在 WebUI 页内**本地解析**（epub 用 `DecompressionStream('deflate-raw')` 解 ZIP 容器 → container.xml → OPF 元数据 → spine 章节去标签），不上传原始文件；解析后预览书名/作者/章节数/字数/摘录，按内容指纹（SHA-256）+ 书名查重，确认后经 action **分块传输**文本（64k 字符/块，幂等）落库。导入书以 `doc_type=imported_book` 存独立分块表（绕过 revision 2 万字符截断），默认 private、不进创作流水线；阅读器分页加载（概览只给前 2000 字、全量拼接排除导入书，避免载荷爆炸）；Prompt 注入仅用摘要不增体积。新增 `creation/book_import.py` 纯逻辑模块、3 张存储表、6 个 WebUI API；`creation.book_import_enabled`/`book_import_max_chars`（默认 200 万字符）配置开关。老浏览器不支持 epub 解压时明确提示改用 txt。
+- **导入书籍作为聊天候选（#35 延伸）**：导入书不再只是被动背景——`context_for_user` 给书柜条目加 `imported` 标记，提示词层新增 `_reading_note`，把最靠前的导入书框架成「最近在读《X》…可以像分享自己的阅读一样自然聊起」（注入 Planner full 背景与 Replyer，措辞与 `_topic_note` 同源、不透露提示存在）；日程生成灵感池把导入书标为「在读《X》」活动候选（区别于自创作品的「自己的作品《X》」），让阅读进入麦麦的日常生活并自然被聊起。无导入书时零行为变化。
+- **自定义日程模板 WebUI（#33 评论区需求）**：记忆与牵挂页新增「自定义日程模板」Tab，可视化增删/排序节点，每节点支持**固定时段**（`time_fixed`，起止锁定、模型不得挪动）与**固定事项**（`content_fixed`，必须出现在当天日程）双约束（采纳 BardKing-CN 建议）。模板改存 **DB 优先**（`schedule_template` 表），插件目录文件保留为 legacy 来源，存量用户零迁移；保存走服务端 `_validate_template` + 固定时段重叠校验。生成链路：提示词追加用户硬约束清单，`content_fixed` 缺失带原因重试，`time_fixed` 节点验收后原样注入并裁切重叠自由节点；**固定节点豁免照抄闸门与近期重复闸门**（固定习惯允许天天重复）。当天预览面板展示固定/自由徽章、静音时段联动（schedule/time_window 两模式）、上次生成来源与拒绝原因序列；支持 JSON 导入/导出、「以后生成生效」与显式「重新生成今天」（整日替换，确认文案警告）。新增 4 个 WebUI API。
+
+### 变更
+
+- **组件名称人性化（生活化·温暖风格）**：配置面板与 WebUI 的 12 个设置节和约 140 个字段标签统一改为描述麦麦日常生活的说法，替换「闸门 / 判醒 / 编排 / Token / Planner / RPC / 阈值 / 并发 / 契机 / 转述」等技术术语。示例：`休息回复闸门（私聊）`→`作息与睡眠`、`被动回复增强`→`聊天时的麦麦`、`模型与成本编排`→`模型与花费`、`Token 监控`→`用量统计`、`闸门生效方式`→`作息生效方式`、`普通消息醒来概率`→`被消息叫醒的可能性`、`Planner 注入模式`→`决策背景详略`、`输出 token 上限`→`单次回复字数上限`。**插件设置、私聊用户、群聊设置、主动私聊**四节按 owner 要求保持原名不动；WebUI 六个 Tab 同步为「关系与温度 / 重要日期 / 日记与梦 / 书柜与写作 / 见闻与搜索 / 作息模板」，system 页标题改为「设置与诊断」。仅改显示标签与文案，配置键、代码标识符、提示词块名（如【生活记忆】）和命令输出均不变，对既有配置与数据零影响。
+- **回退 v1.26.6 的 int→float 临时规避**：上游 [MaiBot#2440](https://github.com/Mai-with-u/MaiBot/issues/2440) 已修复（dashboard 对象数组编辑器补上 integer 分支，正确渲染整数输入框），`UserProfile.daily_proactive_max`/`initial_temperature` 恢复为 `int`（SDK 映射 `"integer"`）。旧配置整数值与 -1 主人迁移语义不变；兼容测试改为守护 integer 映射与旧值兼容。
+- `webui.json` 声明 `structured_arguments` capability（模板保存传对象参数）；life 页 queries 5→7、actions 3→11。
+- `template_status()` 状态串带来源后缀：`ok(db)`/`ok(file)`/`missing`/`invalid:N`。
+- 书柜概览 book 字段新增 `id`/`total_chars`/`truncated`（导入书分页所需）。
+
+### 测试
+
+- 新增 `tests/test_import_features.py`（38 项），按**防卡死硬约束**重新设计：解析逻辑同步测试不起事件循环、fixture 全内存生成 ≤64KB、存储/API 用轻量插件骨架（不 build_plugin、不启维护循环）、DummyLLM 钉死兜底分支零网络、零 sleep/子进程/线程、分块 ≤3 块×100 字符、HTML/epub 契约静态断言不开浏览器。全量 589 项全绿。
+
 ## [1.26.6] - 2026-11-12
 
 ### 新增

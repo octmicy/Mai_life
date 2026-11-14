@@ -470,7 +470,7 @@
     <div class="ml-brand">
       <div class="ml-brand-icon" aria-hidden="true">忆</div>
       <div>
-        <h1 class="ml-brand-title">记忆与牵挂 · 关系、手账、书柜与见闻</h1>
+        <h1 class="ml-brand-title">记忆与牵挂 · 关系、日记、书柜与见闻</h1>
         <div class="ml-brand-sub" id="life-subtitle">真实 QQ 号隔离隐私边界 · 主人后台全量透视</div>
       </div>
     </div>
@@ -489,24 +489,28 @@
   <!-- 5-Tab 切换栏 -->
   <nav class="ml-tabs-bar" role="tablist" aria-label="记忆与牵挂模块切换">
     <button type="button" class="ml-tab-btn active" data-tab="users">
-      <span>社交关系与温度</span>
+      <span>关系与温度</span>
       <span class="ml-tab-count" id="tab-cnt-users">—</span>
     </button>
     <button type="button" class="ml-tab-btn" data-tab="dates">
-      <span>重要日期与候选</span>
+      <span>重要日期</span>
       <span class="ml-tab-count" id="tab-cnt-dates">—</span>
     </button>
     <button type="button" class="ml-tab-btn" data-tab="memories">
-      <span>日记与梦境手账</span>
+      <span>日记与梦</span>
       <span class="ml-tab-count" id="tab-cnt-memories">—</span>
     </button>
     <button type="button" class="ml-tab-btn" data-tab="shelf">
-      <span>麦麦书柜与创作</span>
+      <span>书柜与写作</span>
       <span class="ml-tab-count" id="tab-cnt-shelf">—</span>
     </button>
     <button type="button" class="ml-tab-btn" data-tab="digest">
-      <span>联网见闻与搜索</span>
+      <span>见闻与搜索</span>
       <span class="ml-tab-count" id="tab-cnt-digest">—</span>
+    </button>
+    <button type="button" class="ml-tab-btn" data-tab="template">
+      <span>作息模板</span>
+      <span class="ml-tab-count" id="tab-cnt-template">—</span>
     </button>
   </nav>
 
@@ -675,6 +679,7 @@
       <div class="ml-card-header">
         <h2 class="ml-card-title">书柜藏书与创作手稿阅读器</h2>
         <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn" id="btn-book-import">导入书籍</button>
           <button type="button" class="ml-seg-btn active" id="btn-shelf-split">按册翻阅</button>
           <button type="button" class="ml-seg-btn" id="btn-shelf-full">全量作品拼接</button>
         </div>
@@ -716,7 +721,7 @@
     </div>
   </section>
 
-  <!-- ==================== TAB 5: 联网见闻与搜索审计 ==================== -->
+  <!-- ==================== TAB 5: 见闻与搜索审计 ==================== -->
   <section id="panel-digest" class="ml-tab-panel ml-hidden">
     <div class="ml-kpi-row" id="digest-kpi-row"></div>
 
@@ -768,6 +773,87 @@
       </div>
     </div>
   </section>
+
+  <!-- ==================== TAB 6: 自定义日程模板（v1.27.0，#33） ==================== -->
+  <section id="panel-template" class="ml-tab-panel ml-hidden">
+    <div class="ml-kpi-row" id="template-kpi-row"></div>
+
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">作息模板编辑器</h2>
+        <div class="ml-seg-group">
+          <button type="button" class="ml-seg-btn active" id="btn-tpl-workday">工作日</button>
+          <button type="button" class="ml-seg-btn" id="btn-tpl-weekend">周末</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--ml-muted);margin-bottom:10px;line-height:1.7;">
+        普通节点作为<strong>参考节奏</strong>，具体内容由模型安排，生成失败时作兜底；
+        勾选<strong>固定时段</strong>后该起止时间被锁定、模型不得挪动；
+        勾选<strong>固定事项</strong>后该事项必须出现在当天日程（时段可微调）。固定节点允许天天重复，不触发重复闸门。
+      </div>
+      <div id="tpl-node-list"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+        <button type="button" class="ml-btn" id="btn-tpl-add">＋ 添加节点</button>
+        <button type="button" class="ml-btn" id="btn-tpl-save">保存模板</button>
+        <button type="button" class="ml-btn" id="btn-tpl-import">导入 JSON</button>
+        <button type="button" class="ml-btn" id="btn-tpl-export">导出 JSON</button>
+        <input type="file" id="tpl-file-input" accept=".json,application/json" class="ml-hidden"/>
+      </div>
+      <div id="tpl-save-msg" style="margin-top:10px;font-size:12.5px;"></div>
+      <textarea id="tpl-json-area" class="ml-input ml-hidden" rows="8" style="width:100%;margin-top:10px;font-family:var(--ml-font-mono);font-size:12px;" placeholder="粘贴模板 JSON（{workday:[...],weekend:[...]}）后点「应用 JSON」"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button type="button" class="ml-btn ml-hidden" id="btn-tpl-apply-json">应用 JSON</button>
+        <button type="button" class="ml-btn ml-hidden" id="btn-tpl-copy-json">复制导出内容</button>
+      </div>
+    </div>
+
+    <div class="ml-card">
+      <div class="ml-card-header">
+        <h2 class="ml-card-title">当天预览与生效</h2>
+        <button type="button" class="ml-btn" id="btn-tpl-regen">重新生成今天</button>
+      </div>
+      <div style="font-size:12px;color:var(--ml-muted);margin-bottom:10px;">
+        保存模板默认<strong>以后生成时生效</strong>，今天已生成的日程不变。「重新生成今天」会整日替换框架（已发生的活动记录不保留）。
+      </div>
+      <div id="tpl-preview"></div>
+    </div>
+  </section>
+</div>
+
+<!-- 书籍导入模态（v1.27.0，#35）：前端解析 txt/epub → 预览确认 → 分块上传 -->
+<div id="book-import-overlay" class="ml-hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:var(--ml-bg,#fff);border-radius:12px;max-width:640px;width:100%;max-height:90vh;overflow:auto;padding:22px;box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h2 style="margin:0;font-size:18px;">导入书籍到书柜</h2>
+      <button type="button" class="ml-btn" id="btn-import-close" style="padding:4px 12px;">关闭</button>
+    </div>
+    <div id="import-step-file">
+      <p style="font-size:13px;color:var(--ml-muted);line-height:1.7;">支持 <strong>.txt</strong>（UTF-8 / GB18030）与 <strong>.epub</strong>。文件在本页本地解析，不上传原始文件；确认后仅传输解析出的文本。单书上限 200 万字符。</p>
+      <input type="file" id="import-file-input" accept=".txt,.epub,text/plain,application/epub+zip"/>
+      <div id="import-parse-msg" style="margin-top:10px;font-size:12.5px;"></div>
+    </div>
+    <div id="import-step-preview" class="ml-hidden">
+      <div style="display:grid;gap:10px;">
+        <label style="font-size:12.5px;">书名<input type="text" id="import-title" class="ml-input" style="width:100%;margin-top:4px;" maxlength="160"/></label>
+        <label style="font-size:12.5px;">作者<input type="text" id="import-author" class="ml-input" style="width:100%;margin-top:4px;" maxlength="120"/></label>
+        <label style="font-size:12.5px;">可见性
+          <select id="import-privacy" class="ml-input" style="width:100%;margin-top:4px;">
+            <option value="private">私密（仅主人可见）</option>
+            <option value="public">公开（朋友可见）</option>
+          </select>
+        </label>
+      </div>
+      <div id="import-meta" style="margin-top:12px;font-size:12.5px;color:var(--ml-muted);"></div>
+      <div id="import-dup-warn" class="ml-hidden" style="margin-top:10px;padding:8px 12px;background:var(--ml-surface);border-radius:6px;font-size:12.5px;color:#b45309;"></div>
+      <div style="margin-top:10px;font-size:12px;color:var(--ml-muted);">摘录预览</div>
+      <div id="import-excerpt" style="margin-top:6px;padding:10px 12px;background:var(--ml-surface);border-radius:6px;font-size:12.5px;max-height:180px;overflow:auto;white-space:pre-wrap;"></div>
+      <div id="import-progress" class="ml-hidden" style="margin-top:12px;font-size:12.5px;"></div>
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button type="button" class="ml-btn" id="btn-import-confirm">确认导入</button>
+        <button type="button" class="ml-btn" id="btn-import-back">重选文件</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -784,6 +870,14 @@
     selectedDiaryIdx: 0,
     selectedBookIdx: 0,
     loading: false,
+    // v1.27.0：日程模板编辑器与书籍导入
+    template: null,
+    templateStatus: '',
+    templateSection: 'workday',
+    templatePreview: null,
+    bookPages: {},
+    importParse: null,
+    importId: '',
   };
 
   function esc(val) {
@@ -844,10 +938,12 @@
     document.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
     });
-    ['users', 'dates', 'memories', 'shelf', 'digest'].forEach((id) => {
+    ['users', 'dates', 'memories', 'shelf', 'digest', 'template'].forEach((id) => {
       const panel = document.getElementById(`panel-${id}`);
       if (panel) panel.classList.toggle('ml-hidden', id !== tabId);
     });
+    // 日程模板懒加载：首次切入时拉取模板与预览，避免每次全页刷新都多两个查询。
+    if (tabId === 'template' && !state.template && !state.loading) loadTemplate();
   }
 
   // ==================== 1. Render Users ====================
@@ -1121,17 +1217,33 @@
       `).join('');
 
       const cur = books[state.selectedBookIdx];
+      const isImported = cur.doc_type === 'imported_book';
+      // 导入书正文分页累积；非导入书直接用概览返回的全文。
+      let bodyText = cur.content || '';
+      let pager = '';
+      if (isImported) {
+        const pg = state.bookPages[cur.id];
+        if (pg) bodyText = pg.content;
+        const total = Number(cur.total_chars || 0);
+        const shown = bodyText.length;
+        const more = (pg ? pg.truncated : cur.truncated) && shown < total;
+        pager = `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--ml-muted);">
+          <span>已显示 ${shown} / ${total} 字</span>
+          ${more ? '<button type="button" class="ml-btn" id="btn-book-more" style="padding:4px 12px;">加载后续</button>' : '<span>（全书已加载）</span>'}
+        </div>`;
+      }
       readerEl.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
           <h3 style="margin:0;font-size:18px;">${esc(cur.title || '未命名作品')}</h3>
           <div style="display:flex;gap:6px;">
-            <span class="ml-badge">${esc(cur.doc_type || 'work')}</span>
+            <span class="ml-badge">${isImported ? '导入书籍' : esc(cur.doc_type || 'work')}</span>
             <span class="ml-badge">${esc(cur.privacy || '—')}</span>
             <span class="ml-badge">${esc(cur.status || '—')}</span>
           </div>
         </div>
         ${cur.summary ? `<div style="margin-top:10px;padding:8px 12px;background:var(--ml-surface);border-radius:6px;font-size:12.5px;color:var(--ml-muted);">摘要：${esc(cur.summary)}</div>` : ''}
-        <div class="ml-reader-body">${esc(cur.content || '（无正文）')}</div>
+        <div class="ml-reader-body">${esc(bodyText || '（无正文）')}</div>
+        ${pager}
       `;
 
       listEl.querySelectorAll('[data-book-idx]').forEach((btn) => {
@@ -1140,6 +1252,8 @@
           renderShelf();
         });
       });
+      const moreBtn = document.getElementById('btn-book-more');
+      if (moreBtn) moreBtn.addEventListener('click', () => loadMoreBook(cur));
     }
 
     const runs = d.runs || [];
@@ -1233,6 +1347,296 @@
     `).join('') : '<tr><td colspan="8" class="ml-empty">暂无联网搜索记录</td></tr>';
   }
 
+  // ==================== 6. 书籍导入（v1.27.0，#35） ====================
+  // 宿主上传通道仅收图片，txt/epub 在本页本地解析后经 action 分块传文本。
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('浏览器不支持 epub 解压（需 Chrome 80+/Edge 80+/Firefox 113+/Safari 16.4+），请改用 txt');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  function parseZip(bytes) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let eocd = -1;
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65536); i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('epub 不是合法 ZIP（找不到中央目录）');
+    const count = dv.getUint16(eocd + 10, true);
+    let ptr = dv.getUint32(eocd + 16, true);
+    const dec = new TextDecoder('utf-8');
+    const entries = {};
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(ptr, true) !== 0x02014b50) throw new Error('epub 中央目录损坏');
+      const method = dv.getUint16(ptr + 10, true);
+      const csize = dv.getUint32(ptr + 20, true);
+      const nameLen = dv.getUint16(ptr + 28, true);
+      const extraLen = dv.getUint16(ptr + 30, true);
+      const commentLen = dv.getUint16(ptr + 32, true);
+      const localOffset = dv.getUint32(ptr + 42, true);
+      entries[dec.decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen))] = { method, csize, localOffset };
+      ptr += 46 + nameLen + extraLen + commentLen;
+    }
+    return { entries, dv, bytes };
+  }
+
+  async function readZipEntry(zip, name) {
+    const e = zip.entries[name];
+    if (!e) throw new Error('epub 缺少文件: ' + name);
+    const off = e.localOffset;
+    if (zip.dv.getUint32(off, true) !== 0x04034b50) throw new Error('epub 局部头损坏: ' + name);
+    const nameLen = zip.dv.getUint16(off + 26, true);
+    const extraLen = zip.dv.getUint16(off + 28, true);
+    const start = off + 30 + nameLen + extraLen;
+    const comp = zip.bytes.subarray(start, start + e.csize);
+    if (e.method === 0) return comp;
+    if (e.method === 8) return inflateRaw(comp);
+    throw new Error('epub 使用了不支持的压缩方法: ' + e.method);
+  }
+
+  async function parseEpub(bytes) {
+    const zip = parseZip(bytes);
+    const dec = new TextDecoder('utf-8');
+    const container = new DOMParser().parseFromString(dec.decode(await readZipEntry(zip, 'META-INF/container.xml')), 'application/xml');
+    const rootfile = container.querySelector('rootfile');
+    if (!rootfile) throw new Error('epub 缺少 container.xml rootfile');
+    const opfPath = rootfile.getAttribute('full-path');
+    const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+    const opf = new DOMParser().parseFromString(dec.decode(await readZipEntry(zip, opfPath)), 'application/xml');
+    const dcText = (tag) => { const els = opf.getElementsByTagName(tag); return els.length ? els[0].textContent.trim() : ''; };
+    const title = dcText('dc:title') || (opf.querySelector('title')?.textContent || '').trim();
+    const author = dcText('dc:creator');
+    const manifest = {};
+    for (const item of opf.getElementsByTagName('item')) manifest[item.getAttribute('id')] = item.getAttribute('href');
+    const chapters = [];
+    for (const ref of opf.getElementsByTagName('itemref')) {
+      const href = manifest[ref.getAttribute('idref')];
+      if (!href) continue;
+      let raw = null;
+      for (const cand of [decodeURIComponent(opfDir + href), opfDir + href]) {
+        try { raw = await readZipEntry(zip, cand); break; } catch { /* 尝试下一候选路径 */ }
+      }
+      if (!raw) continue;
+      const doc = new DOMParser().parseFromString(dec.decode(raw), 'text/html');
+      doc.querySelectorAll('script,style').forEach((el) => el.remove());
+      const text = (doc.body?.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+      if (text) chapters.push({ title: href, text });
+    }
+    if (!chapters.length) throw new Error('epub 没有可读章节');
+    const fullText = chapters.map((c) => c.text).join('\n\n');
+    return { title, author, chapters, totalChars: fullText.length, fullText, warnings: [] };
+  }
+
+  async function parseTxtFile(file) {
+    let bytes = new Uint8Array(await file.arrayBuffer());
+    const warnings = [];
+    if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) { bytes = bytes.subarray(3); warnings.push('已去除 UTF-8 BOM'); }
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch {
+      try { text = new TextDecoder('gb18030').decode(bytes); warnings.push('文件不是 UTF-8，已按 GB18030 解码'); }
+      catch { throw new Error('无法识别文本编码'); }
+    }
+    text = text.replace(/\x00/g, '');
+    if (!text.trim()) throw new Error('文件没有可读文本');
+    return { title: file.name.replace(/\.[^.]+$/, ''), author: '', chapters: [{ title: '全文', text }], totalChars: text.length, fullText: text, warnings };
+  }
+
+  async function sha256Hex(text) {
+    try {
+      const norm = text.replace(/\s+/g, ' ').trim();
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(norm));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch { return ''; }
+  }
+
+  function openImportModal() {
+    state.importParse = null; state.importId = '';
+    document.getElementById('import-file-input').value = '';
+    document.getElementById('import-parse-msg').textContent = '';
+    document.getElementById('import-step-file').classList.remove('ml-hidden');
+    document.getElementById('import-step-preview').classList.add('ml-hidden');
+    document.getElementById('book-import-overlay').classList.remove('ml-hidden');
+  }
+  function closeImportModal() {
+    document.getElementById('book-import-overlay').classList.add('ml-hidden');
+    if (state.importId) { window.maibot.action('book_import_cancel', { import_id: state.importId }).catch(() => {}); state.importId = ''; }
+  }
+
+  async function onImportFile(file) {
+    const msg = document.getElementById('import-parse-msg');
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) { msg.textContent = '文件超过 20MB 上限'; return; }
+    msg.textContent = '本地解析中…';
+    try {
+      const lower = file.name.toLowerCase();
+      const parsed = lower.endsWith('.epub') ? await parseEpub(new Uint8Array(await file.arrayBuffer())) : await parseTxtFile(file);
+      if (parsed.totalChars > 2000000) throw new Error('书籍超过 200 万字符上限');
+      parsed.sha256 = await sha256Hex(parsed.fullText);
+      state.importParse = parsed;
+      document.getElementById('import-title').value = parsed.title || file.name.replace(/\.[^.]+$/, '');
+      document.getElementById('import-author').value = parsed.author || '';
+      document.getElementById('import-privacy').value = 'private';
+      document.getElementById('import-meta').textContent =
+        `章节 ${parsed.chapters.length} · 总字数 ${parsed.totalChars}` + (parsed.warnings.length ? ' · ' + parsed.warnings.join('；') : '');
+      document.getElementById('import-excerpt').textContent = parsed.fullText.slice(0, 600) + (parsed.totalChars > 600 ? '\n……' : '');
+      const dupWarn = document.getElementById('import-dup-warn');
+      dupWarn.classList.add('ml-hidden');
+      try {
+        const check = await window.maibot.action('book_import_check', { title: document.getElementById('import-title').value, sha256: parsed.sha256, total_chars: parsed.totalChars });
+        if (check && check.success === false) throw new Error(check.error || '预检失败');
+        if (check && check.duplicate && check.duplicate.id) {
+          dupWarn.textContent = `书柜已有《${check.duplicate.title || '同名书籍'}》，确认导入将再存一份。`;
+          dupWarn.classList.remove('ml-hidden');
+        }
+      } catch (err) { dupWarn.textContent = '预检：' + (err?.message || err); dupWarn.classList.remove('ml-hidden'); }
+      document.getElementById('import-step-file').classList.add('ml-hidden');
+      document.getElementById('import-step-preview').classList.remove('ml-hidden');
+      msg.textContent = '';
+    } catch (err) {
+      msg.textContent = '解析失败：' + (err?.message || String(err));
+    }
+  }
+
+  async function confirmImport() {
+    const parsed = state.importParse;
+    if (!parsed) return;
+    const btn = document.getElementById('btn-import-confirm');
+    const progress = document.getElementById('import-progress');
+    const title = document.getElementById('import-title').value.trim();
+    if (!title) { progress.classList.remove('ml-hidden'); progress.textContent = '书名不能为空'; return; }
+    btn.disabled = true; progress.classList.remove('ml-hidden');
+    try {
+      const begin = await window.maibot.action('book_import_begin', {
+        title, author: document.getElementById('import-author').value.trim(),
+        sha256: parsed.sha256, total_chars: parsed.totalChars,
+        privacy: document.getElementById('import-privacy').value,
+      });
+      if (begin && begin.success === false) throw new Error(begin.error || '建立导入会话失败');
+      state.importId = begin.import_id;
+      const size = Number(begin.chunk_chars || 65536);
+      const text = parsed.fullText;
+      for (let i = 0, seq = 0; i < text.length; i += size, seq++) {
+        const res = await window.maibot.action('book_import_chunk', { import_id: state.importId, seq, text: text.slice(i, i + size) });
+        if (res && res.success === false) throw new Error(res.error || '分块上传失败');
+        progress.textContent = `上传中… ${Math.min(i + size, text.length)} / ${text.length} 字`;
+      }
+      const commit = await window.maibot.action('book_import_commit', { import_id: state.importId });
+      if (commit && commit.success === false) throw new Error(commit.error || '落库失败');
+      state.importId = '';
+      progress.textContent = '导入完成 ✓';
+      const shelf = await window.maibot.query('shelf', {});
+      if (shelf && shelf.success !== false) { state.shelf = shelf; state.selectedBookIdx = 0; renderShelf(); }
+      setTimeout(closeImportModal, 900);
+    } catch (err) {
+      progress.textContent = '导入失败：' + (err?.message || String(err));
+    } finally { btn.disabled = false; }
+  }
+
+  async function loadMoreBook(cur) {
+    const pg = state.bookPages[cur.id] || { content: cur.content || '', truncated: cur.truncated };
+    const btn = document.getElementById('btn-book-more');
+    if (btn) { btn.disabled = true; btn.textContent = '加载中…'; }
+    try {
+      const res = await window.maibot.action('book_read', { document_id: cur.id, offset: pg.content.length, limit: 20000 });
+      if (res && res.success === false) throw new Error(res.error || '读取失败');
+      pg.content += res.content || '';
+      pg.truncated = Boolean(res.truncated);
+      state.bookPages[cur.id] = pg;
+      renderShelf();
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '加载失败，重试'; }
+    }
+  }
+
+  // ==================== 7. 自定义日程模板（v1.27.0，#33） ====================
+  const TPL_KINDS = ['meal', 'work', 'study', 'travel', 'leisure', 'sleep', 'nap', 'rest'];
+
+  async function loadTemplate() {
+    try {
+      const [tpl, preview] = await Promise.all([
+        window.maibot.query('template_get', {}),
+        window.maibot.query('template_preview', {}),
+      ]);
+      if (tpl && tpl.success !== false) { state.template = tpl.template; state.templateStatus = tpl.status || ''; }
+      if (preview && preview.success !== false) state.templatePreview = preview;
+      renderTemplate();
+    } catch (err) { showDatesError('日程模板加载失败: ' + (err?.message || err)); }
+  }
+
+  async function refreshTemplatePreview() {
+    try {
+      const preview = await window.maibot.query('template_preview', {});
+      if (preview && preview.success !== false) { state.templatePreview = preview; renderTemplatePreview(); }
+    } catch { /* 预览失败不阻断编辑 */ }
+  }
+
+  function renderTemplate() {
+    const tpl = state.template;
+    if (!tpl) return;
+    document.getElementById('tab-cnt-template').textContent = state.templateStatus || '—';
+    document.getElementById('template-kpi-row').innerHTML = `
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">模板来源</div><div class="ml-kpi-value" style="font-size:14px;">${esc(state.templateStatus || '—')}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">工作日节点</div><div class="ml-kpi-value">${(tpl.workday || []).length}</div></div>
+      <div class="ml-kpi-tile"><div class="ml-kpi-label">周末节点</div><div class="ml-kpi-value">${(tpl.weekend || []).length}</div></div>
+    `;
+    const nodes = tpl[state.templateSection] || [];
+    document.getElementById('tpl-node-list').innerHTML = nodes.length ? nodes.map((n, i) => `
+      <div class="ml-card" style="padding:12px;margin-bottom:8px;" data-node="${i}">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="time" class="ml-input" data-f="start" value="${esc(n.start)}" style="width:108px;"/>
+          <span style="color:var(--ml-muted);">—</span>
+          <input type="time" class="ml-input" data-f="end" value="${esc(n.end)}" style="width:108px;"/>
+          <select class="ml-input" data-f="kind" style="width:104px;">${TPL_KINDS.map((k) => `<option value="${k}" ${k === n.kind ? 'selected' : ''}>${k}</option>`).join('')}</select>
+          <input type="text" class="ml-input" data-f="summary" value="${esc(n.summary)}" placeholder="活动内容" style="flex:1;min-width:160px;"/>
+          <input type="text" class="ml-input" data-f="location" value="${esc(n.location)}" placeholder="地点" style="width:120px;"/>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:12px;">
+          <label><input type="checkbox" data-f="time_fixed" ${n.time_fixed ? 'checked' : ''}/> 固定时段</label>
+          <label><input type="checkbox" data-f="content_fixed" ${n.content_fixed ? 'checked' : ''}/> 固定事项</label>
+          <label>精力 <input type="number" class="ml-input" data-f="energy_load" value="${Number(n.energy_load || 0)}" step="0.5" style="width:68px;"/></label>
+          <label>分享度 <input type="number" class="ml-input" data-f="shareability" value="${Number(n.shareability || 0.3)}" step="0.05" min="0" max="1" style="width:68px;"/></label>
+          <span style="flex:1;"></span>
+          <button type="button" class="ml-btn" data-act="up" style="padding:2px 9px;">↑</button>
+          <button type="button" class="ml-btn" data-act="down" style="padding:2px 9px;">↓</button>
+          <button type="button" class="ml-btn" data-act="del" style="padding:2px 9px;">删除</button>
+        </div>
+      </div>
+    `).join('') : '<div class="ml-empty">该分组暂无节点，点「添加节点」开始</div>';
+    renderTemplatePreview();
+  }
+
+  function renderTemplatePreview() {
+    const p = state.templatePreview;
+    const el = document.getElementById('tpl-preview');
+    if (!p) { el.innerHTML = '<div class="ml-empty">暂无预览</div>'; return; }
+    const nodes = p.nodes || [];
+    const quiet = p.quiet_segments || [];
+    const lg = p.last_generation || {};
+    el.innerHTML = `
+      <div style="font-size:12.5px;margin-bottom:8px;">
+        <span class="ml-badge">${esc(p.section || '')}</span>
+        <span class="ml-badge">来源 ${esc(p.source || '')}</span>
+        <span class="ml-badge">静音模式 ${esc(p.gate_mode || '')}</span>
+      </div>
+      <div class="ml-table-wrap"><table class="ml-table"><thead><tr><th>时段</th><th>类型</th><th>内容</th><th>约束</th></tr></thead><tbody>
+        ${nodes.length ? nodes.map((n) => `<tr>
+          <td style="font-family:var(--ml-font-mono);">${esc(n.start)}–${esc(n.end)}</td>
+          <td>${esc(n.kind)}</td>
+          <td>${esc(n.summary || '（模型安排）')}</td>
+          <td>${n.time_fixed ? '<span class="ml-badge">固定时段</span> ' : ''}${n.content_fixed ? '<span class="ml-badge">固定事项</span>' : ''}${!n.time_fixed && !n.content_fixed ? '<span style="color:var(--ml-muted);">自由</span>' : ''}</td>
+        </tr>`).join('') : '<tr><td colspan="4" class="ml-empty">无节点</td></tr>'}
+      </tbody></table></div>
+      <div style="margin-top:10px;font-size:12px;color:var(--ml-muted);">
+        今日静音时段：${quiet.length ? quiet.map((q) => `${esc(q.start)}–${esc(q.end)}(${esc(q.kind)})`).join('、') : '无'}
+        <br>${esc(p.note || '')}
+      </div>
+      ${lg.day ? `<div style="margin-top:10px;font-size:12px;color:var(--ml-muted);">上次生成（${esc(lg.day)}）：来源 ${esc(lg.source || '')}${(lg.rejections || []).length ? ' · 拒绝原因：' + lg.rejections.map(esc).join('；') : ' · 一次通过'}</div>` : ''}
+    `;
+  }
+
   async function loadAll() {
     if (state.loading) return;
     state.loading = true;
@@ -1247,7 +1651,7 @@
       { name: 'dates', label: '重要日期', onSuccess: (r) => { state.dates = r; renderDates(); } },
       { name: 'memories', label: '日记梦境', onSuccess: (r) => { state.memories = r; renderMemories(); } },
       { name: 'shelf', label: '麦麦书柜', onSuccess: (r) => { state.shelf = r; renderShelf(); } },
-      { name: 'digest', label: '联网见闻', onSuccess: (r) => { state.digest = r; renderDigest(); } },
+      { name: 'digest', label: '见闻与搜索', onSuccess: (r) => { state.digest = r; renderDigest(); } },
     ], 2);
 
     if (errors.length) {
@@ -1310,6 +1714,127 @@
   });
   document.getElementById('btn-copy-shelf').addEventListener('click', (e) => {
     copyText(state.shelf?.books_full_text || '', e.currentTarget);
+  });
+
+  // ---- 书籍导入模态（v1.27.0，#35）----
+  document.getElementById('btn-book-import').addEventListener('click', openImportModal);
+  document.getElementById('btn-import-close').addEventListener('click', closeImportModal);
+  document.getElementById('btn-import-back').addEventListener('click', () => {
+    if (state.importId) { window.maibot.action('book_import_cancel', { import_id: state.importId }).catch(() => {}); state.importId = ''; }
+    state.importParse = null;
+    document.getElementById('import-file-input').value = '';
+    document.getElementById('import-step-preview').classList.add('ml-hidden');
+    document.getElementById('import-step-file').classList.remove('ml-hidden');
+  });
+  document.getElementById('import-file-input').addEventListener('change', (e) => onImportFile(e.target.files?.[0]));
+  document.getElementById('btn-import-confirm').addEventListener('click', confirmImport);
+
+  // ---- 日程模板编辑器（v1.27.0，#33）----
+  document.getElementById('btn-tpl-workday').addEventListener('click', (e) => {
+    state.templateSection = 'workday';
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-tpl-weekend').classList.remove('active');
+    renderTemplate();
+  });
+  document.getElementById('btn-tpl-weekend').addEventListener('click', (e) => {
+    state.templateSection = 'weekend';
+    e.currentTarget.classList.add('active');
+    document.getElementById('btn-tpl-workday').classList.remove('active');
+    renderTemplate();
+  });
+  document.getElementById('btn-tpl-add').addEventListener('click', () => {
+    if (!state.template) return;
+    const arr = state.template[state.templateSection] || (state.template[state.templateSection] = []);
+    arr.push({ start: '09:00', end: '10:00', kind: 'leisure', summary: '', location: '家里', energy_load: 0, shareability: 0.3, time_fixed: false, content_fixed: false });
+    renderTemplate();
+  });
+  document.getElementById('tpl-node-list').addEventListener('input', (e) => {
+    const card = e.target.closest('[data-node]');
+    const f = e.target.getAttribute('data-f');
+    if (!card || !f || !state.template) return;
+    const node = (state.template[state.templateSection] || [])[Number(card.getAttribute('data-node'))];
+    if (!node) return;
+    if (e.target.type === 'checkbox') node[f] = e.target.checked;
+    else if (e.target.type === 'number') node[f] = Number(e.target.value);
+    else node[f] = e.target.value;
+  });
+  document.getElementById('tpl-node-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn || !state.template) return;
+    const card = btn.closest('[data-node]');
+    const i = Number(card.getAttribute('data-node'));
+    const arr = state.template[state.templateSection] || [];
+    const act = btn.getAttribute('data-act');
+    if (act === 'del') arr.splice(i, 1);
+    else if (act === 'up' && i > 0) { const t = arr[i - 1]; arr[i - 1] = arr[i]; arr[i] = t; }
+    else if (act === 'down' && i < arr.length - 1) { const t = arr[i + 1]; arr[i + 1] = arr[i]; arr[i] = t; }
+    renderTemplate();
+  });
+  document.getElementById('btn-tpl-save').addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    const msg = document.getElementById('tpl-save-msg');
+    try {
+      const res = await window.maibot.action('schedule_template_save', { template: state.template });
+      if (res && res.success === false) {
+        msg.style.color = '#b91c1c';
+        msg.innerHTML = '保存失败：' + esc(res.error || '') + (res.problems ? '<br>· ' + res.problems.map(esc).join('<br>· ') : '');
+      } else {
+        msg.style.color = '#15803d';
+        msg.textContent = '已保存（' + (res.status || '') + '），以后生成时生效。';
+        state.templateStatus = res.status || state.templateStatus;
+        document.getElementById('tab-cnt-template').textContent = state.templateStatus;
+        await refreshTemplatePreview();
+      }
+    } catch (err) { msg.style.color = '#b91c1c'; msg.textContent = '保存失败：' + (err?.message || err); }
+    finally { btn.disabled = false; }
+  });
+  document.getElementById('btn-tpl-import').addEventListener('click', () => {
+    const area = document.getElementById('tpl-json-area');
+    area.classList.remove('ml-hidden');
+    document.getElementById('btn-tpl-apply-json').classList.remove('ml-hidden');
+    document.getElementById('btn-tpl-copy-json').classList.add('ml-hidden');
+    area.value = '';
+    document.getElementById('tpl-file-input').click();
+  });
+  document.getElementById('tpl-file-input').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    document.getElementById('tpl-json-area').value = await file.text();
+    e.target.value = '';
+  });
+  document.getElementById('btn-tpl-apply-json').addEventListener('click', () => {
+    const msg = document.getElementById('tpl-save-msg');
+    try {
+      const parsed = JSON.parse(document.getElementById('tpl-json-area').value);
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.workday) || !Array.isArray(parsed.weekend)) {
+        throw new Error('顶层必须是 {workday:[...],weekend:[...]}');
+      }
+      state.template = parsed;
+      msg.style.color = '#15803d'; msg.textContent = 'JSON 已载入编辑器，点「保存模板」生效。';
+      renderTemplate();
+    } catch (err) { msg.style.color = '#b91c1c'; msg.textContent = 'JSON 解析失败：' + (err?.message || err); }
+  });
+  document.getElementById('btn-tpl-export').addEventListener('click', () => {
+    const area = document.getElementById('tpl-json-area');
+    area.classList.remove('ml-hidden');
+    area.value = JSON.stringify(state.template || {}, null, 2);
+    document.getElementById('btn-tpl-apply-json').classList.add('ml-hidden');
+    document.getElementById('btn-tpl-copy-json').classList.remove('ml-hidden');
+  });
+  document.getElementById('btn-tpl-copy-json').addEventListener('click', (e) => {
+    copyText(document.getElementById('tpl-json-area').value, e.currentTarget);
+  });
+  document.getElementById('btn-tpl-regen').addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = '生成中…';
+    const msg = document.getElementById('tpl-save-msg');
+    try {
+      const res = await window.maibot.action('schedule_regenerate_today', {});
+      if (res && res.success === false) throw new Error(res.error || '生成失败');
+      msg.style.color = '#15803d';
+      msg.textContent = `今天已重新生成（${res.count ?? 0} 个节点，来源 ${res.report?.source || ''}）。`;
+      await refreshTemplatePreview();
+    } catch (err) { msg.style.color = '#b91c1c'; msg.textContent = '重新生成失败：' + (err?.message || err); }
+    finally { btn.disabled = false; btn.textContent = '重新生成今天'; }
   });
 
   // Digest sub-view toggles

@@ -2,7 +2,8 @@
   "schema_version": 2,
   "required_capabilities": [
     "custom_pages",
-    "image_upload"
+    "image_upload",
+    "structured_arguments"
   ],
   "workspace_title": "麦生活",
   "pages": [
@@ -61,6 +62,14 @@
         "digest": {
           "api": "webui_information_digest",
           "version": "1"
+        },
+        "template_get": {
+          "api": "webui_schedule_template_get",
+          "version": "1"
+        },
+        "template_preview": {
+          "api": "webui_schedule_template_preview",
+          "version": "1"
         }
       },
       "actions": {
@@ -92,12 +101,79 @@
             "approve": {"type": "boolean", "required": true}
           },
           "confirmation": "确认处理这条日期候选？确认将按建议日期写入正式日期，驳回将标记忽略。"
+        },
+        "book_import_check": {
+          "api": "webui_book_import_check",
+          "version": "1",
+          "parameters": {
+            "title": {"type": "string", "required": true, "max_length": 160},
+            "sha256": {"type": "string", "required": false, "max_length": 64},
+            "total_chars": {"type": "integer", "required": true, "minimum": 0}
+          }
+        },
+        "book_import_begin": {
+          "api": "webui_book_import_begin",
+          "version": "1",
+          "parameters": {
+            "title": {"type": "string", "required": true, "max_length": 160},
+            "author": {"type": "string", "required": false, "max_length": 120},
+            "sha256": {"type": "string", "required": false, "max_length": 64},
+            "total_chars": {"type": "integer", "required": true, "minimum": 1},
+            "privacy": {"type": "string", "required": true, "choices": ["private", "public"]}
+          }
+        },
+        "book_import_chunk": {
+          "api": "webui_book_import_chunk",
+          "version": "1",
+          "parameters": {
+            "import_id": {"type": "string", "required": true, "max_length": 64},
+            "seq": {"type": "integer", "required": true, "minimum": 0},
+            "text": {"type": "string", "required": true, "max_length": 65536}
+          }
+        },
+        "book_import_commit": {
+          "api": "webui_book_import_commit",
+          "version": "1",
+          "parameters": {
+            "import_id": {"type": "string", "required": true, "max_length": 64}
+          },
+          "confirmation": "确认把这本书导入书柜？导入后默认仅主人可见。"
+        },
+        "book_import_cancel": {
+          "api": "webui_book_import_cancel",
+          "version": "1",
+          "parameters": {
+            "import_id": {"type": "string", "required": true, "max_length": 64}
+          }
+        },
+        "book_read": {
+          "api": "webui_book_read",
+          "version": "1",
+          "parameters": {
+            "document_id": {"type": "string", "required": true, "max_length": 64},
+            "offset": {"type": "integer", "required": true, "minimum": 0},
+            "limit": {"type": "integer", "required": true, "minimum": 1, "maximum": 20000}
+          }
+        },
+        "schedule_template_save": {
+          "api": "webui_schedule_template_save",
+          "version": "1",
+          "parameters": {
+            "template": {"type": "object", "required": true}
+          },
+          "confirmation": "确认保存日程模板？保存后以后生成时生效（今天已生成的日程不变）。"
+        },
+        "schedule_regenerate_today": {
+          "api": "webui_schedule_regenerate_today",
+          "version": "1",
+          "parameters": {},
+          "confirmation": "确认重新生成今天的日程？整日框架将被替换，已发生的活动记录不保留。"
         }
       }
     },
     {
       "id": "system",
-      "title": "系统与配置",
+      "title": "设置与诊断",
       "description": "运行健康诊断、主动私聊候选与跳过统计、QQ 群白名单及全量只读配置",
       "icon": "settings",
       "mode": "custom",

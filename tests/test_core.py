@@ -183,6 +183,8 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
     def test_recent_day_overlap_gate(self):
         """v1.27.0（Issue #33）：生成结果非固定节点与近 3 天重合 ≥50% → 判为重复。"""
         svc=ScheduleService.__new__(ScheduleService)
+        # v1.27.0：闸门会读模板取用户固定节点豁免集；给 bare 实例最小模板上下文（空目录→无模板→豁免集为空）。
+        svc.plugin_dir=Path(self.tmp.name); svc.config=MaiLifeSettings(); svc.logger=DummyLogger(); svc._db_template={}
         now=datetime(2026,11,8,3,0,tzinfo=timezone(timedelta(hours=8)))
         recent={"拼拼图","整理读书笔记","散步"}
         # 全部非固定节点均与近期重合 → True
@@ -603,9 +605,10 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("点名具体的游戏/作品",llm_on.prompt)
 
     async def test_template_validation_and_status(self):
-        # v1.25.0：模板校验——仓库模板合法→ok；缺文件→missing；坏字段→invalid+回退内置骨架。
+        # v1.25.0：模板校验——仓库模板合法→ok(file)；缺文件→missing；坏字段→invalid+回退内置骨架。
+        # v1.27.0：状态串带来源后缀（DB 优先时为 ok(db)），文件来源为 ok(file)。
         service=ScheduleService(self.store,self.config,DummyLLM(),str(Path(__file__).parents[1]),DummyLogger())
-        self.assertEqual(service.template_status(),"ok")
+        self.assertEqual(service.template_status(),"ok(file)")
         service2=ScheduleService(self.store,self.config,DummyLLM(),self.tmp.name,DummyLogger())
         self.assertEqual(service2.template_status(),"missing")
         Path(self.tmp.name,"mai_template.json").write_text(

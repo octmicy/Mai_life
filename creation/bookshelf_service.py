@@ -8,6 +8,8 @@ _TYPE_LABELS={
     "novel_fragment":"小说片段","poem":"诗","essay":"随笔","screenplay":"短剧",
     "storyboard":"分镜脚本","character":"角色设定","worldbuilding":"世界观片段",
     "reading_note":"阅读笔记","diary":"日记",
+    # v1.27.0（#35）：用户导入的外部书籍（work_type=imported / doc_type=imported_book）。
+    "imported":"导入书籍","imported_book":"导入书籍",
 }
 
 
@@ -53,7 +55,9 @@ class BookshelfService:
         rows=await self.list_for_user(user,limit)
         return {"items":[{"id":item["id"],"type":_TYPE_LABELS.get(item.get("work_type"),item.get("doc_type","文本")),
                           "title":item["title"],"summary":item.get("summary") or "",
-                          "privacy":item["privacy"]} for item in rows]}
+                          "privacy":item["privacy"],
+                          # v1.27.0（#35）：导入书籍标记，供提示词层把它框架成"可自然聊起的在读书籍"。
+                          "imported":str(item.get("doc_type"))=="imported_book"} for item in rows]}
 
     @staticmethod
     def type_label(value:str)->str:return _TYPE_LABELS.get(value,value or "文本")

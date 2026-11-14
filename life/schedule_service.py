@@ -64,12 +64,32 @@ class ScheduleService:
         """人格串含身份信息（如"大二学生"），回落模板按它定向；不同用户的麦麦身份不同。"""
         self._personality=str(personality or "")
 
-    def _template(self) -> dict[str, Any]:
-        """读取并校验用户日程模板；结果按（路径,mtime）缓存。
+    async def refresh_template_cache(self) -> None:
+        """把 DB 模板载入同步缓存（v1.27.0，#33）。
 
-        解析失败或字段校验失败→整份弃用返回 {}（回退内置骨架，warning 逐条列出问题）；
-        状态写入 self._template_state 供 template_status() 展示。
+        _template() 及其调用方（_schedule_reference/_fallback/_template_copycat）都是同步的，
+        DB 读取只能异步——故在 ensure_day 开头与 WebUI 读写模板时先刷新本缓存。
         """
+        try:
+            data=await self.store.schedule_template_get()
+        except Exception:
+            data={}
+        self._db_template=data if isinstance(data,dict) else {}
+
+    def _template(self) -> dict[str, Any]:
+        """读取并校验用户日程模板：DB 优先（WebUI 保存），文件 legacy，内置骨架兜底。
+
+        解析失败或字段校验失败→该来源整份弃用回退下一级（warning 逐条列出问题）；
+        状态写入 self._template_state 供 template_status() 展示（ok(db)/ok(file)/missing/invalid）。
+        文件结果按（路径,mtime）缓存；DB 快照由 refresh_template_cache() 异步刷新。
+        """
+        db=getattr(self,"_db_template",None)
+        if isinstance(db,dict) and db:
+            problems=self._validate_template(db)
+            if not problems:
+                self._template_state="ok(db)"; return db
+            self.logger.warning("[MaiLife] DB 日程模板校验失败，回退文件模板：\n- " + "\n- ".join(problems))
+            self._template_state=f"invalid: {len(problems)} 个问题(db)"
         root=self.plugin_dir.resolve()
         path=(root/str(self.config.schedule.template_file or "mai_template.json")).resolve()
         try:path.relative_to(root)
@@ -77,7 +97,8 @@ class ScheduleService:
             self.logger.warning("[MaiLife] 日程模板必须位于插件目录内，已使用内置 fallback")
             self._template_state="missing"; return {}
         if not path.exists():
-            self._template_state="missing"; return {}
+            if not isinstance(db,dict) or not db:self._template_state="missing"
+            return {}
         try:mtime=path.stat().st_mtime
         except OSError:mtime=0.0
         cached=getattr(self,"_template_cache",None)
@@ -93,13 +114,28 @@ class ScheduleService:
         if problems:
             self.logger.warning("[MaiLife] 日程模板校验失败，已整份弃用并回退内置骨架：\n- " + "\n- ".join(problems))
             self._template_state=f"invalid: {len(problems)} 个问题"; self._template_cache=(path,mtime,self._template_state,{}); return {}
-        self._template_state="ok"; self._template_cache=(path,mtime,"ok",data)
+        self._template_state="ok(file)"; self._template_cache=(path,mtime,"ok(file)",data)
         return data
 
     def template_status(self) -> str:
-        """模板健康状态（WebUI/命令展示用）：ok / missing / invalid:<n>个问题。"""
+        """模板健康状态（WebUI/命令展示用）：ok(db) / ok(file) / missing / invalid:<n>个问题。"""
         self._template()
         return str(getattr(self,"_template_state","missing"))
+
+    def _fixed_summaries(self) -> set[str]:
+        """模板中用户固定节点（time_fixed/content_fixed）的归一化 summary 集合。
+
+        固定习惯允许天天重复：这些 summary 豁免照抄闸门与近期重复闸门（#33 建议 4）。
+        """
+        template=self._template(); result:set[str]=set()
+        for section in ("workday","weekend"):
+            nodes=template.get(section)
+            if not isinstance(nodes,list):continue
+            for node in nodes:
+                if isinstance(node,dict) and (node.get("time_fixed") or node.get("content_fixed")):
+                    summary=" ".join(str(node.get("summary") or "").split())
+                    if summary:result.add(summary)
+        return result
 
     @staticmethod
     def _validate_template(data:dict[str,Any])->list[str]:
@@ -130,6 +166,18 @@ class ScheduleService:
                     if isinstance(value,bool) or not isinstance(value,(int,float)) or not (low<=value<=high):
                         problems.append(f"{tag}.{name} 必须是 {low}~{high} 的数字（收到 {value!r}）")
                 if not str(node.get("summary") or "").strip():problems.append(f"{tag}.summary 不能为空")
+                # v1.27.0（#33）：时间/内容双约束字段——可选，出现时必须是布尔。
+                for flag in ("time_fixed","content_fixed"):
+                    if flag in node and not isinstance(node[flag],bool):
+                        problems.append(f"{tag}.{flag} 必须是布尔值（收到 {node[flag]!r}）")
+            # 固定时段节点彼此不得重叠（模型不得挪动，冲突必须在保存时拦下）。
+            fixed_nodes=[n for n in nodes if isinstance(n,dict) and n.get("time_fixed")
+                         and (hhmm.match(str(n.get("start") or "")) or str(n.get("start"))=="24:00")
+                         and (hhmm.match(str(n.get("end") or "")) or str(n.get("end"))=="24:00")]
+            fixed_nodes.sort(key=lambda n:minutes(str(n.get("start"))))
+            for prev,curr in zip(fixed_nodes,fixed_nodes[1:]):
+                if minutes(str(curr.get("start")))<minutes(str(prev.get("end"))):
+                    problems.append(f"{section} 固定时段重叠：{prev.get('start')}-{prev.get('end')} 与 {curr.get('start')}-{curr.get('end')}")
         return problems
 
     def _schedule_reference(self,day:str,weekend:bool)->list[dict[str,Any]]:
@@ -162,25 +210,133 @@ class ScheduleService:
         if not isinstance(nodes,list) or not nodes:
             nodes=self._fallback(day,weekend)
         normalize=lambda text:" ".join(str(text or "").split())
-        expected={normalize(n.get("summary")) for n in nodes if isinstance(n,dict)}
-        generated={normalize(n.get("summary")) for n in raw if isinstance(n,dict) and n.get("summary")}
+        fixed=self._fixed_summaries()
+        expected={normalize(n.get("summary")) for n in nodes if isinstance(n,dict)}-fixed
+        generated={normalize(n.get("summary")) for n in raw if isinstance(n,dict) and n.get("summary")}-fixed
         if not generated:return False
         return len(expected & generated)>=max(1,int(len(generated)*0.5))
 
     def _recent_day_overlap(self,now:datetime,raw:Any,recent_summaries:set)->bool:
         """Issue #33：生成结果的非固定节点 summary 与最近 3 天重合 ≥50% 视为重复（触发重试）。
 
-        固定作息（sleep/meal/nap）天然重复不参与；重合判定按空白归一化精确匹配。
+        固定作息（sleep/meal/nap）与用户固定节点（time_fixed/content_fixed）天然重复不参与；
+        重合判定按空白归一化精确匹配。
         """
         if not recent_summaries or not isinstance(raw,list):return False
         normalize=lambda text:" ".join(str(text or "").split())
-        fixed={"sleep","meal","nap"}
+        fixed={"sleep","meal","nap"}; fixed_summaries=self._fixed_summaries()
         generated={normalize(n.get("summary")) for n in raw
-                   if isinstance(n,dict) and str(n.get("kind") or "") not in fixed}
+                   if isinstance(n,dict) and str(n.get("kind") or "") not in fixed
+                   and normalize(n.get("summary")) not in fixed_summaries}
         generated.discard("")
         if not generated:return False
         overlap=len(generated & recent_summaries)
         return overlap>=max(2,int(len(generated)*0.5))
+
+    def _fixed_content_missing(self,weekend:bool,raw:Any)->list[str]:
+        """content_fixed 节点必须出现在生成结果里；返回缺失的 summary 清单（#33 建议 1）。"""
+        template=self._template()
+        nodes=template.get("weekend" if weekend else "workday")
+        if not isinstance(nodes,list):return []
+        normalize=lambda text:" ".join(str(text or "").split())
+        generated={normalize(n.get("summary")) for n in raw if isinstance(n,dict)} if isinstance(raw,list) else set()
+        return [normalize(n.get("summary")) for n in nodes
+                if isinstance(n,dict) and n.get("content_fixed")
+                and normalize(n.get("summary")) and normalize(n.get("summary")) not in generated]
+
+    def _apply_time_fixed(self,day:str,weekend:bool,nodes:list[dict[str,Any]])->list[dict[str,Any]]:
+        """time_fixed 节点后处理注入：按用户锁定的起止原样保留，裁切与之重叠的自由节点。
+
+        模型只安排其余空档；固定作息不被挪动（#33 建议 1/2）。注入后重新排序并修复重叠，
+        复用 _validate 的 id 生成口径。固定节点自身不裁切（保存时已校验彼此不重叠）。
+        """
+        template=self._template()
+        fixed_raw=template.get("weekend" if weekend else "workday")
+        if not isinstance(fixed_raw,list):return nodes
+        fixed=[]
+        for n in fixed_raw:
+            if not isinstance(n,dict) or not n.get("time_fixed"):continue
+            start=to_minute(str(n.get("start") or "")); end=to_minute(str(n.get("end") or ""),allow_day_end=True)
+            if start is None or end is None or end<=start:continue
+            kind=str(n.get("kind") or "rest").lower(); kind=kind if kind in _ALLOWED else "rest"
+            fixed.append({"start_minute":start,"end_minute":end,"kind":kind,
+                          "summary":str(n.get("summary") or "固定安排")[:160],
+                          "location":str(n.get("location") or "家里")[:80],
+                          "energy_load":max(-12.0,min(12.0,float(n.get("energy_load") or 0))),
+                          "shareability":max(0.0,min(1.0,float(n.get("shareability") or 0.1))),
+                          "_fixed":True})
+        if not fixed:return nodes
+        # 自由节点被固定区间裁切：完全覆盖则丢弃，部分重叠则收缩到固定区间之外。
+        free=[]
+        for item in nodes:
+            s,e=int(item["start_minute"]),int(item["end_minute"]); pieces=[(s,e)]
+            for fx in fixed:
+                fs,fe=fx["start_minute"],fx["end_minute"]; nxt=[]
+                for ps,pe in pieces:
+                    if pe<=fs or ps>=fe:nxt.append((ps,pe)); continue
+                    if ps<fs:nxt.append((ps,fs))
+                    if pe>fe:nxt.append((fe,pe))
+                pieces=nxt
+            for ps,pe in pieces:
+                if pe>ps:
+                    trimmed=dict(item); trimmed["start_minute"]=ps; trimmed["end_minute"]=pe; free.append(trimmed)
+        merged=free+fixed
+        merged.sort(key=lambda x:x["start_minute"])
+        result=[]; last_end=-1
+        for item in merged:
+            if item["start_minute"]<last_end:
+                if item.get("_fixed"):continue  # 固定节点彼此不重叠（保存校验保证），被挤说明自由节点越界
+                item["start_minute"]=last_end
+            if item["end_minute"]<=item["start_minute"]:continue
+            seed=f"{day}:{item['start_minute']}:{item['end_minute']}:{item['kind']}:{item['summary']}"
+            item["id"]=hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]; item["day"]=day
+            item.pop("_fixed",None)
+            result.append(item); last_end=item["end_minute"]
+        return result
+
+    def last_generation_report(self) -> dict[str, Any]:
+        """上次日程生成报告（WebUI 预览面板展示来源与拒绝原因序列，#33 建议 3/6）。"""
+        return dict(getattr(self,"_last_generation_report",{}) or {})
+
+    async def editable_template(self,now:datetime)->dict[str,Any]:
+        """WebUI 编辑器格式模板（v1.27.0，#33）：DB 优先，缺省回退内置骨架，统一 HH:MM。"""
+        await self.refresh_template_cache()
+        template=self._template(); result:dict[str,Any]={}
+        for section,weekend in (("workday",False),("weekend",True)):
+            nodes=template.get(section)
+            if not isinstance(nodes,list) or not nodes:
+                nodes=self._fallback(now.date().isoformat(),weekend)
+            out=[]
+            for n in nodes:
+                if not isinstance(n,dict):continue
+                start=str(n.get("start") or ""); end=str(n.get("end") or "")
+                if not start:start=hhmm(int(n.get("start_minute") or 0))
+                if not end:end=hhmm(int(n.get("end_minute") or 0))
+                out.append({"start":start,"end":end,"kind":str(n.get("kind") or "leisure"),
+                            "summary":str(n.get("summary") or ""),"location":str(n.get("location") or "家里"),
+                            "energy_load":float(n.get("energy_load") or 0),"shareability":float(n.get("shareability") or 0.3),
+                            "time_fixed":bool(n.get("time_fixed")),"content_fixed":bool(n.get("content_fixed"))})
+            result[section]=out
+        return result
+
+    async def template_preview(self,now:datetime)->dict[str,Any]:
+        """当天模板预览（只读，不触发生成）：参考节奏 + 固定/自由徽章 + 来源与状态。"""
+        await self.refresh_template_cache()
+        weekend=now.weekday()>=5; day=now.date().isoformat()
+        template=self._template()
+        nodes=template.get("weekend" if weekend else "workday")
+        source=nodes if isinstance(nodes,list) and nodes else self._fallback(day,weekend)
+        preview=[]
+        for n in source:
+            if not isinstance(n,dict):continue
+            start=str(n.get("start") or ""); end=str(n.get("end") or "")
+            if not start:start=hhmm(int(n.get("start_minute") or 0))
+            if not end:end=hhmm(int(n.get("end_minute") or 0))
+            preview.append({"start":start,"end":end,"kind":str(n.get("kind") or ""),
+                            "summary":str(n.get("summary") or ""),
+                            "time_fixed":bool(n.get("time_fixed")),"content_fixed":bool(n.get("content_fixed"))})
+        return {"section":"weekend" if weekend else "workday","source":self.template_status(),
+                "nodes":preview,"last_generation":self.last_generation_report()}
 
     def _fallback(self, day: str, weekend: bool) -> list[dict[str, Any]]:
         builtin=[
@@ -356,6 +512,15 @@ class ScheduleService:
         self._personality=str(personality or "")
         state=await self.store.get_state()
         weekend=now.weekday()>=5; fallback=self._apply_memory_hints(day,self._fallback(day,weekend),memory_context)
+        # v1.27.0（#33）：先刷新 DB 模板缓存，再收集用户硬约束（固定时段/固定事项）。
+        await self.refresh_template_cache()
+        fixed_notes=[]
+        for n in (self._template().get("weekend" if weekend else "workday") or []):
+            if not isinstance(n,dict):continue
+            if n.get("time_fixed"):
+                fixed_notes.append(f"固定时段 {n.get('start')}-{n.get('end')}（{n.get('kind')}）：{n.get('summary')}")
+            elif n.get("content_fixed"):
+                fixed_notes.append(f"必须安排的事项：{n.get('summary')}（时段可在空档中微调）")
         variety=await self._variety_context(now)
         calendar_bits=[str(environment.get(key)) for key in ("day_type","holiday","lunar","solar_term","upcoming_festival")
                        if environment and environment.get(key) and environment.get(key)!="无"]
@@ -374,7 +539,12 @@ class ScheduleService:
         try:
             for doc in await self.store.list_bookshelf_documents(allow_private=True,limit=5):
                 title=str(doc.get("title") or "").strip()
-                if title and title!="未命名": ideas.append(f"自己的作品《{title[:30]}》")
+                if not title or title=="未命名": continue
+                # v1.27.0（#35）：导入书籍是阅读材料，作为"在读"活动灵感（聊天候选），区别于自创作品。
+                if str(doc.get("doc_type"))=="imported_book":
+                    ideas.append(f"在读《{title[:30]}》")
+                else:
+                    ideas.append(f"自己的作品《{title[:30]}》")
         except Exception: pass
         picked=random.sample(ideas,min(3,len(ideas))) if ideas else []
         if picked:
@@ -385,7 +555,8 @@ class ScheduleService:
                 f"{self._state_summary(state)}\n"
                 f"参考节奏（只参考时间结构和比例，禁止照抄里面的描述）："
                 f"{json.dumps(self._schedule_reference(day,weekend),ensure_ascii=False)}\n"
-                f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁。"
+                + ("\n用户硬约束（必须满足：固定时段不得挪动，固定事项不得遗漏）：\n"+"\n".join(fixed_notes)+"\n" if fixed_notes else "")
+                + f"匿名生活记忆：{json.dumps(memory_context or {},ensure_ascii=False)}。日期提示不含用户身份，不得猜测是谁。"
                 f"{variety}\n"
                 "要求：\n"
                 "1) 每个节点的 summary 必须具体到'正在做什么'（例如'上午去教学楼听两门课''给连载小说写第三章''玩两把新出的游戏'），"
@@ -408,6 +579,8 @@ class ScheduleService:
                 "kind只能是meal/work/study/travel/leisure/sleep/nap/rest。")
         nodes=[]
         # Issue #33：预读最近 3 天非固定节点 summary，供生成结果重复率闸门使用。
+        # 用户固定节点的 summary 同样豁免（固定习惯允许天天重复）。
+        fixed_summaries=self._fixed_summaries()
         recent_summaries=set()
         for offset in range(1,4):
             past=(now-timedelta(days=offset)).date().isoformat()
@@ -415,19 +588,34 @@ class ScheduleService:
                 kind=str(n.get("kind") or "")
                 if kind not in {"sleep","meal","nap"}:
                     summary=" ".join(str(n.get("summary") or "").split())
-                    if summary: recent_summaries.add(summary)
+                    if summary and summary not in fixed_summaries: recent_summaries.add(summary)
+        # v1.27.0：验收拒绝原因逐轮记录，供 WebUI 预览面板展示（#33 建议 3/6）。
+        rejections:list[str]=[]
+        def check(item:Any)->bool:
+            reasons=[]
+            if not self._validate(day,item,state):reasons.append("结构不合法")
+            if self._template_copycat(day,weekend,item):reasons.append("与模板过于相似")
+            if self._recent_day_overlap(now,item,recent_summaries):reasons.append("与近期活动重复")
+            missing=self._fixed_content_missing(weekend,item)
+            if missing:reasons.append("缺少用户固定事项："+"、".join(missing))
+            if reasons:rejections.append("；".join(reasons))
+            return not reasons
+        accepted_llm=False
         if self.llm.task_available("schedule"):
             raw=await self._generate_with_retry(prompt,"你是生活日程规划器，只输出合法JSON数组。",fallback,
-                task_kind="schedule",request_type="daily_schedule",
-                check=lambda item: bool(self._validate(day,item,state))
-                    and not self._template_copycat(day,weekend,item)
-                    and not self._recent_day_overlap(now,item,recent_summaries))
+                task_kind="schedule",request_type="daily_schedule",check=check)
             if raw is None:
                 self.logger.warning("[MaiLife] 日程生成重试后仍不合格，使用兜底模板")
                 raw=fallback
+            else:
+                accepted_llm=True
             nodes=self._validate(day,raw,state)
+            # 固定时段后处理注入只对模型结果生效；兜底模板本身已含固定节点，避免重复注入。
+            if accepted_llm and nodes:nodes=self._apply_time_fixed(day,weekend,nodes)
         source="fallback" if not nodes else "llm"
         if not nodes:nodes=fallback
+        self._last_generation_report={"day":day,"source":source,"rejections":rejections[-6:],
+                                      "fixed_constraints":len(fixed_notes),"generated_at":now.timestamp()}
         await self.store.replace_framework(day,nodes,source=source); return await self.store.get_framework(day)
 
     @staticmethod

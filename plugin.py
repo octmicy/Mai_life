@@ -1,4 +1,4 @@
-"""Mai_life v1.26.6 插件入口。"""
+"""Mai_life v1.27.0 插件入口。"""
 from __future__ import annotations
 
 from datetime import date,datetime,timedelta,timezone
@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from .config import MaiLifeSettings,PluginConfigBase,PLUGIN_VERSION
 from .creation import BookshelfService,CreationService
+from .creation import book_import
 from .core.environment import EnvironmentService
 from .core.llm_service import LLMService
 from .core.storage import LifeStore,RECORD_RETENTION_DAYS
@@ -2618,15 +2619,25 @@ class MaiLifePlugin(MaiBotPlugin):
             creation=await self._creation.status(now)
             # 主人专属网页：私人日记与阅读批注同样可见；正文全量输出（revisions 已 JOIN 出 content）。
             latest=next((row for row in rows if str(row.get("content") or "").strip()),None)
-            books=[{"doc_type":str(row.get("doc_type") or ""),"title":str(row.get("title") or "")[:160],
+            books=[]
+            for row in rows:
+                doc_type=str(row.get("doc_type") or ""); content=str(row.get("content") or "")
+                truncated=False; total_chars=len(content)
+                # v1.27.0（#35）：导入书正文存分块表，概览只给前 2000 字 + 分页标记，避免载荷爆炸。
+                if doc_type=="imported_book":
+                    page=await self._store.imported_book_read(str(row.get("id") or ""),offset=0,limit=2000)
+                    content=page["content"]; total_chars=page["total_chars"]; truncated=page["truncated"]
+                books.append({"id":str(row.get("id") or ""),"doc_type":doc_type,
+                    "title":str(row.get("title") or "")[:160],
                     "privacy":str(row.get("privacy") or ""),"status":str(row.get("status") or ""),
                     "updated_age":_relative_age(float(row.get("updated_at") or 0),now_ts),
                     "summary":str(row.get("summary") or ""),
-                    "content":str(row.get("content") or "")} for row in rows]
+                    "content":content,"truncated":truncated,"total_chars":total_chars})
+            # 全量拼接排除导入书（整本书可能数十万字，拼接会撑爆概览载荷）。
             books_full_text=_FULL_TEXT_SEP.join(
                 f"【{row['title']}】（{row['doc_type'] or '—'}｜{row['privacy'] or '—'}｜{row['status'] or '—'}｜"
                 f"更新于 {row['updated_age']}）\n\n{row['content'] or '（无正文）'}"
-                for row in books) or "（书柜暂无作品）"
+                for row in books if row["doc_type"]!="imported_book") or "（书柜暂无作品）"
             return {"counts":{"documents":int(counts.get("bookshelf_documents") or 0),
                               "private_documents":int(counts.get("private_documents") or 0),
                               "creation_runs":len(runs)},
@@ -2643,6 +2654,154 @@ class MaiLifePlugin(MaiBotPlugin):
                             for row in runs],
                     "latest_work":{"title":str(latest.get("title") or ""),"privacy":str(latest.get("privacy") or ""),
                                    "content":str(latest.get("content") or "")} if latest else {"title":"","privacy":"","content":""}}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    # ---- v1.27.0 书籍导入（#35）：前端解析文本 → 分块暂存 → 确认落库 ----
+
+    @API(name="webui_book_import_check",description="WebUI 书籍导入：重复与上限预检（不落库）",version="1",public=False)
+    async def webui_book_import_check(self,title:str="",sha256:str="",total_chars:int=0,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not self._store:return {"success":False,"error":"not_ready"}
+            if not self.config.creation.book_import_enabled:return {"success":False,"error":"书籍导入已关闭"}
+            book_import.validate_submission(title=title,total_chars=int(total_chars or 0),
+                                            max_chars=int(self.config.creation.book_import_max_chars))
+            dup=await self._store.book_import_find_duplicate(sha256=str(sha256 or ""),title=str(title or ""))
+            return {"success":True,"duplicate":dup}
+        except book_import.BookImportError as exc:
+            return {"success":False,"error":str(exc),"code":exc.code}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_book_import_begin",description="WebUI 书籍导入：建立分块暂存会话",version="1",public=False)
+    async def webui_book_import_begin(self,title:str="",author:str="",sha256:str="",total_chars:int=0,
+                                      privacy:str="private",**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env):return {"success":False,"error":"not_ready"}
+            if not self.config.creation.book_import_enabled:return {"success":False,"error":"书籍导入已关闭"}
+            total=int(total_chars or 0)
+            book_import.validate_submission(title=title,total_chars=total,
+                                            max_chars=int(self.config.creation.book_import_max_chars))
+            import_id=uuid.uuid4().hex
+            await self._store.book_import_begin(import_id=import_id,owner="webui-admin",title=str(title or ""),
+                author=str(author or ""),sha256=str(sha256 or ""),total_chars=total,
+                privacy=str(privacy or "private"),now=self._env.now().timestamp())
+            return {"success":True,"import_id":import_id,"chunk_chars":book_import.CHUNK_CHARS}
+        except book_import.BookImportError as exc:
+            return {"success":False,"error":str(exc),"code":exc.code}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_book_import_chunk",description="WebUI 书籍导入：追加一个文本分块（幂等）",version="1",public=False)
+    async def webui_book_import_chunk(self,import_id:str="",seq:int=0,text:str="",**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env):return {"success":False,"error":"not_ready"}
+            if not self.config.creation.book_import_enabled:return {"success":False,"error":"书籍导入已关闭"}
+            if len(text)>book_import.CHUNK_CHARS:
+                return {"success":False,"error":f"单块超过 {book_import.CHUNK_CHARS} 字符","code":"chunk_too_large"}
+            row=await self._store.book_import_add_chunk(str(import_id or ""),int(seq or 0),text,self._env.now().timestamp())
+            if not row:return {"success":False,"error":"导入会话不存在或已过期","code":"staging_missing"}
+            return {"success":True,"received_chars":int(row["received_chars"]),"total_chars":int(row["total_chars"])}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_book_import_commit",description="WebUI 书籍导入：收齐校验并落库到书柜",version="1",public=False)
+    async def webui_book_import_commit(self,import_id:str="",**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env):return {"success":False,"error":"not_ready"}
+            if not self.config.creation.book_import_enabled:return {"success":False,"error":"书籍导入已关闭"}
+            row=await self._store.book_import_get(str(import_id or ""))
+            if not row:return {"success":False,"error":"导入会话不存在或已取消","code":"staging_missing"}
+            first=await self._store.book_import_first_chunk(str(import_id or ""))
+            author=str(row.get("author") or ""); title=str(row.get("title") or "")
+            summary=(f"{author}《{title}》 " if author else f"《{title}》 ")+first[:200]
+            document_id=f"imported:{uuid.uuid4().hex[:16]}"
+            await self._store.book_import_commit(str(import_id or ""),document_id=document_id,
+                                                 summary=summary,now=self._env.now().timestamp())
+            return {"success":True,"document_id":document_id}
+        except ValueError as exc:
+            return {"success":False,"error":str(exc)[:200],"code":"commit_invalid"}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_book_import_cancel",description="WebUI 书籍导入：取消并清理暂存会话",version="1",public=False)
+    async def webui_book_import_cancel(self,import_id:str="",**kwargs:Any)->dict[str,Any]:
+        try:
+            if not self._store:return {"success":False,"error":"not_ready"}
+            await self._store.book_import_cancel(str(import_id or ""))
+            return {"success":True}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_book_read",description="WebUI 书柜：导入书籍分页阅读（offset/limit）",version="1",public=False)
+    async def webui_book_read(self,document_id:str="",offset:int=0,limit:int=20000,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not self._store:return {"success":False,"error":"not_ready"}
+            doc=await self._store.get_bookshelf_document(str(document_id or ""),allow_private=True)
+            if not doc:return {"success":False,"error":"文档不存在"}
+            if str(doc.get("doc_type"))!="imported_book":
+                content=str(doc.get("content") or "")
+                return {"success":True,"content":content,"total_chars":len(content),"offset":0,"truncated":False}
+            page=await self._store.imported_book_read(str(document_id or ""),offset=int(offset or 0),limit=int(limit or 20000))
+            return {"success":True,**page}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    # ---- v1.27.0 自定义日程模板（#33）：DB 优先 + 双约束 + 预览 ----
+
+    @API(name="webui_schedule_template_get",description="WebUI 日程模板：读取可编辑模板与来源状态",version="1",public=False)
+    async def webui_schedule_template_get(self,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env and self._schedule):return {"success":False,"error":"not_ready"}
+            template=await self._schedule.editable_template(self._env.now())
+            return {"success":True,"template":template,"status":self._schedule.template_status(),
+                    "last_generation":self._schedule.last_generation_report()}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_schedule_template_save",description="WebUI 日程模板：校验并保存（以后生成时生效）",version="1",public=False)
+    async def webui_schedule_template_save(self,template:dict[str,Any]|None=None,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env and self._schedule):return {"success":False,"error":"not_ready"}
+            if not isinstance(template,dict):return {"success":False,"error":"template 必须是对象"}
+            problems=self._schedule._validate_template(template)
+            if problems:return {"success":False,"error":"模板校验失败","problems":problems}
+            now=self._env.now().timestamp()
+            for section in ("workday","weekend"):
+                await self._store.schedule_template_save(section,template.get(section) or [],now)
+            await self._schedule.refresh_template_cache()
+            return {"success":True,"status":self._schedule.template_status()}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_schedule_template_preview",description="WebUI 日程模板：当天预览（只读，含静音联动）",version="1",public=False)
+    async def webui_schedule_template_preview(self,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env and self._schedule):return {"success":False,"error":"not_ready"}
+            now=self._env.now(); preview=await self._schedule.template_preview(now)
+            gate=self.config.rest_gate; quiet=[]
+            fmt=lambda m:f"{int(m)//60:02d}:{int(m)%60:02d}"
+            if str(gate.gate_mode)=="schedule":
+                for n in await self._store.get_framework(now.date().isoformat()):
+                    if str(n.get("kind")) in set(gate.gate_segment_types):
+                        quiet.append({"start":fmt(n.get("start_minute") or 0),"end":fmt(n.get("end_minute") or 0),
+                                      "kind":str(n.get("kind"))})
+            else:
+                quiet=[{"start":str(gate.night_start),"end":str(gate.night_end),"kind":"night"},
+                       {"start":str(gate.nap_start),"end":str(gate.nap_end),"kind":"nap"}]
+            preview["gate_mode"]=str(gate.gate_mode); preview["quiet_segments"]=quiet
+            preview["note"]="固定时间窗模式下静音窗不随日程挪动；按日程模式下展示当天实际静音段。Core 回复活跃度不受本插件控制。"
+            return {"success":True,**preview}
+        except Exception as exc:
+            return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
+
+    @API(name="webui_schedule_regenerate_today",description="WebUI 日程：立即重新生成今天（整日替换）",version="1",public=False)
+    async def webui_schedule_regenerate_today(self,**kwargs:Any)->dict[str,Any]:
+        try:
+            if not (self._store and self._env and self._schedule):return {"success":False,"error":"not_ready"}
+            now=self._env.now(); weather=await self._store.get_weather() or {}
+            nodes=await self._schedule.ensure_day(now,self._personality,self._env.weather_text(weather),force=True)
+            return {"success":True,"count":len(nodes),"report":self._schedule.last_generation_report()}
         except Exception as exc:
             return {"success":False,"error":f"{type(exc).__name__}: {exc}"[:200]}
 

@@ -461,6 +461,25 @@ class LifeStore:
             );
             CREATE INDEX IF NOT EXISTS idx_search_history_time
               ON search_history(created_at,operation);
+            -- v1.27.0 书籍导入（#35）：staging 暂存分块，commit 后搬入 imported_book_chunks。
+            CREATE TABLE IF NOT EXISTS book_import_staging(
+              id TEXT PRIMARY KEY, owner TEXT NOT NULL, title TEXT NOT NULL,
+              author TEXT NOT NULL DEFAULT '', sha256 TEXT NOT NULL DEFAULT '',
+              total_chars INTEGER NOT NULL, received_chars INTEGER NOT NULL DEFAULT 0,
+              privacy TEXT NOT NULL DEFAULT 'private', created_at REAL NOT NULL, expires_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS book_import_chunks(
+              import_id TEXT NOT NULL, seq INTEGER NOT NULL, content TEXT NOT NULL,
+              PRIMARY KEY(import_id,seq)
+            );
+            CREATE TABLE IF NOT EXISTS imported_book_chunks(
+              document_id TEXT NOT NULL, seq INTEGER NOT NULL, content TEXT NOT NULL,
+              PRIMARY KEY(document_id,seq)
+            );
+            -- v1.27.0 自定义日程模板（#33）：DB 优先于插件目录文件。
+            CREATE TABLE IF NOT EXISTS schedule_template(
+              section TEXT PRIMARY KEY, nodes_json TEXT NOT NULL, updated_at REAL NOT NULL
+            );
             """
         )
         # v1 数据库可能已经存在 users 表；只补列，不重建用户数据。
@@ -1803,6 +1822,141 @@ class LifeStore:
             data["content"]=str(current.get("content") or "")
             return data
 
+    # ---- v1.27.0 书籍导入（#35）：staging 分块暂存 → commit 落库 ----
+
+    async def book_import_begin(self, *, import_id: str, owner: str, title: str, author: str,
+                                sha256: str, total_chars: int, privacy: str, now: float,
+                                ttl_seconds: float=3600) -> None:
+        """每 owner 同时只保留一个 staging：新建顶替旧的（含其分块）。"""
+        async with self._lock:
+            with self._tx() as conn:
+                old=conn.execute("SELECT id FROM book_import_staging WHERE owner=?",(owner,)).fetchall()
+                for row in old:
+                    conn.execute("DELETE FROM book_import_chunks WHERE import_id=?",(row["id"],))
+                conn.execute("DELETE FROM book_import_staging WHERE owner=?",(owner,))
+                conn.execute(
+                    """INSERT INTO book_import_staging
+                    (id,owner,title,author,sha256,total_chars,received_chars,privacy,created_at,expires_at)
+                    VALUES(?,?,?,?,?,?,0,?,?,?)""",
+                    (import_id,owner,title[:160],author[:120],sha256[:64],int(total_chars),
+                     "public" if privacy=="public" else "private",now,now+ttl_seconds),
+                )
+
+    async def book_import_add_chunk(self, import_id: str, seq: int, content: str, now: float) -> dict[str, Any]:
+        """幂等追加（同 seq 覆盖）；返回更新后的 staging 行，不存在/已过期返回 {}。"""
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute("SELECT * FROM book_import_staging WHERE id=?",(import_id,)).fetchone()
+                if not row or float(row["expires_at"])<=now:return {}
+                conn.execute("INSERT OR REPLACE INTO book_import_chunks(import_id,seq,content) VALUES(?,?,?)",
+                             (import_id,max(0,int(seq)),content))
+                received=conn.execute("SELECT COALESCE(SUM(LENGTH(content)),0) AS n FROM book_import_chunks WHERE import_id=?",
+                                      (import_id,)).fetchone()["n"]
+                conn.execute("UPDATE book_import_staging SET received_chars=? WHERE id=?",(int(received),import_id))
+                return dict(conn.execute("SELECT * FROM book_import_staging WHERE id=?",(import_id,)).fetchone())
+
+    async def book_import_get(self, import_id: str) -> dict[str, Any]:
+        async with self._lock:
+            row=self.conn.execute("SELECT * FROM book_import_staging WHERE id=?",(import_id,)).fetchone()
+            return dict(row) if row else {}
+
+    async def book_import_first_chunk(self, import_id: str) -> str:
+        """取 seq=0 分块内容（commit 时生成摘要用）；无则空串。"""
+        async with self._lock:
+            row=self.conn.execute("SELECT content FROM book_import_chunks WHERE import_id=? AND seq=0",
+                                  (import_id,)).fetchone()
+            return str(row["content"]) if row else ""
+
+    async def book_import_commit(self, import_id: str, *, document_id: str, summary: str, now: float) -> str:
+        """收齐校验（seq 连续、总长一致）→ 建文档 + 搬分块 → 清 staging；不合格抛 ValueError。"""
+        async with self._lock:
+            with self._tx() as conn:
+                row=conn.execute("SELECT * FROM book_import_staging WHERE id=?",(import_id,)).fetchone()
+                if not row:raise ValueError("导入会话不存在或已取消")
+                if float(row["expires_at"])<=now:raise ValueError("导入会话已过期，请重新导入")
+                chunks=conn.execute("SELECT seq,content FROM book_import_chunks WHERE import_id=? ORDER BY seq",
+                                    (import_id,)).fetchall()
+                seqs=[int(item["seq"]) for item in chunks]
+                if seqs!=list(range(len(seqs))):raise ValueError("分块序号不连续，请重新导入")
+                text="".join(str(item["content"]) for item in chunks)
+                if len(text)!=int(row["total_chars"]):raise ValueError("分块总长与声明不一致，请重新导入")
+                conn.execute(
+                    """INSERT INTO bookshelf_documents
+                    (id,doc_type,work_type,title,privacy,status,current_revision,source_kind,source_ref,summary,
+                     created_at,updated_at,archived_at)
+                    VALUES(?,'imported_book','imported',?,?,'archived',0,'user_import',?,?,?, ?,0)""",
+                    (document_id,str(row["title"])[:160],str(row["privacy"]),str(row["sha256"])[:32],
+                     summary[:1000],now,now),
+                )
+                conn.executemany("INSERT INTO imported_book_chunks(document_id,seq,content) VALUES(?,?,?)",
+                                 [(document_id,int(item["seq"]),str(item["content"])) for item in chunks])
+                conn.execute("DELETE FROM book_import_chunks WHERE import_id=?",(import_id,))
+                conn.execute("DELETE FROM book_import_staging WHERE id=?",(import_id,))
+                return document_id
+
+    async def book_import_cancel(self, import_id: str) -> None:
+        async with self._lock:
+            with self._tx() as conn:
+                conn.execute("DELETE FROM book_import_chunks WHERE import_id=?",(import_id,))
+                conn.execute("DELETE FROM book_import_staging WHERE id=?",(import_id,))
+
+    async def book_import_cleanup_expired(self, now: float) -> int:
+        """维护 tick 顺带调用：删除过期 staging 及其分块，返回清理数。"""
+        async with self._lock:
+            with self._tx() as conn:
+                rows=conn.execute("SELECT id FROM book_import_staging WHERE expires_at<=?",(now,)).fetchall()
+                for row in rows:
+                    conn.execute("DELETE FROM book_import_chunks WHERE import_id=?",(row["id"],))
+                conn.execute("DELETE FROM book_import_staging WHERE expires_at<=?",(now,))
+                return len(rows)
+
+    async def book_import_find_duplicate(self, *, sha256: str, title: str) -> dict[str, Any]:
+        """按内容指纹或同名命中已导入书籍；返回 {id,title} 或 {}。"""
+        async with self._lock:
+            row=None
+            if sha256:
+                row=self.conn.execute(
+                    "SELECT id,title FROM bookshelf_documents WHERE doc_type='imported_book' AND source_ref=? LIMIT 1",
+                    (sha256[:32],)).fetchone()
+            if not row and title:
+                row=self.conn.execute(
+                    "SELECT id,title FROM bookshelf_documents WHERE doc_type='imported_book' AND title=? LIMIT 1",
+                    (title[:160],)).fetchone()
+            return dict(row) if row else {}
+
+    async def imported_book_read(self, document_id: str, *, offset: int=0, limit: int=20000) -> dict[str, Any]:
+        """导入书分页读：拼接分块后切片；返回 content/total_chars/offset/truncated。"""
+        async with self._lock:
+            rows=self.conn.execute("SELECT content FROM imported_book_chunks WHERE document_id=? ORDER BY seq",
+                                   (document_id,)).fetchall()
+            text="".join(str(item["content"]) for item in rows)
+            offset=max(0,int(offset)); limit=max(1,min(20000,int(limit)))
+            return {"content":text[offset:offset+limit],"total_chars":len(text),
+                    "offset":offset,"truncated":offset+limit<len(text)}
+
+    # ---- v1.27.0 自定义日程模板（#33）：DB 优先 ----
+
+    async def schedule_template_get(self) -> dict[str, Any]:
+        """返回 {section: 节点列表}；仅含已保存的 section。"""
+        async with self._lock:
+            rows=self.conn.execute("SELECT section,nodes_json FROM schedule_template").fetchall()
+            result:dict[str,Any]={}
+            for row in rows:
+                try:result[str(row["section"])]=json.loads(row["nodes_json"])
+                except (TypeError,ValueError):continue
+            return result
+
+    async def schedule_template_save(self, section: str, nodes: list[dict[str, Any]], now: float) -> None:
+        async with self._lock:
+            self.conn.execute("INSERT OR REPLACE INTO schedule_template(section,nodes_json,updated_at) VALUES(?,?,?)",
+                              (section,json.dumps(nodes,ensure_ascii=False),now))
+            self.conn.commit()
+
+    async def schedule_template_delete(self, section: str) -> None:
+        async with self._lock:
+            self.conn.execute("DELETE FROM schedule_template WHERE section=?",(section,))
+            self.conn.commit()
+
     async def save_reading_note(self, item: dict[str, Any]) -> bool:
         """外部阅读联动只接收有限文字摘要和生成批注，不接受二进制字段。"""
         async with self._lock:
@@ -1900,6 +2054,11 @@ class LifeStore:
         async with self._lock:
             with self._tx() as conn:
                 conn.execute("DELETE FROM wake_candidates WHERE expires_at<=?",(now,))
+                # v1.27.0（#35）：过期书籍导入暂存及其分块（每 owner 单实例，量小）。
+                expired_imports=conn.execute("SELECT id FROM book_import_staging WHERE expires_at<=?",(now,)).fetchall()
+                for imp in expired_imports:
+                    conn.execute("DELETE FROM book_import_chunks WHERE import_id=?",(imp["id"],))
+                conn.execute("DELETE FROM book_import_staging WHERE expires_at<=?",(now,))
                 # 休息积压按 7 天保留期清理，避免关闭增强或长期静默后无界堆积。
                 conn.execute("DELETE FROM rest_backlogs WHERE created_at<=?",(now-7*86400,))
                 conn.execute("DELETE FROM reply_turns WHERE expires_at<=?",(now,))

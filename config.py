@@ -12,7 +12,7 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import ValidationInfo, field_validator, model_validator
 
-PLUGIN_VERSION = "1.26.6"
+PLUGIN_VERSION = "1.27.0"
 CONFIG_SCHEMA_VERSION = "1.13.0"
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -165,18 +165,16 @@ class UserProfile(PluginConfigBase):
             enum_labels={"owner": "主人（owner）", "friend": "朋友（friend）"},
         ),
     )
-    daily_proactive_max: float = Field(
-        default=1.0, ge=0, le=20,
-        # v1.26.6：float 而非 int——SDK 把 int 映射为 "integer"，dev 版 dashboard 的对象数组
-        # 编辑器没有 integer 分支，数值会落进 string 分支调用 split 导致设置页崩溃（上游 MaiBot#2440）。
+    daily_proactive_max: int = Field(
+        default=1, ge=0, le=20,
         description="该用户每天最多实际收到的主动消息次数（硬上限，不是目标次数）。",
         json_schema_extra=_ui(
             "用户每日主动上限", "每日最多主动发送 N 次（硬上限，非目标次数）。实际次数常少于该值：受免打扰、冷却、精力、候选评分和 Planner 自主决策约束。0 表示禁止主动消息；主人通常填 2，朋友通常填 1。", 4,
             label_en="Per-user Daily Proactive Limit", hint_en="Hard cap of proactive messages per day (not a target). Actual count is often lower due to quiet hours, cooldown, energy, scoring and Planner decisions. Zero disables proactive messages.",
         ),
     )
-    initial_temperature: float = Field(
-        default=30.0, ge=0, le=100,
+    initial_temperature: int = Field(
+        default=30, ge=0, le=100,
         description="首次创建用户档案时使用的关系温度。",
         json_schema_extra=_ui(
             "初始关系温度", "仅首次创建档案时使用。30 表示“认识”，不会自动进入恋爱语气。", 6,
@@ -318,11 +316,11 @@ class SocialGroupProfile(PluginConfigBase):
 class CreationSettings(PluginConfigBase):
     """书柜、阅读批注与分阶段创作设置。"""
 
-    __ui_label__: ClassVar[str] = "书柜与创作"
+    __ui_label__: ClassVar[str] = "书柜与写作"
     __ui_order__: ClassVar[int] = 12
 
     enabled: bool = Field(default=False, description="启用闲暇创作巡检。",
-        json_schema_extra=_ui("启用书柜创作", "默认关闭；启用后仍需确认 SQLite 明文存储风险。", 0,
+        json_schema_extra=_ui("开启书柜创作", "默认关闭；启用后仍需确认 SQLite 明文存储风险。", 0,
                               label_en="Enable Bookshelf Creation", hint_en="Disabled by default and requires plaintext-storage acknowledgement."))
     plaintext_storage_acknowledged: bool = Field(default=False, description="确认作品和私人文本以 SQLite 明文保存。",
         json_schema_extra=_ui("确认明文存储风险", "数据库文件权限由服务器管理员负责；未确认时不会启动创作和外部阅读。", 1,
@@ -334,7 +332,7 @@ class CreationSettings(PluginConfigBase):
         json_schema_extra=_ui("每日作品上限", "默认 1；失败运行不计入已归档作品。", 3,
                               label_en="Daily Work Limit", hint_en="Maximum archived works per day; failed runs do not count."))
     minimum_energy: int = Field(default=35, ge=0, le=100, description="允许创作的最低精力。",
-        json_schema_extra=_ui("创作最低精力", "精力不足时优先休息，不启动创作模型链。", 4,
+        json_schema_extra=_ui("创作所需最低精力", "精力不足时优先休息，不启动创作模型链。", 4,
                               label_en="Minimum Creation Energy", hint_en="Creation is skipped when Mai needs rest."))
     allowed_schedule_types: list[str] = Field(default_factory=lambda:["leisure","rest"], description="允许创作的日程类型。",
         json_schema_extra=_ui("允许创作的日程", "建议只保留 leisure 和 rest。", 5,
@@ -348,16 +346,16 @@ class CreationSettings(PluginConfigBase):
         json_schema_extra=_ui("允许公开作品", "日记、梦境和私密阅读来源仍会强制保持 private。", 7,
                               label_en="Allow Public Works", hint_en="Diary, dream and private-reading sources remain private."))
     create_share_opportunity: bool = Field(default=True, description="归档后生成低频分享契机。",
-        json_schema_extra=_ui("允许分享完成作品", "私人作品只会定向给主人，公开作品仍由 Planner 和主动额度终审。", 8,
+        json_schema_extra=_ui("允许分享完成的作品", "私人作品只会定向给主人，公开作品仍由 Planner 和主动额度终审。", 8,
                               label_en="Share Archived Works", hint_en="Private works target the owner; public works still require Planner review."))
     inspiration_lookback_days: int = Field(default=7, ge=1, le=90, description="灵感来源回看天数。",
         json_schema_extra=_ui("灵感回看天数", "只读取麦麦自己的生活、梦境和日记摘要。", 9,
                               label_en="Inspiration Lookback", hint_en="Reads Mai's own life, dreams and diary summaries only."))
     max_body_chars: int = Field(default=4000, ge=500, le=16000, description="作品正文最大字符数。",
-        json_schema_extra=_ui("作品正文上限", "用于限制模型成本和 SQLite 文本体积。", 10,
+        json_schema_extra=_ui("作品字数上限", "用于限制模型成本和 SQLite 文本体积。", 10,
                               label_en="Maximum Work Length", hint_en="Limits model cost and SQLite text size."))
     external_reading_enabled: bool = Field(default=False, description="从可选插件 API 读取素材摘要。",
-        json_schema_extra=_ui("启用外部阅读联动", "默认关闭；只调用下方插件 API，不直接联网。", 11,
+        json_schema_extra=_ui("开启外部阅读联动", "默认关闭；只调用下方插件 API，不直接联网。", 11,
                               label_en="Enable External Reading", hint_en="Calls an optional plugin API only and performs no direct networking."))
     external_reading_api_name: str = Field(default="", description="外部阅读插件公开 API 名称。",
         json_schema_extra=_ui("外部阅读 API", "例如 other-plugin.list_reading_items；留空不会调用。", 12,
@@ -369,10 +367,10 @@ class CreationSettings(PluginConfigBase):
         json_schema_extra=_ui("生成阅读批注", "批注保持 private，朋友无权读取。", 14,
                               label_en="Generate Reading Annotations", hint_en="Annotations remain private and unavailable to friends."))
     continuation_enabled: bool = Field(default=True, description="启用书柜续写：有资格的旧书可按概率续写下一章。",
-        json_schema_extra=_ui("启用续写旧书", "关闭后与仅创作全新作品的行为完全一致，可一键回退。", 15,
+        json_schema_extra=_ui("开启续写旧书", "关闭后与仅创作全新作品的行为完全一致，可一键回退。", 15,
                               label_en="Enable Bookshelf Continuation", hint_en="Disable to always create brand-new works instead of continuing old ones."))
     continuation_probability: float = Field(default=0.65, ge=0, le=1, description="存在有资格旧书时选择续写的概率。",
-        json_schema_extra=_ui("续写概率", "0.65 表示约 2/3 的日子增厚旧书、1/3 开新书；1.0 永远先续旧书，0.0 永久只开新书。", 16,
+        json_schema_extra=_ui("续写的可能性", "0.65 表示约 2/3 的日子增厚旧书、1/3 开新书；1.0 永远先续旧书，0.0 永久只开新书。", 16,
                               label_en="Continuation Probability", hint_en="Chance of continuing an eligible old book; 1.0 always continues, 0.0 never does."))
     continuation_min_gap_days: int = Field(default=1, ge=0, le=30, description="同一本书两章之间的最小间隔天数。",
         json_schema_extra=_ui("续写最小间隔（天）", "按上一章归档时间判断；必须小于续写停滞天数，否则候选窗口为空、续写静默失效；0 允许同一天续写。", 17,
@@ -392,14 +390,21 @@ class CreationSettings(PluginConfigBase):
         json_schema_extra=_ui("回看章节数", "控制 Prompt 体积与 Token 成本的线性上限。", 21,
                               label_en="Context Chapters", hint_en="How many recent chapters are replayed into the continuation prompt."))
     continuation_chapter_tail_chars: int = Field(default=400, ge=0, le=2000, description="每章回看携带的正文字尾字符数。",
-        json_schema_extra=_ui("每章正文字尾字符", "0 表示只回看章节提纲、不带上文，进一步压低成本。", 22,
+        json_schema_extra=_ui("每章回看字数", "0 表示只回看章节提纲、不带上文，进一步压低成本。", 22,
                               label_en="Chapter Tail Characters", hint_en="Trailing body characters replayed per chapter; zero replays outlines only."))
+    # v1.27.0（#35）：书籍导入开关与单书字符上限。
+    book_import_enabled: bool = Field(default=True, description="允许从 WebUI 导入外部书籍到书柜。",
+        json_schema_extra=_ui("开启书籍导入", "关闭后 WebUI 导入入口与相关 API 全部拒收；已导入的书仍可读。", 23,
+                              label_en="Enable Book Import", hint_en="Disable to reject all book-import APIs; existing imported books remain readable."))
+    book_import_max_chars: int = Field(default=2000000, ge=10000, le=5000000, description="单本导入书籍的字符上限。",
+        json_schema_extra=_ui("单书字数上限", "默认 200 万字符（约 100 万汉字）；超出在预览与提交时拒收。", 24,
+                              label_en="Max Characters Per Book", hint_en="Books exceeding this limit are rejected at preview and commit."))
 
 
 class EnvironmentSettings(PluginConfigBase):
     """时间与现实天气背景配置。"""
 
-    __ui_label__: ClassVar[str] = "环境与天气"
+    __ui_label__: ClassVar[str] = "时间与天气"
     __ui_order__: ClassVar[int] = 3
     __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
         "en_US": {"title": "Environment and Weather", "description": "Timezone and Open-Meteo weather location."}
@@ -434,7 +439,7 @@ class EnvironmentSettings(PluginConfigBase):
 class StateSettings(PluginConfigBase):
     """生活数值推进与身体周期配置。"""
 
-    __ui_label__: ClassVar[str] = "生活状态"
+    __ui_label__: ClassVar[str] = "身体与状态"
     __ui_order__: ClassVar[int] = 4
     __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
         "en_US": {"title": "Life State", "description": "Deterministic energy, hunger, health and body-cycle simulation."}
@@ -445,7 +450,7 @@ class StateSettings(PluginConfigBase):
         description="生活状态推进间隔。",
         json_schema_extra=_ui(
             "状态推进间隔（分钟）", "越短状态更新越及时，但数据库写入更频繁。建议保持 10 分钟。", 0,
-            label_en="State Tick Interval (min)", hint_en="Shorter intervals update faster but write to the database more often.",
+            label_en="State Update Interval (min)", hint_en="Shorter intervals update faster but write to the database more often.",
         ),
     )
     body_cycle_enabled: bool = Field(
@@ -485,17 +490,17 @@ class StateSettings(PluginConfigBase):
 class MemorySettings(PluginConfigBase):
     """梦境、日记与重要日期。"""
 
-    __ui_label__: ClassVar[str] = "生活记忆"
+    __ui_label__: ClassVar[str] = "记忆与梦境"
     __ui_order__: ClassVar[int] = 5
 
     enabled: bool = Field(
         default=True, description="启用离线生活记忆结算。",
-        json_schema_extra=_ui("启用生活记忆", "总开关；关闭后保留已有日记和日期数据。", 0,
+        json_schema_extra=_ui("开启生活记忆", "总开关；关闭后保留已有日记和日期数据。", 0,
                               label_en="Enable Life Memory", hint_en="Keep existing data while pausing memory settlement."),
     )
     dream_fragments_enabled: bool = Field(
         default=True, description="在有效夜间睡眠后保存梦境碎片。",
-        json_schema_extra=_ui("启用梦境碎片", "梦境摘要之外保存少量醒后片段，不强制在聊天中提起。", 1,
+        json_schema_extra=_ui("开启梦境碎片", "梦境摘要之外保存少量醒后片段，不强制在聊天中提起。", 1,
                               label_en="Enable Dream Fragments", hint_en="Store a few wake-up fragments alongside the dream summary."),
     )
     dream_fragment_count: int = Field(
@@ -505,32 +510,32 @@ class MemorySettings(PluginConfigBase):
     )
     dream_probability: float = Field(
         default=0.35, ge=0, le=1, description="合格夜晚醒来后实际生成梦境的概率。",
-        json_schema_extra=_ui("做梦概率", "每个合格夜晚醒来独立掷一次，0.35 表示约每周 2～3 次；0 永不做梦，1 每晚必做。午睡和短睡路径不掷。", 3,
+        json_schema_extra=_ui("做梦的可能性", "每个合格夜晚醒来独立掷一次，0.35 表示约每周 2～3 次；0 永不做梦，1 每晚必做。午睡和短睡路径不掷。", 3,
                               label_en="Dream Probability", hint_en="Rolled once per eligible night wake-up; 0 never dreams, 1 always does. Naps are not rolled."),
     )
     dream_weekly_max: int = Field(
         default=0, ge=0, le=7, description="近 7 天已落库梦境数上限。",
-        json_schema_extra=_ui("每周梦境上限", "默认 0 不限制，只靠上方概率单旋钮；设为正数后，近 7 天梦境数达到上限的当晚直接跳过做梦，是对冲连彩的可选保险。", 4,
+        json_schema_extra=_ui("每周最多做梦次数", "默认 0 不限制，只靠上方概率单旋钮；设为正数后，近 7 天梦境数达到上限的当晚直接跳过做梦，是对冲连彩的可选保险。", 4,
                               label_en="Weekly Dream Limit", hint_en="Default 0 disables the cap. When set, nights already at the recent 7-day limit skip dreaming."),
     )
     diary_enabled: bool = Field(
         default=True, description="每天生成前一天的抽象日记。",
-        json_schema_extra=_ui("启用抽象日记", "只使用生活节点、梦境和互动数量，不复制聊天原文。", 5,
+        json_schema_extra=_ui("开启抽象日记", "只使用生活节点、梦境和互动数量，不复制聊天原文。", 5,
                               label_en="Enable Abstract Diary", hint_en="Uses life events and interaction counts, never chat transcripts."),
     )
     diary_max_chars: int = Field(
         default=1200, ge=300, le=4000, description="单篇日记正文最大字符数。",
-        json_schema_extra=_ui("日记长度上限", "限制日记和后续 Prompt 占用。", 7,
+        json_schema_extra=_ui("日记字数上限", "限制日记和后续 Prompt 占用。", 7,
                               label_en="Diary Length Limit", hint_en="Maximum characters in one diary entry."),
     )
     important_dates_enabled: bool = Field(
         default=True, description="识别并维护生日、考试、约定等日期。",
-        json_schema_extra=_ui("启用重要日期", "明确日期自动记录，模糊日期只进入待确认列表。", 8,
+        json_schema_extra=_ui("开启重要日期", "明确日期自动记录，模糊日期只进入待确认列表。", 8,
                               label_en="Enable Important Dates", hint_en="Save explicit dates and keep ambiguous dates as candidates."),
     )
     date_model_analysis_enabled: bool = Field(
         default=False, description="本地规则未识别时调用快速模型分析日期。",
-        json_schema_extra=_ui("启用日期模型分析", "默认关闭；开启会增加私聊后的异步模型调用。", 9,
+        json_schema_extra=_ui("开启日期智能分析", "默认关闭；开启会增加私聊后的异步模型调用。", 9,
                               label_en="Enable Date Model Analysis", hint_en="Disabled by default because it adds an asynchronous model call."),
     )
     date_candidate_retention_days: int = Field(
@@ -540,7 +545,7 @@ class MemorySettings(PluginConfigBase):
     )
     date_reminder_lead_days: list[int] = Field(
         default_factory=lambda: [30,7,1,0], description="重要日期提前准备和提醒的天数。",
-        json_schema_extra=_ui("重要日期提前天数", "默认提前 30、7、1 天以及当天生成一次专属契机。", 11,
+        json_schema_extra=_ui("重要日期提前提醒天数", "默认提前 30、7、1 天以及当天生成一次专属契机。", 11,
                               label_en="Important Date Lead Days", hint_en="Days before an event when a private opportunity may be created."),
     )
     @field_validator("date_reminder_lead_days", mode="before")
@@ -558,7 +563,7 @@ class MemorySettings(PluginConfigBase):
 class NetworkSettings(PluginConfigBase):
     """宿主统一联网：总开关、搜索工具、搜索历史、见闻关联、新闻与主动探索。"""
 
-    __ui_label__: ClassVar[str] = "联网"
+    __ui_label__: ClassVar[str] = "见闻与搜索"
     __ui_order__: ClassVar[int] = 11
 
     enabled: bool = Field(default=False,description="联网总开关：联网工具、新闻阅读与主动探索的共同前提。",json_schema_extra=_ui(
@@ -625,7 +630,7 @@ class NetworkSettings(PluginConfigBase):
 class RestGateSettings(PluginConfigBase):
     """睡眠和午休期间的被动回复判醒设置。"""
 
-    __ui_label__: ClassVar[str] = "休息回复闸门（私聊）"
+    __ui_label__: ClassVar[str] = "作息与睡眠"
     __ui_order__: ClassVar[int] = 6
     __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
         "en_US": {"title": "Rest Reply Gate", "description": "Decides whether Mai wakes up for passive messages during rest."}
@@ -636,7 +641,7 @@ class RestGateSettings(PluginConfigBase):
         description="是否启用睡眠和午休期间的判醒闸门。",
         json_schema_extra=_ui(
             "启用休息回复闸门", "默认关闭。开启后，麦麦睡眠或午休时可能暂不回复普通消息。", 0,
-            label_en="Enable Rest Reply Gate", hint_en="When enabled, Mai may remain silent for ordinary messages during sleep or naps.",
+            label_en="Enable Rest Schedule", hint_en="When enabled, Mai may remain silent for ordinary messages during sleep or naps.",
         ),
     )
     mode: Literal["probability", "llm"] = Field(
@@ -652,7 +657,7 @@ class RestGateSettings(PluginConfigBase):
         default="time_window", description="闸门生效方式：按设定时间窗，或按日程段型自行判断。",
         json_schema_extra=_ui(
             "闸门生效方式", "按设定时间：只在下方夜间/午休时间窗内闸门生效；按日程判断：日程进入「闸门生效的日程类型」所列段型时即生效（跟着日程作息走，如日程 22:30 就寝则 22:30 开始休息，忽略时间窗），晚安与入睡推迟同样跟随日程睡眠段。", 1,
-            label_en="Gate Mode",
+            label_en="Rest Schedule Mode",
             hint_en="time_window: gate only inside configured windows; schedule: gate whenever the schedule enters listed segment kinds.",
             enum_labels={"time_window": "按设定时间", "schedule": "按日程判断"},
         ),
@@ -686,7 +691,7 @@ class RestGateSettings(PluginConfigBase):
         description="按日程判断模式下启用闸门的日程类型；按设定时间模式下不参与生效。",
         json_schema_extra=_ui(
             "闸门生效的日程类型", "按日程判断模式下：日程进入所列段型时闸门即生效（主力开关，任意时间）；按设定时间模式下：本列表不参与闸门生效，仅用于判醒提示词里的活动描述。加入 rest 后，按日程判断时普通休息段也可能不回复。", 6,
-            label_en="Gated Schedule Types", hint_en="In schedule mode the gate activates on listed segment kinds; in time-window mode this list only labels the wake-judgment prompt.",
+            label_en="Active Schedule Types", hint_en="In schedule mode the gate activates on listed segment kinds; in time-window mode this list only labels the wake-judgment prompt.",
             enum_labels={"sleep": "夜间睡眠（sleep）", "nap": "午休小睡（nap）", "rest": "普通休息（rest）"},
         ),
     )
@@ -699,19 +704,19 @@ class RestGateSettings(PluginConfigBase):
     )
     night_start: str = Field(
         default="22:30", description="夜间闸门开始时间。",
-        json_schema_extra=_ui("夜间闸门开始", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 8, label_en="Night Gate Start", hint_en="Night gate start in HH:MM format."),
+        json_schema_extra=_ui("晚上几点开始休息", "默认 22:30，支持跨午夜；仅在「按设定时间」模式下生效，与结束时间相同则该窗口永不生效。", 8, label_en="Night Rest Start", hint_en="Night gate start in HH:MM format."),
     )
     night_end: str = Field(
         default="08:00", description="夜间闸门结束时间。",
-        json_schema_extra=_ui("夜间闸门结束", "默认 08:00。", 9, label_en="Night Gate End", hint_en="Night gate end in HH:MM format."),
+        json_schema_extra=_ui("早上几点结束休息", "默认 08:00。", 9, label_en="Night Rest End", hint_en="Night gate end in HH:MM format."),
     )
     nap_start: str = Field(
         default="12:00", description="午休闸门开始时间。",
-        json_schema_extra=_ui("午休闸门开始", "默认 12:00。仅在「按设定时间」模式下生效。", 10, label_en="Nap Gate Start", hint_en="Nap gate start in HH:MM format."),
+        json_schema_extra=_ui("午休开始时间", "默认 12:00。仅在「按设定时间」模式下生效。", 10, label_en="Nap Start", hint_en="Nap gate start in HH:MM format."),
     )
     nap_end: str = Field(
         default="14:30", description="午休闸门结束时间。",
-        json_schema_extra=_ui("午休闸门结束", "默认 14:30。", 11, label_en="Nap Gate End", hint_en="Nap gate end in HH:MM format."),
+        json_schema_extra=_ui("午休结束时间", "默认 14:30。", 11, label_en="Nap End", hint_en="Nap gate end in HH:MM format."),
     )
 
     # v1.24.0：群聊闸门字段迁移到 GroupChatSettings（[group] 节）。
@@ -844,16 +849,16 @@ class GroupChatSettings(PluginConfigBase):
 class ContextSettings(PluginConfigBase):
     """被动回复增强与朋友边界。"""
 
-    __ui_label__: ClassVar[str] = "被动回复增强"
+    __ui_label__: ClassVar[str] = "聊天时的麦麦"
     __ui_order__: ClassVar[int] = 7
 
     enabled: bool = Field(
         default=True, description="向配置私聊注入生活与关系背景。",
-        json_schema_extra=_ui("启用被动回复增强", "只处理配置的私聊用户，不影响群聊。", 0, label_en="Enable Passive Context", hint_en="Inject context only for configured private users."),
+        json_schema_extra=_ui("开启聊天背景", "只处理配置的私聊用户，不影响群聊。", 0, label_en="Enable Chat Context", hint_en="Inject context only for configured private users."),
     )
     continuity_enabled: bool = Field(
         default=True, description="维护轻量未完话题元数据。",
-        json_schema_extra=_ui("启用连续话题", "异步整理意图与未完话题，不复制完整聊天记忆。", 1, label_en="Enable Conversation Continuity", hint_en="Maintain lightweight unfinished-topic metadata asynchronously."),
+        json_schema_extra=_ui("开启连续话题", "异步整理意图与未完话题，不复制完整聊天记忆。", 1, label_en="Enable Conversation Continuity", hint_en="Maintain lightweight unfinished-topic metadata asynchronously."),
     )
     continuity_interval_minutes: int = Field(
         default=10, ge=1, le=180, description="同一会话整理连续话题的最小间隔。",
@@ -886,18 +891,18 @@ class ContextSettings(PluginConfigBase):
     # v1.24.0：防抖移除后，轮次锁字段从 DebounceSettings 迁入此处。
     outbound_turn_guard: bool = Field(
         default=True, description="阻止同一消息触发多次独立 Replyer 回复。",
-        json_schema_extra=_ui("启用同轮回复防重", "同一轮用户消息只允许触发一次独立回复；不影响一次回复内部的正常分段。", 7,
+        json_schema_extra=_ui("开启同轮回复防重", "同一轮用户消息只允许触发一次独立回复；不影响一次回复内部的正常分段。", 7,
                               label_en="Enable Reply Turn Guard",
                               hint_en="Prevent repeated independent Replyer responses for the same user message."),
     )
     turn_expire_seconds: int = Field(
         default=120, ge=20, le=600, description="轮次锁过期时间。",
-        json_schema_extra=_ui("轮次锁过期（秒）", "超时自动释放；发送失败时会提前释放。", 8,
+        json_schema_extra=_ui("回复锁过期（秒）", "超时自动释放；发送失败时会提前释放。", 8,
                               label_en="Turn Lock Expiry", hint_en="How long a reply turn lock remains valid."),
     )
     prompt_max_chars: int = Field(
         default=4000, ge=600, le=8000, description="Planner 生活背景的最大字符数。",
-        json_schema_extra=_ui("上下文长度上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
+        json_schema_extra=_ui("背景字数上限", "限制额外 Prompt 大小，避免状态信息挤占正常聊天。", 4, label_en="Context Character Limit", hint_en="Maximum characters appended by Mai Life."),
     )
     # v1.26.6：lean 注入模式——正常对话 Planner 只拿决策所需极简背景，内容素材留给 Replyer。
     planner_mode: Literal["lean", "full"] = Field(
@@ -945,51 +950,51 @@ class RecallSettings(PluginConfigBase):
 class ModelRoutingSettings(PluginConfigBase):
     """MaiBot 任务路由名，而不是 Provider API Key。"""
 
-    __ui_label__: ClassVar[str] = "模型与成本编排"
+    __ui_label__: ClassVar[str] = "模型与花费"
     __ui_order__: ClassVar[int] = 13
 
     fast_task: str = Field(default="utils", description="快速整理任务名。", json_schema_extra=_ui("快速任务", "默认 utils，用于连续话题等轻量任务。", 0, label_en="Fast Task", hint_en="MaiBot task name for lightweight analysis."))
     reasoning_task: str = Field(default="planner", description="推理任务名。", json_schema_extra=_ui("推理任务", "默认 planner，用于搜索规划、自我关联等复杂判断（日程与场景已改走快速任务）。", 1, label_en="Reasoning Task", hint_en="MaiBot task name for reasoning."))
     creative_task: str = Field(default="replyer", description="创作任务名。", json_schema_extra=_ui("创作任务", "默认 replyer，用于梦境和叙事文本。", 2, label_en="Creative Task", hint_en="MaiBot task name for narrative generation."))
-    schedule_task: str = Field(default="", description="日程任务覆盖。", json_schema_extra=_ui("日程任务覆盖", "留空继承快速任务；日程是结构化 JSON 任务，慢推理模型容易撞 30 秒超时。", 4, label_en="Schedule Override", hint_en="Leave empty to inherit fast task; slow reasoning models hit the 30s timeout."))
-    rest_wakeup_task: str = Field(default="", description="判醒任务覆盖。", json_schema_extra=_ui("判醒任务覆盖", "留空继承快速任务。", 5, label_en="Wake Decision Override", hint_en="Leave empty to inherit fast task."))
-    continuity_task: str = Field(default="", description="连续话题任务覆盖。", json_schema_extra=_ui("话题整理任务覆盖", "留空继承快速任务。", 6, label_en="Continuity Override", hint_en="Leave empty to inherit fast task."))
-    dream_task: str = Field(default="", description="梦境任务覆盖。", json_schema_extra=_ui("梦境任务覆盖", "留空继承创作任务。", 7, label_en="Dream Override", hint_en="Leave empty to inherit creative task."))
-    diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务覆盖", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
-    date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务覆盖", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
-    news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务覆盖", "留空继承快速任务。", 11, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
-    search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务覆盖", "留空继承推理任务。", 12, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
-    relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务覆盖", "留空继承推理任务。", 13, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
-    group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务覆盖", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
-    creation_outline_task: str = Field(default="", description="创作提纲任务覆盖。", json_schema_extra=_ui("创作提纲任务覆盖", "留空继承推理任务。", 17, label_en="Creation Outline Override", hint_en="Leave empty to inherit reasoning task."))
-    creation_body_task: str = Field(default="", description="创作正文任务覆盖。", json_schema_extra=_ui("创作正文任务覆盖", "留空继承创作任务。", 18, label_en="Creation Body Override", hint_en="Leave empty to inherit creative task."))
-    creation_review_task: str = Field(default="", description="创作审校任务覆盖。", json_schema_extra=_ui("创作审校任务覆盖", "留空继承推理任务。", 19, label_en="Creation Review Override", hint_en="Leave empty to inherit reasoning task."))
-    reading_annotation_task: str = Field(default="", description="阅读批注任务覆盖。", json_schema_extra=_ui("阅读批注任务覆盖", "留空继承创作任务。", 20, label_en="Reading Annotation Override", hint_en="Leave empty to inherit creative task."))
+    schedule_task: str = Field(default="", description="日程任务覆盖。", json_schema_extra=_ui("日程任务模型", "留空继承快速任务；日程是结构化 JSON 任务，慢推理模型容易撞 30 秒超时。", 4, label_en="Schedule Override", hint_en="Leave empty to inherit fast task; slow reasoning models hit the 30s timeout."))
+    rest_wakeup_task: str = Field(default="", description="判醒任务覆盖。", json_schema_extra=_ui("判醒任务模型", "留空继承快速任务。", 5, label_en="Wake Decision Override", hint_en="Leave empty to inherit fast task."))
+    continuity_task: str = Field(default="", description="连续话题任务覆盖。", json_schema_extra=_ui("话题整理任务模型", "留空继承快速任务。", 6, label_en="Continuity Override", hint_en="Leave empty to inherit fast task."))
+    dream_task: str = Field(default="", description="梦境任务覆盖。", json_schema_extra=_ui("梦境任务模型", "留空继承创作任务。", 7, label_en="Dream Override", hint_en="Leave empty to inherit creative task."))
+    diary_task: str = Field(default="", description="日记任务覆盖。", json_schema_extra=_ui("日记任务模型", "留空继承创作任务。", 9, label_en="Diary Override", hint_en="Leave empty to inherit creative task."))
+    date_analysis_task: str = Field(default="", description="日期分析任务覆盖。", json_schema_extra=_ui("日期分析任务模型", "留空继承快速任务。", 10, label_en="Date Analysis Override", hint_en="Leave empty to inherit fast task."))
+    news_task: str = Field(default="", description="新闻整理任务覆盖。", json_schema_extra=_ui("新闻整理任务模型", "留空继承快速任务。", 11, label_en="News Digest Override", hint_en="Leave empty to inherit fast task."))
+    search_task: str = Field(default="", description="主动搜索任务覆盖。", json_schema_extra=_ui("主动搜索任务模型", "留空继承推理任务。", 12, label_en="Search Planning Override", hint_en="Leave empty to inherit reasoning task."))
+    relevance_task: str = Field(default="", description="自我关联任务覆盖。", json_schema_extra=_ui("自我关联任务模型", "留空继承推理任务。", 13, label_en="Self-association Override", hint_en="Leave empty to inherit reasoning task."))
+    group_judgment_task: str = Field(default="", description="群聊公开话题判断任务覆盖。", json_schema_extra=_ui("群聊判断任务模型", "留空继承快速任务。", 15, label_en="Group Judgment Override", hint_en="Leave empty to inherit fast task."))
+    creation_outline_task: str = Field(default="", description="创作提纲任务覆盖。", json_schema_extra=_ui("创作提纲任务模型", "留空继承推理任务。", 17, label_en="Creation Outline Override", hint_en="Leave empty to inherit reasoning task."))
+    creation_body_task: str = Field(default="", description="创作正文任务覆盖。", json_schema_extra=_ui("创作正文任务模型", "留空继承创作任务。", 18, label_en="Creation Body Override", hint_en="Leave empty to inherit creative task."))
+    creation_review_task: str = Field(default="", description="创作审校任务覆盖。", json_schema_extra=_ui("创作审校任务模型", "留空继承推理任务。", 19, label_en="Creation Review Override", hint_en="Leave empty to inherit reasoning task."))
+    reading_annotation_task: str = Field(default="", description="阅读批注任务覆盖。", json_schema_extra=_ui("阅读批注任务模型", "留空继承创作任务。", 20, label_en="Reading Annotation Override", hint_en="Leave empty to inherit creative task."))
     scene_detail_task: str = Field(default="", description="临近场景细化任务覆盖。", json_schema_extra=_ui(
         "场景细化任务覆盖", "留空继承快速任务；同日程，慢推理模型容易撞 30 秒超时。", 21,
         label_en="Scene Detail Override", hint_en="Leave empty to inherit fast task; slow reasoning models hit the 30s timeout."))
 
 
-    max_output_tokens: int = Field(default=0, ge=0, description="模型输出 token 上限；0=不限制，由服务商决定。", json_schema_extra=_ui("输出 token 上限", "0=不限制（推荐）。推理模型的思考链占用输出预算，写死小上限会把正文挤成空响应；仅在对成本敏感时设正数。", 22, label_en="Max Output Tokens", hint_en="0 = unlimited (provider decides). Tight caps starve content on reasoning models."))
+    max_output_tokens: int = Field(default=0, ge=0, description="模型输出 token 上限；0=不限制，由服务商决定。", json_schema_extra=_ui("单次回复字数上限", "0=不限制（推荐）。推理模型的思考链占用输出预算，写死小上限会把正文挤成空响应；仅在对成本敏感时设正数。", 22, label_en="Max Output Tokens", hint_en="0 = unlimited (provider decides). Tight caps starve content on reasoning models."))
     llm_rpc_timeout_ms: int = Field(default=0, ge=0, le=600000, description="日程与场景细化调用的单次 RPC 超时（毫秒）；0=使用宿主默认 30 秒。",
-        json_schema_extra=_ui("日程生成 RPC 超时（毫秒）", "日程/场景细化的单次推理可能超过宿主默认 30 秒——设为大于所用模型最长推理时长（如 190000≈190 秒，需大于该任务的模型 hard_timeout）。0 保持宿主默认。仅影响这两类任务。", 23,
+        json_schema_extra=_ui("等待模型回应上限（毫秒）", "日程/场景细化的单次推理可能超过宿主默认 30 秒——设为大于所用模型最长推理时长（如 190000≈190 秒，需大于该任务的模型 hard_timeout）。0 保持宿主默认。仅影响这两类任务。", 23,
                               label_en="Schedule RPC Timeout (ms)", hint_en="Per-call RPC timeout for schedule/scene tasks. 0 = host default 30s."))
 
 
 class UsageSettings(PluginConfigBase):
     """插件模型调用统计。"""
 
-    __ui_label__: ClassVar[str] = "Token 监控"
+    __ui_label__: ClassVar[str] = "用量统计"
     __ui_order__: ClassVar[int] = 14
 
-    enabled: bool = Field(default=True, description="记录插件与观察到的 Host 模型用量。", json_schema_extra=_ui("启用 Token 统计", "不限制每日额度，只记录调用、Token、耗时与失败。", 0, label_en="Enable Token Monitoring", hint_en="Record usage without enforcing a daily budget."))
+    enabled: bool = Field(default=True, description="记录插件与观察到的 Host 模型用量。", json_schema_extra=_ui("开启用量统计", "不限制每日额度，只记录调用、Token、耗时与失败。", 0, label_en="Enable Usage Statistics", hint_en="Record usage without enforcing a daily budget."))
     retention_days: int = Field(default=30, ge=1, le=365, description="明细保留天数。", json_schema_extra=_ui("明细保留天数", "每日聚合可长期保留，调用明细按此清理。", 1, label_en="Detail Retention Days", hint_en="Retention period for individual call records."))
 
 
 class ScheduleSettings(PluginConfigBase):
     """每日生活框架与临近场景细化设置。"""
 
-    __ui_label__: ClassVar[str] = "日程与场景"
+    __ui_label__: ClassVar[str] = "每日安排"
     __ui_order__: ClassVar[int] = 8
     __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
         "en_US": {"title": "Schedule and Scenes", "description": "Daily framework generation and near-term scene expansion."}
@@ -1129,7 +1134,7 @@ class ProactiveSettings(PluginConfigBase):
 class LinkageSettings(PluginConfigBase):
     """与其它插件的联动开关；目标插件未安装时开关不生效。"""
 
-    __ui_label__: ClassVar[str] = "插件联动"
+    __ui_label__: ClassVar[str] = "联动插件"
     __ui_order__: ClassVar[int] = 15
 
     drawpic_enabled: bool = Field(
@@ -1170,28 +1175,28 @@ class MaiLifeSettings(PluginConfigBase):
     )
     environment: EnvironmentSettings = Field(
         default_factory=EnvironmentSettings,
-        json_schema_extra=_ui("环境与天气", "时区、城市和天气刷新。", 3, label_en="Environment and Weather", hint_en="Timezone, location and weather refresh."),
+        json_schema_extra=_ui("时间与天气", "时区、城市和天气刷新。", 3, label_en="Time and Weather", hint_en="Timezone, location and weather refresh."),
     )
     state: StateSettings = Field(
         default_factory=StateSettings,
-        json_schema_extra=_ui("生活状态", "精力、饥饿、健康和周期。", 4, label_en="Life State", hint_en="Energy, hunger, health and body cycle."),
+        json_schema_extra=_ui("身体与状态", "精力、饥饿、健康和周期。", 4, label_en="Body and State", hint_en="Energy, hunger, health and body cycle."),
     )
     memory: MemorySettings = Field(
         default_factory=MemorySettings,
-        json_schema_extra=_ui("生活记忆", "梦境碎片、抽象日记和重要日期。", 5,
-                              label_en="Life Memory", hint_en="Dream fragments, diary and important dates."),
+        json_schema_extra=_ui("记忆与梦境", "梦境碎片、抽象日记和重要日期。", 5,
+                              label_en="Memory and Dreams", hint_en="Dream fragments, diary and important dates."),
     )
     rest_gate: RestGateSettings = Field(
         default_factory=RestGateSettings,
-        json_schema_extra=_ui("休息回复闸门", "睡眠和午休期间的判醒逻辑。", 6, label_en="Rest Reply Gate", hint_en="Wake decisions during sleep and naps."),
+        json_schema_extra=_ui("作息与睡眠", "睡眠和午休期间的判醒逻辑。", 6, label_en="Rest and Sleep", hint_en="Wake decisions during sleep and naps."),
     )
     context: ContextSettings = Field(
         default_factory=ContextSettings,
-        json_schema_extra=_ui("被动回复增强", "关系、状态、意图和连续话题。", 7, label_en="Passive Reply Context", hint_en="Relationship, state, intent and conversation continuity."),
+        json_schema_extra=_ui("聊天时的麦麦", "关系、状态、意图和连续话题。", 7, label_en="Chat Context", hint_en="Relationship, state, intent and conversation continuity."),
     )
     schedule: ScheduleSettings = Field(
         default_factory=ScheduleSettings,
-        json_schema_extra=_ui("日程与场景", "每日框架和临近场景细化。", 8, label_en="Schedule and Scenes", hint_en="Daily framework and scene expansion."),
+        json_schema_extra=_ui("每日安排", "每日框架和临近场景细化。", 8, label_en="Daily Schedule", hint_en="Daily framework and scene expansion."),
     )
     proactive: ProactiveSettings = Field(
         default_factory=ProactiveSettings,
@@ -1199,8 +1204,8 @@ class MaiLifeSettings(PluginConfigBase):
     )
     network: NetworkSettings = Field(
         default_factory=NetworkSettings,
-        json_schema_extra=_ui("联网", "总开关、搜索工具、搜索历史、见闻关联、新闻与主动探索。", 11,
-                              label_en="Networking", hint_en="Master switch, tool, history, discovery, news and exploration."),
+        json_schema_extra=_ui("见闻与搜索", "总开关、搜索工具、搜索历史、见闻关联、新闻与主动探索。", 11,
+                              label_en="Discovery and Search", hint_en="Master switch, tool, history, discovery, news and exploration."),
     )
     recall: RecallSettings = Field(
         default_factory=RecallSettings,
@@ -1209,20 +1214,20 @@ class MaiLifeSettings(PluginConfigBase):
     )
     creation: CreationSettings = Field(
         default_factory=CreationSettings,
-        json_schema_extra=_ui("书柜与创作", "作品、日记、阅读批注和分阶段创作。", 12,
-                              label_en="Bookshelf and Creation", hint_en="Works, diaries, reading notes and staged creation."),
+        json_schema_extra=_ui("书柜与写作", "作品、日记、阅读批注和分阶段创作。", 12,
+                              label_en="Bookshelf and Writing", hint_en="Works, diaries, reading notes and staged creation."),
     )
     models: ModelRoutingSettings = Field(
         default_factory=ModelRoutingSettings,
-        json_schema_extra=_ui("模型与成本编排", "基础任务路由和高级覆盖。", 13, label_en="Model Routing", hint_en="Base task routes and per-task overrides."),
+        json_schema_extra=_ui("模型与花费", "基础任务路由和高级覆盖。", 13, label_en="Models and Cost", hint_en="Base task routes and per-task overrides."),
     )
     usage: UsageSettings = Field(
         default_factory=UsageSettings,
-        json_schema_extra=_ui("Token 监控", "调用次数、Token、耗时和失败统计。", 14, label_en="Token Monitoring", hint_en="Calls, tokens, latency and failure statistics."),
+        json_schema_extra=_ui("用量统计", "调用次数、Token、耗时和失败统计。", 14, label_en="Usage Statistics", hint_en="Calls, tokens, latency and failure statistics."),
     )
     linkage: LinkageSettings = Field(
         default_factory=LinkageSettings,
-        json_schema_extra=_ui("插件联动", "与其它插件的协作开关；目标插件未安装时不生效。", 15, label_en="Plugin Linkage", hint_en="Collaboration switches; ineffective when the target plugin is absent."),
+        json_schema_extra=_ui("联动插件", "与其它插件的协作开关；目标插件未安装时不生效。", 15, label_en="Linked Plugins", hint_en="Collaboration switches; ineffective when the target plugin is absent."),
     )
 
     @model_validator(mode="before")

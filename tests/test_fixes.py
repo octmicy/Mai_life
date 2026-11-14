@@ -4187,7 +4187,8 @@ class V11412WebuiBookshelfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(data["books"]), 14)
         for book in data["books"]:
             self.assertEqual(set(book), {"doc_type", "title", "privacy", "status",
-                                         "updated_age", "summary", "content"},
+                                         "updated_age", "summary", "content",
+                                         "id", "total_chars", "truncated"},
                              f"book 字段超出契约: {sorted(book)}")
         # 主人专属网页：私人文档与日记都可见（隐私反转后不再过滤）。
         privacy_by_title = {book["title"]: book["privacy"] for book in data["books"]}
@@ -5455,19 +5456,30 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                 self.assertTrue(upload_param.get("required"))
                 self.assertNotIn("upload_id", set())
             elif page_id == "life":
-                self.assertEqual(set(actions), {"date_write", "date_delete", "candidate_set"},
-                                 f"{page_id} 只允许日期写入/删除/候选处理动作")
+                self.assertEqual(set(actions), {"date_write", "date_delete", "candidate_set",
+                                                "book_import_check", "book_import_begin", "book_import_chunk",
+                                                "book_import_commit", "book_import_cancel", "book_read",
+                                                "schedule_template_save", "schedule_regenerate_today"},
+                                 f"{page_id} 动作白名单（日期/书籍导入/日程模板）")
                 self.assertEqual(actions["date_write"].get("api"), "webui_date_write")
                 self.assertEqual(actions["date_delete"].get("api"), "webui_date_delete")
                 self.assertEqual(actions["candidate_set"].get("api"), "webui_date_candidate_set")
+                # 破坏性/落库动作必须声明确认文案；分块上传等高频非破坏动作不得带确认（否则每块弹窗）。
+                destructive = {"date_write", "date_delete", "candidate_set", "book_import_commit",
+                               "schedule_template_save", "schedule_regenerate_today"}
                 for name, binding in actions.items():
-                    self.assertTrue(str(binding.get("confirmation") or ""), f"{page_id}.{name} 必须声明确认文案")
+                    if name in destructive:
+                        self.assertTrue(str(binding.get("confirmation") or ""), f"{page_id}.{name} 必须声明确认文案")
+                    else:
+                        self.assertFalse(str(binding.get("confirmation") or ""), f"{page_id}.{name} 高频/只读动作不应带确认")
                     for param in (binding.get("parameters") or {}).values():
-                        self.assertIn(param.get("type"), {"string", "integer", "boolean"})
+                        self.assertIn(param.get("type"), {"string", "integer", "boolean", "object", "array"})
             else:
                 self.assertEqual(actions, {}, f"{page_id} 不得声明 actions")
-        # 11 个 WebUI 只读 API 必须全部被页面消费，也不许多绑其他 API。
-        self.assertEqual(bound, set(WEBUI_API_NAMES))
+        # 11 个 WebUI 只读 API 必须全部被页面消费；v1.27.0 另允许两个日程模板只读查询。
+        self.assertTrue(set(WEBUI_API_NAMES) <= bound, f"缺少只读 API 绑定: {set(WEBUI_API_NAMES) - bound}")
+        self.assertEqual(bound - set(WEBUI_API_NAMES),
+                         {"webui_schedule_template_get", "webui_schedule_template_preview"})
 
     def test_custom_html_fragments_obey_sandbox_and_bridge_contract(self):
         """校验每个 HTML 片段遵循宿主 innerHTML 注入、CSP 无外链/无网络请求及 query 绑定一致性。"""
@@ -5486,7 +5498,9 @@ class V11412WebuiJsonStructureTests(unittest.TestCase):
                               f"{entry} 禁止 location 跳转（二次 load 会触发宿主停桥）")
             self.assertIn("window.maibot", html, f"{entry} 必须接入 window.maibot 桥")
             declared_queries = set((page.get("queries") or {}).keys())
+            # 两种调用形态都算：runQueriesWithLimit 的 name:'x' 任务对象，与直接 .query('x')。
             used_queries = set(re.findall(r"""name\s*:\s*['"]([a-zA-Z0-9_-]+)['"]""", html))
+            used_queries |= set(re.findall(r"""\.query\(\s*['"]([a-zA-Z0-9_-]+)['"]""", html))
             self.assertEqual(used_queries, declared_queries,
                              f"{entry} 调用的 query 集合 {used_queries} 与 webui.json 声明 {declared_queries} 不一致")
 
@@ -6221,62 +6235,30 @@ class V11414OutputBudgetTests(unittest.TestCase):
 
 
 class V1266DevDashboardCompatTests(unittest.TestCase):
-    """dev dashboard（dashboard 1.10.4.dev 起）的对象数组编辑器没有 integer 分支，
-    SDK 把 int 子字段映射为 "integer" 后会落进 string 分支并对数字调用 split，
-    导致插件设置页整页崩溃。插件侧规避：对象数组子字段一律不用 int（float→"number"）。
-    本用例守着生成的 schema，防止未来再引入会触发上游缺陷的子字段类型。
+    """对象数组整数子字段的 schema 契约。
+
+    历史：dashboard 1.10.4.dev 曾缺 integer 分支，int 子字段（SDK 映射 "integer"）落进 string
+    分支对数字调 split 致设置页崩溃（上游 MaiBot#2440），v1.26.6 临时把字段改 float 规避。
+    上游已修复（dashboard 补 integer 分支，见 ListFieldEditor 的 number/integer 渲染），
+    v1.27.0 起字段回退为 int。本用例守着 schema 映射与旧配置兼容，不再禁止 integer。
     """
 
     @staticmethod
-    def _walk_item_fields(node: Any) -> "list[dict[str, Any]]":
-        """深度优先收集 schema 树里的全部 item_fields（子字段还可能再嵌套数组）。"""
-        found: list[dict[str, Any]] = []
-        if isinstance(node, dict):
-            item_fields = node.get("item_fields")
-            if isinstance(item_fields, dict):
-                found.append(item_fields)
-                for sub in item_fields.values():
-                    if isinstance(sub, dict):
-                        found.extend(V1266DevDashboardCompatTests._walk_item_fields(sub))
-            for key in ("fields", "sections", "properties"):
-                child = node.get(key)
-                if isinstance(child, dict):
-                    for value in child.values():
-                        found.extend(V1266DevDashboardCompatTests._walk_item_fields(value))
-            if isinstance(node.get("items"), dict):
-                found.extend(V1266DevDashboardCompatTests._walk_item_fields(node["items"]))
-        elif isinstance(node, list):
-            for value in node:
-                found.extend(V1266DevDashboardCompatTests._walk_item_fields(value))
-        return found
-
-    def _schema(self) -> dict[str, Any]:
+    def _schema() -> dict[str, Any]:
         from maibot_sdk.config import generate_plugin_config_schema
         return generate_plugin_config_schema(MaiLifeSettings)
 
-    def test_no_integer_typed_subfields_in_object_arrays(self):
-        """对象数组（item_fields）子字段不得出现 "integer" 类型（dev dashboard 会崩）。"""
-        item_fields_list = self._walk_item_fields(self._schema())
-        self.assertTrue(item_fields_list, "schema 中应能找到对象数组的 item_fields")
-        for item_fields in item_fields_list:
-            for name, sub in item_fields.items():
-                if isinstance(sub, dict):
-                    self.assertNotEqual(
-                        sub.get("type"), "integer",
-                        f"对象数组子字段 {name} 仍声明为 int（SDK 映射 integer，dev dashboard 设置页会崩，见上游 MaiBot#2440）")
-
-    def test_profile_numeric_subfields_map_to_number(self):
-        """users.profiles 的两个数值子字段应映射为 "number"（SDK 对 float 的映射）。"""
+    def test_profile_numeric_subfields_map_to_integer(self):
+        """users.profiles 的两个数值子字段回退为 int，SDK 映射为 "integer"（上游已支持渲染）。"""
         users_fields = self._schema()["sections"]["users"]["fields"]
         item_fields = users_fields["profiles"]["item_fields"]
-        self.assertEqual(item_fields["daily_proactive_max"]["type"], "number")
-        self.assertEqual(item_fields["initial_temperature"]["type"], "number")
-        # 默认值随类型迁移为 float，旧配置里的整数值由 pydantic 无缝接收。
-        self.assertIsInstance(item_fields["daily_proactive_max"]["default"], float)
-        self.assertIsInstance(item_fields["initial_temperature"]["default"], float)
+        self.assertEqual(item_fields["daily_proactive_max"]["type"], "integer")
+        self.assertEqual(item_fields["initial_temperature"]["type"], "integer")
+        self.assertIsInstance(item_fields["daily_proactive_max"]["default"], int)
+        self.assertIsInstance(item_fields["initial_temperature"]["default"], int)
 
     def test_profile_fields_still_validate_and_coerce_legacy_ints(self):
-        """旧配置里的整数值（1/30）与 -1 迁移语义在 float 字段上行为不变。"""
+        """旧配置里的整数值（1/30）与 -1 迁移语义在 int 字段上行为不变。"""
         cfg = MaiLifeSettings.model_validate({
             "users": {"profiles": [
                 {"user_id": "123", "role": "owner", "daily_proactive_max": -1,
@@ -6284,9 +6266,9 @@ class V1266DevDashboardCompatTests(unittest.TestCase):
                 {"user_id": "456", "daily_proactive_max": 3, "initial_temperature": 55},
             ]}})
         owner, friend = cfg.users.profiles
-        self.assertEqual(owner.daily_proactive_max, 2.0)  # -1 → 主人迁移为 2
-        self.assertEqual(friend.daily_proactive_max, 3.0)
-        self.assertEqual(friend.initial_temperature, 55.0)
+        self.assertEqual(owner.daily_proactive_max, 2)  # -1 → 主人迁移为 2
+        self.assertEqual(friend.daily_proactive_max, 3)
+        self.assertEqual(friend.initial_temperature, 55)
 
 
 # ==========v1.26.6 Planner lean 注入模式==========
